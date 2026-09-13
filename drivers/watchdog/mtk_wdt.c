@@ -77,11 +77,13 @@ struct mtk_wdt_dev {
 	bool disable_wdt_extrst;
 	bool reset_by_toprgu;
 	bool has_swsysrst_en;
+	bool vendor_reset;
 };
 
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 	bool has_swsysrst_en;
+	bool vendor_reset;
 };
 
 static const struct mtk_wdt_data mt2712_data = {
@@ -90,6 +92,10 @@ static const struct mtk_wdt_data mt2712_data = {
 
 static const struct mtk_wdt_data mt6735_data = {
 	.toprgu_sw_rst_num = MT6735_TOPRGU_RST_NUM,
+};
+
+static const struct mtk_wdt_data mt6797_data = {
+	.vendor_reset = true,
 };
 
 static const struct mtk_wdt_data mt6795_data = {
@@ -234,13 +240,30 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 
 	wdt_base = mtk_wdt->wdt_base;
 
-	/* Enable reset in order to issue a system reset instead of an IRQ */
 	reg = readl(wdt_base + WDT_MODE);
-	reg &= ~WDT_MODE_IRQ_EN;
+	if (mtk_wdt->vendor_reset) {
+		/* Match the MT6797 vendor wdt_arch_reset() sequence. */
+		iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
+		reg = readl(wdt_base + WDT_MODE);
+		reg &= ~(WDT_MODE_AUTO_START | WDT_MODE_IRQ_EN |
+			 WDT_MODE_EN | WDT_MODE_DUAL_EN);
+		reg |= WDT_MODE_EXRST_EN;
+		if (action)
+			reg |= WDT_MODE_AUTO_START;
+	} else {
+		/* Enable reset in order to issue a system reset instead of an IRQ. */
+		reg &= ~WDT_MODE_IRQ_EN;
+	}
 	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
+	if (mtk_wdt->vendor_reset) {
+		mb();
+		udelay(100);
+	}
 
 	while (1) {
 		writel(WDT_SWRST_KEY, wdt_base + WDT_SWRST);
+		if (mtk_wdt->vendor_reset)
+			mb();
 		mdelay(5);
 	}
 
@@ -412,6 +435,10 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(mtk_wdt->wdt_base))
 		return PTR_ERR(mtk_wdt->wdt_base);
 
+	wdt_data = of_device_get_match_data(dev);
+	if (wdt_data)
+		mtk_wdt->vendor_reset = wdt_data->vendor_reset;
+
 	irq = platform_get_irq_optional(pdev, 0);
 	if (irq > 0) {
 		err = devm_request_irq(&pdev->dev, irq, mtk_wdt_isr, 0, "wdt_bark",
@@ -436,7 +463,8 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	watchdog_init_timeout(&mtk_wdt->wdt_dev, timeout, dev);
 	watchdog_set_nowayout(&mtk_wdt->wdt_dev, nowayout);
-	watchdog_set_restart_priority(&mtk_wdt->wdt_dev, 128);
+	watchdog_set_restart_priority(&mtk_wdt->wdt_dev,
+				     mtk_wdt->vendor_reset ? 254 : 128);
 
 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
 
@@ -451,12 +479,13 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		 mtk_wdt->wdt_dev.timeout, nowayout);
 
 	wdt_data = of_device_get_match_data(dev);
-	if (wdt_data) {
+	if (wdt_data && wdt_data->toprgu_sw_rst_num) {
 		err = toprgu_register_reset_controller(pdev,
 						       wdt_data->toprgu_sw_rst_num);
 		if (err)
 			return err;
-
+	}
+	if (wdt_data) {
 		mtk_wdt->has_swsysrst_en = wdt_data->has_swsysrst_en;
 	}
 
@@ -495,6 +524,7 @@ static const struct of_device_id mtk_wdt_dt_ids[] = {
 	{ .compatible = "mediatek,mt2712-wdt", .data = &mt2712_data },
 	{ .compatible = "mediatek,mt6589-wdt" },
 	{ .compatible = "mediatek,mt6735-wdt", .data = &mt6735_data },
+	{ .compatible = "mediatek,mt6797-wdt", .data = &mt6797_data },
 	{ .compatible = "mediatek,mt6795-wdt", .data = &mt6795_data },
 	{ .compatible = "mediatek,mt7986-wdt", .data = &mt7986_data },
 	{ .compatible = "mediatek,mt7988-wdt", .data = &mt7988_data },

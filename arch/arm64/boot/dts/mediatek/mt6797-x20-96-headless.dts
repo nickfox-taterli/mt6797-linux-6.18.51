@@ -55,10 +55,9 @@
 	pinctrl-0 = <&uart0_pins_a>;
 };
 
-/* The watchdog is kept off during first bring-up until its board details are
- * independently verified. */
+/* TOPRGU is the board's hardware reset path, including reboot-to-Fastboot. */
 &watchdog {
-	status = "disabled";
+	status = "okay";
 };
 
 &mmc0 {
