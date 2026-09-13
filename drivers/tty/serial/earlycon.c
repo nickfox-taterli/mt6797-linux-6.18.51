@@ -199,7 +199,7 @@ static int __init register_earlycon(char *buf, const struct earlycon_id *match)
 	}
 #ifdef CONFIG_ARCH_MEDIATEK
 	x20_earlycon_marker('v');
-	x20_earlycon_marker('^');
+	x20_earlycon_marker('w');
 #endif
 
 	earlycon_init(&early_console_dev, match->name);
