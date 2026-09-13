@@ -35,7 +35,8 @@ static __always_inline void x20_earlycon_marker(u32 ch)
 	void *base = x20_debug_uart_base;
 	volatile u32 *uart = base ? base : (void *)0x11002000;
 	volatile u32 *lsr = (void *)uart + 0x14;
-	u32 timeout = 0x1000;
+	/* At 921600 baud the previous byte may still be on the wire. */
+	u32 timeout = 0x100000;
 
 	while (timeout-- && !(*lsr & (1U << 5)))
 		asm volatile("nop");
@@ -170,21 +171,34 @@ static int __init register_earlycon(char *buf, const struct earlycon_id *match)
 		buf = NULL;
 #ifdef CONFIG_ARCH_MEDIATEK
 	x20_earlycon_marker(']');
+	x20_earlycon_marker('p');
 #endif
 
 	spin_lock_init(&port->lock);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_earlycon_marker('q');
+#endif
 	if (!port->uartclk)
 		port->uartclk = BASE_BAUD * 16;
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_earlycon_marker('r');
+#endif
+
 	if (port->mapbase) {
 #ifdef CONFIG_ARCH_MEDIATEK
 		/* X20 setup_arch() installs and validates this UART mapping early. */
+		x20_earlycon_marker('s');
 		if (x20_debug_uart_base)
+			x20_earlycon_marker('t');
+		if (x20_debug_uart_base) {
 			port->membase = x20_debug_uart_base;
-		else
+			x20_earlycon_marker('u');
+		} else
 #endif
 		port->membase = earlycon_map(port->mapbase, 64);
 	}
 #ifdef CONFIG_ARCH_MEDIATEK
+	x20_earlycon_marker('v');
 	x20_earlycon_marker('^');
 #endif
 
