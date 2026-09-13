@@ -88,28 +88,18 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
-			input-enable;
-			bias-pull-up;
-			drive-strength = <2>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
-			bias-pull-down;
-			drive-strength = <4>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
-			input-enable;
-			bias-pull-down;
-			drive-strength = <2>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
-			bias-pull-up;
-			drive-strength = <2>;
 		};
 	};
 
@@ -124,28 +114,18 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
-			input-enable;
-			bias-pull-up;
-			drive-strength = <4>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
-			bias-pull-down;
-			drive-strength = <6>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
-			input-enable;
-			bias-pull-down;
-			drive-strength = <4>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
-			bias-pull-up;
-			drive-strength = <4>;
 		};
 	};
 };

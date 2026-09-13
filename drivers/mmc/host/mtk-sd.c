@@ -579,12 +579,14 @@ static const struct mtk_mmc_compatible mt6795_compat = {
 };
 
 /*
- * MT6797 uses the older 8-bit clock divider and the MSDC_PAD_TUNE0
- * register layout. Start with the conservative non-async-fifo path; the
+ * MT6797 uses the 12-bit clock divider and the MSDC_PAD_TUNE0 register
+ * layout.  The vendor MT6797 register description places CKDIV at bits
+ * 8..19 and CKMOD at bits 20..21, so this must use the *_EXTRA fields in
+ * msdc_set_mclk().  Start with the conservative non-async-fifo path; the
  * board bring-up will validate HS200/HS400 tuning separately.
  */
 static const struct mtk_mmc_compatible mt6797_compat = {
-	.clk_div_bits = 8,
+	.clk_div_bits = 12,
 	.recheck_sdio_irq = false,
 	.hs400_tune = false,
 	.pad_tune_reg = MSDC_PAD_TUNE0,
