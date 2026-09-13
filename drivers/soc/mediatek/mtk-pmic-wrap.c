@@ -2495,7 +2495,8 @@ static int pwrap_probe(struct platform_device *pdev)
 		return PTR_ERR(wrp->base);
 
 	if (HAS_CAP(wrp->master->caps, PWRAP_CAP_RESET)) {
-		wrp->rstc = devm_reset_control_get(wrp->dev, "pwrap");
+		wrp->rstc = devm_reset_control_get_optional_exclusive(wrp->dev,
+								      "pwrap");
 		if (IS_ERR(wrp->rstc)) {
 			ret = PTR_ERR(wrp->rstc);
 			dev_dbg(wrp->dev, "cannot get pwrap reset: %d\n", ret);

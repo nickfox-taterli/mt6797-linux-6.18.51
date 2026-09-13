@@ -196,6 +196,16 @@ config POWER_RESET_MT6323
 
 	  Say Y if you have a board where MT6323 could be found.
 
+config POWER_RESET_MT6797_FASTBOOT
+	bool "MediaTek MT6797 Fastboot restart marker"
+	depends on ARCH_MEDIATEK
+	depends on OF
+	depends on MTK_PMIC_WRAP
+	help
+	  Set the MT6351 RTC Fast Boot spare bit before restarting an MT6797
+	  system with the bootloader command. The MT6797 LK uses this bit to
+	  enter Fastboot directly after the reset.
+
 config POWER_RESET_QNAP
 	bool "QNAP power-off driver"
 	depends on OF_GPIO && PLAT_ORION
