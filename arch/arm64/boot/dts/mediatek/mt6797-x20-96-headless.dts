@@ -27,7 +27,7 @@
 
 	chosen {
 		stdout-path = "serial0:921600n8";
-		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000 nosmp root=/dev/ram0 rdinit=/init loglevel=8 printk.time=1";
+		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000 root=/dev/ram0 rdinit=/init loglevel=8 printk.time=1";
 	};
 
 	reg_vmmc: regulator-vmmc {
