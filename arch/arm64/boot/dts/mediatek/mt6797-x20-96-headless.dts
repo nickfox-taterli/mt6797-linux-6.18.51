@@ -9,6 +9,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/pinctrl/mt65xx.h>
 #include "mt6797.dtsi"
 
 / {
@@ -88,18 +89,42 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 	};
 
@@ -114,18 +139,42 @@
 				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
 				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
 				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-ds {
 			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-rst {
 			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
 		};
 	};
 };

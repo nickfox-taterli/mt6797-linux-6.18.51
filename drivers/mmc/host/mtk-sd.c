@@ -68,6 +68,7 @@
 #define SDC_BLK_NUM      0x50
 #define SDC_ADV_CFG0     0x64
 #define MSDC_NEW_RX_CFG  0x68
+#define EMMC_CFG0        0x70
 #define EMMC_IOCON       0x7c
 #define SDC_ACMD_RESP    0x80
 #define DMA_SA_H4BIT     0x8c
@@ -303,6 +304,9 @@
 #define EMMC50_CFG_CRCSTS_EDGE    BIT(3)   /* RW */
 #define EMMC50_CFG_CFCSTS_SEL     BIT(4)   /* RW */
 #define EMMC50_CFG_CMD_RESP_SEL   BIT(9)   /* RW */
+
+/* EMMC_CFG0 mask (the pre-eMMC5 boot-control register) */
+#define EMMC_CFG0_BOOTSUPP        BIT(15)  /* RW */
 
 /* EMMC50_CFG1 mask */
 #define EMMC50_CFG1_DS_CFG        BIT(28)  /* RW */
@@ -1898,6 +1902,14 @@ static void msdc_init_hw(struct msdc_host *host)
 
 	/* Reset */
 	msdc_reset_hw(host);
+
+	/*
+	 * FES/BROM may leave the controller's eMMC boot support enabled.
+	 * The vendor MT6797 driver clears this bit before normal card
+	 * enumeration; without it the first CMD1 can be lost after a
+	 * bootloader operation.
+	 */
+	sdr_clr_bits(host->base + EMMC_CFG0, EMMC_CFG0_BOOTSUPP);
 
 	/* Disable and clear all interrupts */
 	writel(0, host->base + MSDC_INTEN);
