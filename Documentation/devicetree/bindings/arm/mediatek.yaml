@@ -68,6 +68,7 @@ properties:
           - const: mediatek,mt6795
       - items:
           - enum:
+              - archermind,x20-96
               - archermind,mt6797-x20-dev
               - mediatek,mt6797-evb
           - const: mediatek,mt6797

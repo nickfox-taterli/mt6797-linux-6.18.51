@@ -38,6 +38,28 @@
 
 #include "efi-header.S"
 
+/* Temporary X20 bring-up markers; removed after the first mainline entry. */
+#ifdef CONFIG_ARCH_MEDIATEK
+.macro x20_early_uart_marker ch
+	movz	x9, #0x2000
+	movk	x9, #0x1100, lsl #16
+	mov	w10, #\ch
+	mov	w11, #0x1000
+1:
+	ldr	w12, [x9, #0x14]
+	tbz	w12, #5, 2f
+	str	w10, [x9]
+	dsb	sy
+	b	3f
+2:
+	subs	w11, w11, #1
+	b.ne	1b
+	str	w10, [x9]
+	dsb	sy
+3:
+.endm
+#endif
+
 #if (PAGE_OFFSET & 0x1fffff) != 0
 #error PAGE_OFFSET must be at least 2MB aligned
 #endif
@@ -83,8 +105,17 @@
 	 *  x21        primary_entry() .. start_kernel()        FDT pointer passed at boot in x0
 	 */
 SYM_CODE_START(primary_entry)
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x41	// A: entered the arm64 Image
+#endif
 	bl	record_mmu_state
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x42	// B: record_mmu_state returned
+#endif
 	bl	preserve_boot_args
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x43	// C: boot arguments preserved
+#endif
 
 	adrp	x1, early_init_stack
 	mov	sp, x1
@@ -92,6 +123,9 @@ SYM_CODE_START(primary_entry)
 	adrp	x0, __pi_init_idmap_pg_dir
 	mov	x1, xzr
 	bl	__pi_create_init_idmap
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x44	// D: initial page tables created
+#endif
 
 	/*
 	 * If the page tables have been populated with non-cacheable
@@ -119,6 +153,9 @@ SYM_CODE_START(primary_entry)
 1:	mov	x0, x19
 	bl	init_kernel_el			// w0=cpu_boot_mode
 	mov	x20, x0
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x45	// E: exception level initialised
+#endif
 
 	/*
 	 * The following calls CPU setup code, see arch/arm64/mm/proc.S for
@@ -127,6 +164,9 @@ SYM_CODE_START(primary_entry)
 	 * the TCR will have been set.
 	 */
 	bl	__cpu_setup			// initialise processor
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x46	// F: CPU setup returned
+#endif
 	b	__primary_switch
 SYM_CODE_END(primary_entry)
 
@@ -212,12 +252,23 @@ SYM_CODE_END(preserve_boot_args)
 	set_this_cpu_offset \tmp1
 	.endm
 
+/* Temporary X20 bring-up wrapper; remove after the first mainline boot. */
+SYM_FUNC_START(start_kernel)
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x52	// R: reached the assembly start_kernel wrapper
+#endif
+	b	start_kernel_c
+SYM_FUNC_END(start_kernel)
+
 /*
  * The following fragment of code is executed with the MMU enabled.
  *
  *   x0 = __pa(KERNEL_START)
  */
 SYM_FUNC_START_LOCAL(__primary_switched)
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x4c	// L: entered __primary_switched
+#endif
 	adr_l	x4, init_task
 	init_cpu_task x4, x5, x6
 
@@ -243,6 +294,9 @@ SYM_FUNC_START_LOCAL(__primary_switched)
 	mov	x0, x20
 	bl	finalise_el2			// Prefer VHE if possible
 	ldp	x29, x30, [sp], #16
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x4d	// M: reached start_kernel call
+#endif
 	bl	start_kernel
 	ASM_BUG()
 SYM_FUNC_END(__primary_switched)
@@ -467,7 +521,13 @@ SYM_FUNC_START(__enable_mmu)
 	msr	ttbr0_el1, x2			// load TTBR0
 	load_ttbr1 x1, x1, x3
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x48	// H: granule check and TTBR setup passed
+#endif
 	set_sctlr_el1	x0
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x49	// I: MMU enabled and identity-mapped UART works
+#endif
 
 	ret
 SYM_FUNC_END(__enable_mmu)
@@ -496,6 +556,9 @@ SYM_FUNC_END(__cpu_secondary_check52bitva)
 #endif
 
 SYM_FUNC_START_LOCAL(__no_granule_support)
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x4e	// N: unsupported translation granule
+#endif
 	/* Indicate that this CPU can't boot and is stuck in the kernel */
 	update_early_cpu_boot_status \
 		CPU_STUCK_IN_KERNEL | CPU_STUCK_REASON_NO_GRAN, x1, x2
@@ -508,7 +571,13 @@ SYM_FUNC_END(__no_granule_support)
 SYM_FUNC_START_LOCAL(__primary_switch)
 	adrp	x1, reserved_pg_dir
 	adrp	x2, __pi_init_idmap_pg_dir
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x47	// G: about to enable the MMU
+#endif
 	bl	__enable_mmu
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x4a	// J: returned from __enable_mmu
+#endif
 
 	adrp	x1, early_init_stack
 	mov	sp, x1
@@ -516,6 +585,9 @@ SYM_FUNC_START_LOCAL(__primary_switch)
 	mov	x0, x20				// pass the full boot status
 	mov	x1, x21				// pass the FDT
 	bl	__pi_early_map_kernel		// Map and relocate the kernel
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x4b	// K: early kernel mapping returned
+#endif
 
 	ldr	x8, =__primary_switched
 	adrp	x0, KERNEL_START		// __pa(KERNEL_START)

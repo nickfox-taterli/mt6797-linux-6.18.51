@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Device Tree for the bare X20-96 board.
+ *
+ * This is intentionally the first, headless bring-up description.  The board
+ * has no display or expansion board attached, so only the serial console is
+ * enabled until each onboard peripheral is verified separately.
+ */
+
+/dts-v1/;
+
+#include "mt6797.dtsi"
+
+/ {
+	model = "X20-96 bare headless";
+	compatible = "archermind,x20-96", "mediatek,mt6797";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	chosen {
+		stdout-path = "serial0:921600n8";
+		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000,921600n8 root=/dev/ram0 rdinit=/init loglevel=8 printk.time=1";
+	};
+
+	reg_vmmc: regulator-vmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "vmmc-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vqmmc: regulator-vqmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "vqmmc-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&uart0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins_a>;
+};
+
+/* The watchdog is kept off during first bring-up until its board details are
+ * independently verified. */
+&watchdog {
+	status = "disabled";
+};
+
+&mmc0 {
+	/* On-board eMMC: begin with the conservative 52 MHz high-speed mode. */
+	bus-width = <8>;
+	max-frequency = <52000000>;
+	cap-mmc-highspeed;
+	non-removable;
+	no-sd;
+	no-sdio;
+	vmmc-supply = <&reg_vmmc>;
+	vqmmc-supply = <&reg_vqmmc>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	status = "okay";
+};
+
+&pio {
+	mmc0_pins_default: mmc0-default-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
+				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			bias-pull-up;
+			drive-strength = <2>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			bias-pull-down;
+			drive-strength = <4>;
+		};
+
+		pins-ds {
+			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = <2>;
+		};
+
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			bias-pull-up;
+			drive-strength = <2>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-uhs-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
+				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			bias-pull-up;
+			drive-strength = <4>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			bias-pull-down;
+			drive-strength = <6>;
+		};
+
+		pins-ds {
+			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			bias-pull-down;
+			drive-strength = <4>;
+		};
+
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			bias-pull-up;
+			drive-strength = <4>;
+		};
+	};
+};

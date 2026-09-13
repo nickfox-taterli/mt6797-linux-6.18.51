@@ -578,6 +578,24 @@ static const struct mtk_mmc_compatible mt6795_compat = {
 	.support_64g = false,
 };
 
+/*
+ * MT6797 uses the older 8-bit clock divider and the MSDC_PAD_TUNE0
+ * register layout. Start with the conservative non-async-fifo path; the
+ * board bring-up will validate HS200/HS400 tuning separately.
+ */
+static const struct mtk_mmc_compatible mt6797_compat = {
+	.clk_div_bits = 8,
+	.recheck_sdio_irq = false,
+	.hs400_tune = false,
+	.pad_tune_reg = MSDC_PAD_TUNE0,
+	.async_fifo = false,
+	.data_tune = false,
+	.busy_check = false,
+	.stop_clk_fix = false,
+	.enhance_rx = false,
+	.support_64g = false,
+};
+
 static const struct mtk_mmc_compatible mt7620_compat = {
 	.clk_div_bits = 8,
 	.recheck_sdio_irq = true,
@@ -696,6 +714,7 @@ static const struct of_device_id msdc_of_ids[] = {
 	{ .compatible = "mediatek,mt2712-mmc", .data = &mt2712_compat},
 	{ .compatible = "mediatek,mt6779-mmc", .data = &mt6779_compat},
 	{ .compatible = "mediatek,mt6795-mmc", .data = &mt6795_compat},
+	{ .compatible = "mediatek,mt6797-mmc", .data = &mt6797_compat},
 	{ .compatible = "mediatek,mt7620-mmc", .data = &mt7620_compat},
 	{ .compatible = "mediatek,mt7622-mmc", .data = &mt7622_compat},
 	{ .compatible = "mediatek,mt7986-mmc", .data = &mt7986_compat},

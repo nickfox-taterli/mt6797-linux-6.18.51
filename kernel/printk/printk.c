@@ -62,6 +62,16 @@
 #include "braille.h"
 #include "internal.h"
 
+#ifdef CONFIG_ARCH_MEDIATEK
+/* Temporary X20 bring-up markers; remove after the first mainline boot. */
+extern void *x20_debug_uart_base;
+
+static __always_inline void x20_printk_marker(u32 ch)
+{
+	(void)ch;
+}
+#endif
+
 int console_printk[4] = {
 	CONSOLE_LOGLEVEL_DEFAULT,	/* console_loglevel */
 	MESSAGE_LOGLEVEL_DEFAULT,	/* default_message_loglevel */
@@ -2232,8 +2242,14 @@ int vprintk_store(int facility, int level,
 	int ret = 0;
 	u64 ts_nsec;
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x72); /* r: entered vprintk_store */
+#endif
 	if (!printk_enter_irqsave(recursion_ptr, irqflags))
 		return 0;
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x73); /* s: after printk_enter_irqsave */
+#endif
 
 	/*
 	 * Since the duration of printk() can vary depending on the message
@@ -2242,6 +2258,9 @@ int vprintk_store(int facility, int level,
 	 * timestamp with respect to the caller.
 	 */
 	ts_nsec = local_clock();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x74); /* t: after local_clock */
+#endif
 
 	caller_id = printk_caller_id();
 
@@ -2254,6 +2273,9 @@ int vprintk_store(int facility, int level,
 	va_copy(args2, args);
 	reserve_size = vsnprintf(&prefix_buf[0], sizeof(prefix_buf), fmt, args2) + 1;
 	va_end(args2);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x75); /* u: after format sizing */
+#endif
 
 	if (reserve_size > PRINTKRB_RECORD_MAX)
 		reserve_size = PRINTKRB_RECORD_MAX;
@@ -2307,6 +2329,9 @@ int vprintk_store(int facility, int level,
 		if (!prb_reserve(&e, prb, &r))
 			goto out;
 	}
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x76); /* v: after ringbuffer reservation */
+#endif
 
 	/* fill message */
 	text_len = printk_sprint(&r.text_buf[0], reserve_size, facility, &flags, fmt, args);
@@ -2326,6 +2351,9 @@ int vprintk_store(int facility, int level,
 		prb_commit(&e);
 	else
 		prb_final_commit(&e);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x77); /* w: after ringbuffer commit */
+#endif
 
 	ret = text_len + trunc_msg_len;
 out:
@@ -2374,6 +2402,9 @@ asmlinkage int vprintk_emit(int facility, int level,
 	struct console_flush_type ft;
 	int printed_len;
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x70); /* p: entered vprintk_emit */
+#endif
 	/* Suppress unimportant messages after panic happens */
 	if (unlikely(suppress_printk))
 		return 0;
@@ -2389,6 +2420,9 @@ asmlinkage int vprintk_emit(int facility, int level,
 		return 0;
 
 	printk_get_console_flush_type(&ft);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x71); /* q: after console flush type */
+#endif
 
 	/* If called from the scheduler, we can not call up(). */
 	if (level == LOGLEVEL_SCHED) {
@@ -2400,6 +2434,9 @@ asmlinkage int vprintk_emit(int facility, int level,
 	printk_delay(level);
 
 	printed_len = vprintk_store(facility, level, dev_info, fmt, args);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x78); /* x: after vprintk_store */
+#endif
 
 	if (ft.nbcon_atomic)
 		nbcon_atomic_flush_pending();
@@ -2432,6 +2469,9 @@ asmlinkage int vprintk_emit(int facility, int level,
 	else if (!console_irqwork_blocked)
 		wake_up_klogd();
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x79); /* y: leaving vprintk_emit */
+#endif
 	return printed_len;
 }
 EXPORT_SYMBOL(vprintk_emit);
@@ -2447,6 +2487,9 @@ asmlinkage __visible int _printk(const char *fmt, ...)
 	va_list args;
 	int r;
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_printk_marker(0x6f); /* o: entered _printk */
+#endif
 	va_start(args, fmt);
 	r = vprintk(fmt, args);
 	va_end(args);

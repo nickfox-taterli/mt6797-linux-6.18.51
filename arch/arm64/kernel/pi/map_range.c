@@ -105,5 +105,12 @@ asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
 		  (phys_addr_t)__initdata_begin, data_prot, IDMAP_ROOT_LEVEL,
 		  (pte_t *)pg_dir, false, 0);
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	/* Temporary X20 bring-up mapping for post-MMU UART diagnostics. */
+	map_range(&ptep, 0x11000000, 0x11200000, 0x11000000,
+		  __pgprot(PROT_SECT_DEVICE_nGnRE), IDMAP_ROOT_LEVEL,
+		  (pte_t *)pg_dir, false, 0);
+#endif
+
 	return ptep;
 }

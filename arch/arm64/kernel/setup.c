@@ -61,6 +61,24 @@ static struct resource *standard_resources;
 phys_addr_t __fdt_pointer __initdata;
 u64 mmu_enabled_at_boot __initdata;
 
+#ifdef CONFIG_ARCH_MEDIATEK
+/* Temporary X20 bring-up markers; remove after the first mainline boot. */
+void *x20_debug_uart_base;
+
+static __always_inline void x20_setup_marker(u32 ch)
+{
+	void *base = x20_debug_uart_base;
+	volatile u32 *uart = base ? base : (void *)0x11002000;
+	volatile u32 *lsr = (void *)uart + 0x14;
+	u32 timeout = 0x1000;
+
+	while (timeout-- && !(*lsr & (1U << 5)))
+		asm volatile("nop");
+	*uart = ch;
+	asm volatile("dsb sy" ::: "memory");
+}
+#endif
+
 /*
  * Standard memory resources
  */
@@ -280,25 +298,60 @@ u64 cpu_logical_map(unsigned int cpu)
 
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x61); /* a: entered setup_arch */
+#endif
 	setup_initial_init_mm(_text, _etext, _edata, _end);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x62); /* b: after setup_initial_init_mm */
+#endif
 
 	*cmdline_p = boot_command_line;
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x63); /* c: after boot command line */
+#endif
 
 	kaslr_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x64); /* d: after kaslr_init */
+#endif
 
 	early_fixmap_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x65); /* e: after early_fixmap_init */
+#endif
 	early_ioremap_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	set_fixmap_io(FIX_EARLYCON_MEM_BASE, 0x11002000);
+	x20_debug_uart_base = (void *)__fix_to_virt(FIX_EARLYCON_MEM_BASE);
+	x20_setup_marker(0x66); /* f: after early_ioremap_init */
+#endif
 
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x67); /* g: before setup_machine_fdt */
+#endif
 	setup_machine_fdt(__fdt_pointer);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x68); /* h: after setup_machine_fdt */
+#endif
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
 	 * cpufeature code and early parameters.
 	 */
 	jump_label_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x69); /* i: after setup_arch jump_label_init */
+#endif
 	parse_early_param();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6a); /* j: after setup_arch parse_early_param */
+#endif
 
 	dynamic_scs_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6b); /* k: after dynamic_scs_init */
+#endif
 
 	/*
 	 * The primary CPU enters the kernel with all DAIF exceptions masked.
@@ -312,15 +365,30 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 * detected and initialized.
 	 */
 	local_daif_restore(DAIF_PROCCTX_NOIRQ);
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6c); /* l: after local_daif_restore */
+#endif
 
 	/*
 	 * TTBR0 is only used for the identity mapping at this stage. Make it
 	 * point to zero page to avoid speculatively fetching new entries.
 	 */
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6d); /* m: immediately before cpu_uninstall_idmap */
+#endif
 	cpu_uninstall_idmap();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6e); /* n: after cpu_uninstall_idmap */
+#endif
 
 	xen_early_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x6f); /* o: after xen_early_init */
+#endif
 	efi_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x70); /* p: after efi_init */
+#endif
 
 	if (!efi_enabled(EFI_BOOT)) {
 		if ((u64)_text % MIN_KIMG_ALIGN)
@@ -330,8 +398,14 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	}
 
 	arm64_memblock_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x71); /* q: after arm64_memblock_init */
+#endif
 
 	paging_init();
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_setup_marker(0x72); /* r: after paging_init */
+#endif
 
 	acpi_table_upgrade();
 
