@@ -80,6 +80,10 @@
 #define MSDC_PATCH_BIT2  0xb8
 #define MSDC_PAD_TUNE    0xec
 #define MSDC_PAD_TUNE0   0xf0
+#define MSDC_DAT_RDDLY0  0xf8
+#define MSDC_DAT_RDDLY1  0xfc
+#define MSDC_DAT_RDDLY2  0x100
+#define MSDC_DAT_RDDLY3  0x104
 #define PAD_DS_TUNE      0x188
 #define PAD_CMD_TUNE     0x18c
 #define EMMC51_CFG0	 0x204
@@ -254,7 +258,9 @@
 /* MSDC_PATCH_BIT1 mask */
 #define MSDC_PB1_WRDAT_CRC_TACNTR GENMASK(2, 0)     /* RW */
 #define MSDC_PATCH_BIT1_CMDTA     GENMASK(5, 3)     /* RW */
+#define MSDC_PB1_GET_BUSY_MA      BIT(6)    /* RW, MT6797 */
 #define MSDC_PB1_BUSY_CHECK_SEL   BIT(7)    /* RW */
+#define MSDC_PB1_GET_CRC_MA       BIT(7)    /* RW, MT6797 */
 #define MSDC_PATCH_BIT1_STOP_DLY  GENMASK(11, 8)    /* RW */
 #define MSDC_PB1_DDR_CMD_FIX_SEL  BIT(14)           /* RW */
 #define MSDC_PB1_SINGLE_BURST     BIT(16)           /* RW */
@@ -438,6 +444,7 @@ struct msdc_save_para {
 struct mtk_mmc_compatible {
 	u8 clk_div_bits;
 	bool keep_src_clk_on;
+	bool vendor_timing_init;
 	bool recheck_sdio_irq;
 	bool hs400_tune; /* only used for MT8173 */
 	bool needs_top_base;
@@ -593,6 +600,7 @@ static const struct mtk_mmc_compatible mt6795_compat = {
 static const struct mtk_mmc_compatible mt6797_compat = {
 	.clk_div_bits = 12,
 	.keep_src_clk_on = true,
+	.vendor_timing_init = true,
 	.recheck_sdio_irq = false,
 	.hs400_tune = false,
 	.pad_tune_reg = MSDC_PAD_TUNE0,
@@ -1877,6 +1885,48 @@ static irqreturn_t msdc_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+/*
+ * MT6797's vendor driver initializes the controller with a fixed timing
+ * profile before any speed-specific tuning is attempted.  Keep this as a
+ * SoC-local override: the generic values above describe newer MSDC variants
+ * and do not have the same meaning for the MT6797 patch registers.
+ */
+static void msdc_mt6797_vendor_timing_init(struct msdc_host *host)
+{
+	/* Values taken from the vendor MT6797 msdc_reset_timing_register(). */
+	writel(0x00000000, host->base + MSDC_IOCON);
+	writel(0x00000000, host->base + MSDC_DAT_RDDLY0);
+	writel(0x00000000, host->base + MSDC_DAT_RDDLY1);
+	writel(0x00000000, host->base + MSDC_DAT_RDDLY2);
+	writel(0x00000000, host->base + MSDC_DAT_RDDLY3);
+	writel(0x403c000f, host->base + MSDC_PATCH_BIT);
+	writel(0xfffe00c9, host->base + MSDC_PATCH_BIT1);
+	writel(0x14801803, host->base + MSDC_PATCH_BIT2);
+
+	/* Vendor msdc_init_tune_setting()/autok_path_sel() defaults. */
+	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_RESPWAIT, 3);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_RESPSTSENSEL, 0);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_CRCSTSENSEL, 0);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0, MSDC_PAD_TUNE_RXDLYSEL);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGCRCSTS);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGRESP);
+	sdr_clr_bits(host->base + EMMC50_CFG0,
+			EMMC50_CFG_CFCSTS_SEL | EMMC50_CFG_CMD_RESP_SEL |
+			EMMC50_CFG_CRCSTS_EDGE);
+	sdr_set_field(host->base + MSDC_PATCH_BIT,
+			MSDC_CKGEN_MSDC_DLY_SEL, 0);
+	sdr_set_field(host->base + MSDC_PATCH_BIT1,
+			MSDC_PATCH_BIT1_CMDTA, 0);
+	sdr_set_field(host->base + MSDC_PATCH_BIT1,
+			MSDC_PB1_WRDAT_CRC_TACNTR, 0);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT1,
+			MSDC_PB1_GET_BUSY_MA | MSDC_PB1_GET_CRC_MA);
+
+	/* The vendor driver enables the SDIO controller path even for eMMC. */
+	sdr_set_bits(host->base + SDC_CFG, SDC_CFG_SDIO);
+	sdr_clr_bits(host->base + SDC_CFG, SDC_CFG_SDIOIDE);
+}
+
 static void msdc_init_hw(struct msdc_host *host)
 {
 	u32 val, pb1_val, pb2_val;
@@ -2083,6 +2133,9 @@ static void msdc_init_hw(struct msdc_host *host)
 
 	/* Configure to default data timeout */
 	sdr_set_field(host->base + SDC_CFG, SDC_CFG_DTOC, 3);
+
+	if (host->dev_comp->vendor_timing_init)
+		msdc_mt6797_vendor_timing_init(host);
 
 	host->def_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
