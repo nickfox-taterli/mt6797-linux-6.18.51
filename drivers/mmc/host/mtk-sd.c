@@ -437,6 +437,7 @@ struct msdc_save_para {
 
 struct mtk_mmc_compatible {
 	u8 clk_div_bits;
+	bool keep_src_clk_on;
 	bool recheck_sdio_irq;
 	bool hs400_tune; /* only used for MT8173 */
 	bool needs_top_base;
@@ -591,6 +592,7 @@ static const struct mtk_mmc_compatible mt6795_compat = {
  */
 static const struct mtk_mmc_compatible mt6797_compat = {
 	.clk_div_bits = 12,
+	.keep_src_clk_on = true,
 	.recheck_sdio_irq = false,
 	.hs400_tune = false,
 	.pad_tune_reg = MSDC_PAD_TUNE0,
@@ -1084,7 +1086,8 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 	}
 	sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
 
-	clk_disable_unprepare(host->src_clk_cg);
+	if (!host->dev_comp->keep_src_clk_on)
+		clk_disable_unprepare(host->src_clk_cg);
 	if (host->dev_comp->clk_div_bits == 8)
 		sdr_set_field(host->base + MSDC_CFG,
 			      MSDC_CFG_CKMOD | MSDC_CFG_CKDIV,
@@ -1093,8 +1096,8 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 		sdr_set_field(host->base + MSDC_CFG,
 			      MSDC_CFG_CKMOD_EXTRA | MSDC_CFG_CKDIV_EXTRA,
 			      (mode << 12) | div);
-
-	clk_prepare_enable(host->src_clk_cg);
+	if (!host->dev_comp->keep_src_clk_on)
+		clk_prepare_enable(host->src_clk_cg);
 	readl_poll_timeout(host->base + MSDC_CFG, val, (val & MSDC_CFG_CKSTB), 0, 0);
 	sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_CKPDN);
 	mmc->actual_clock = sclk;
