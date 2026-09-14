@@ -452,10 +452,9 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 	mov	x0, x20
 	bl	finalise_el2
 
-	str_l	xzr, __early_cpu_boot_status, x3
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_uart_marker 0x78	// x: secondary reached C handoff
-#endif
+	/* Diagnostic stage marker: reached the MMU-on C handoff. */
+	mov	x0, #0x55
+	str_l	x0, __early_cpu_boot_status, x3
 	adr_l	x5, vectors
 	msr	vbar_el1, x5
 	isb
