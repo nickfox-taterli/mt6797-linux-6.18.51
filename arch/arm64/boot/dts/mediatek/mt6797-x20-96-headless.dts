@@ -60,6 +60,36 @@
 	status = "okay";
 };
 
+/* The board carries the vendor-designated DA9214 VPROC buck at I2C6/0x68. */
+&i2c6 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_a>;
+	clock-frequency = <3400000>;
+	mediatek,use-push-pull;
+	status = "okay";
+
+	da9214: da9214@68 {
+		compatible = "dlg,da9214";
+		reg = <0x68>;
+
+		regulators {
+			vproc1_reg: BUCKA {
+				regulator-name = "vproc1";
+				regulator-min-microvolt = <780000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-always-on;
+			};
+
+			vproc2_reg: BUCKB {
+				regulator-name = "vproc2";
+				regulator-min-microvolt = <800000>;
+				regulator-max-microvolt = <1180000>;
+				regulator-always-on;
+			};
+		};
+	};
+};
+
 &mmc0 {
 	/* On-board eMMC: begin with the conservative 52 MHz high-speed mode. */
 	bus-width = <8>;
