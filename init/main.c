@@ -118,24 +118,6 @@
 
 static int kernel_init(void *);
 
-#ifdef CONFIG_ARCH_MEDIATEK
-/* Temporary X20 bring-up marker; remove after the first mainline boot. */
-extern void *x20_debug_uart_base;
-
-static __always_inline void x20_early_c_marker(u32 ch)
-{
-	void *base = x20_debug_uart_base;
-	volatile u32 *uart = base ? base : (void *)0x11002000;
-	volatile u32 *lsr = (void *)uart + 0x14;
-	u32 timeout = 0x1000;
-
-	while (timeout-- && !(*lsr & (1U << 5)))
-		asm volatile("nop");
-	*uart = ch;
-	asm volatile("dsb sy" ::: "memory");
-}
-#endif
-
 /*
  * Debug helper: via this flag we know that we are in 'early bootup code'
  * where only the boot processor is running with IRQ disabled.  This means
@@ -686,22 +668,13 @@ static noinline void __ref __noreturn rest_init(void)
 	struct task_struct *tsk;
 	int pid;
 
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x44); /* D: entered rest_init */
-	#endif
 	rcu_scheduler_starting();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x45); /* E: after rcu_scheduler_starting */
-	#endif
 	/*
 	 * We need to spawn init first so that it obtains pid 1, however
 	 * the init task will end up wanting to create kthreads, which, if
 	 * we schedule it before we create kthreadd, will OOPS.
 	 */
 	pid = user_mode_thread(kernel_init, NULL, CLONE_FS);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x46); /* F: after creating kernel_init */
-	#endif
 	/*
 	 * Pin init on the boot CPU. Task migration is not properly working
 	 * until sched_init_smp() has been run. It will set the allowed
@@ -712,24 +685,12 @@ static noinline void __ref __noreturn rest_init(void)
 	tsk->flags |= PF_NO_SETAFFINITY;
 	set_cpus_allowed_ptr(tsk, cpumask_of(smp_processor_id()));
 	rcu_read_unlock();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x47); /* G: after pinning kernel_init */
-	#endif
 
 	numa_default_policy();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x48); /* H: after numa_default_policy */
-	#endif
 	pid = kernel_thread(kthreadd, NULL, NULL, CLONE_FS | CLONE_FILES);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x49); /* I: after creating kthreadd */
-	#endif
 	rcu_read_lock();
 	kthreadd_task = find_task_by_pid_ns(pid, &init_pid_ns);
 	rcu_read_unlock();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4a); /* J: after publishing kthreadd */
-	#endif
 
 	/*
 	 * Enable might_sleep() and smp_processor_id() checks.
@@ -739,23 +700,14 @@ static noinline void __ref __noreturn rest_init(void)
 	 * already, but it's stuck on the kthreadd_done completion.
 	 */
 	system_state = SYSTEM_SCHEDULING;
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4b); /* K: after system_state scheduling */
-	#endif
 
 	complete(&kthreadd_done);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4c); /* L: after kthreadd_done */
-	#endif
 
 	/*
 	 * The boot idle thread must execute schedule()
 	 * at least once to get things moving:
 	 */
 	schedule_preempt_disabled();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4d); /* M: after first schedule */
-	#endif
 	/* Call into cpu_idle with preempt disabled */
 	cpu_startup_entry(CPUHP_ONLINE);
 }
@@ -909,109 +861,40 @@ static void __init early_numa_node_init(void)
 }
 
 asmlinkage __visible __init __no_sanitize_address __noreturn __no_stack_protector
-void start_kernel_c(void)
+void start_kernel(void)
 {
 	char *command_line;
 	char *after_dashes;
 
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x53); /* S: entered start_kernel */
-#endif
 	set_task_stack_end_magic(&init_task);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x54); /* T: after set_task_stack_end_magic */
-#endif
 	smp_setup_processor_id();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x55); /* U: after smp_setup_processor_id */
-#endif
 	debug_objects_early_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x56); /* V: after debug_objects_early_init */
-#endif
 	init_vmlinux_build_id();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x57); /* W: after init_vmlinux_build_id */
-#endif
 
 	cgroup_init_early();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x58); /* X: after cgroup_init_early */
-#endif
 
 	local_irq_disable();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x59); /* Y: after local_irq_disable */
-#endif
 	early_boot_irqs_disabled = true;
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5a); /* Z: after early_boot_irqs_disabled */
-#endif
 
 	/*
 	 * Interrupts are still disabled. Do necessary setups, then
 	 * enable them.
 	 */
 	boot_cpu_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x31); /* 1: after boot_cpu_init */
-#endif
 	page_address_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x32); /* 2: after page_address_init */
-#endif
-
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x33); /* 3: immediately before the first printk */
 	pr_notice("%s", linux_banner);
-#else
-	pr_notice("%s", linux_banner);
-#endif
 	setup_arch(&command_line);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x35); /* 5: after setup_arch */
-#endif
 	/* Static keys and static calls are needed by LSMs */
 	jump_label_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x36); /* 6: after jump_label_init */
-#endif
 	static_call_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x37); /* 7: after static_call_init */
-#endif
 	early_security_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x38); /* 8: after early_security_init */
-#endif
 	setup_boot_config();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x39); /* 9: after setup_boot_config */
-#endif
 	setup_command_line(command_line);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3a); /* a: after setup_command_line */
-#endif
 	setup_nr_cpu_ids();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3b); /* b: after setup_nr_cpu_ids */
-#endif
 	setup_per_cpu_areas();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3c); /* c: after setup_per_cpu_areas */
-#endif
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3d); /* d: after smp_prepare_boot_cpu */
-#endif
 	early_numa_node_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3e); /* e: after early_numa_node_init */
-#endif
 	boot_cpu_hotplug_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3f); /* f: after boot_cpu_hotplug_init */
-#endif
 
 	pr_notice("Kernel command line: %s\n", saved_command_line);
 	/* parameters may set static keys */
@@ -1027,58 +910,25 @@ void start_kernel_c(void)
 	if (extra_init_args)
 		parse_args("Setting extra init args", extra_init_args,
 			   NULL, 0, -1, -1, NULL, set_init_arg);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x40); /* @: after command-line parsing */
-#endif
 
 	/* Architectural and non-timekeeping rng init, before allocator init */
 	random_init_early(command_line);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x41); /* A: after random_init_early */
-#endif
 
 	/*
 	 * These use large bootmem allocations and must precede
 	 * initalization of page allocator
 	 */
 	setup_log_buf(0);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x42); /* B: after setup_log_buf */
-#endif
 	vfs_caches_init_early();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x43); /* C: after vfs_caches_init_early */
-#endif
 	sort_main_extable();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x44); /* D: after sort_main_extable */
-#endif
 	trap_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x45); /* E: after trap_init */
-#endif
 	mm_core_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x46); /* F: after mm_core_init */
-#endif
 	maple_tree_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x47); /* G: after maple_tree_init */
-#endif
 	poking_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x48); /* H: after poking_init */
-#endif
 	ftrace_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x49); /* I: after ftrace_init */
-#endif
 
 	/* trace_printk can be enabled here */
 	early_trace_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4a); /* J: after early_trace_init */
-#endif
 
 	/*
 	 * Set up the scheduler prior starting any interrupts (such as the
@@ -1086,29 +936,17 @@ void start_kernel_c(void)
 	 * time - but meanwhile we still have a functioning scheduler.
 	 */
 	sched_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4b); /* K: after sched_init */
-#endif
 
 	if (WARN(!irqs_disabled(),
 		 "Interrupts were enabled *very* early, fixing it\n"))
 		local_irq_disable();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4c); /* L: after early IRQ correction */
-#endif
 	radix_tree_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4d); /* M: after radix_tree_init */
-#endif
 
 	/*
 	 * Set up housekeeping before setting up workqueues to allow the unbound
 	 * workqueue to take non-housekeeping into account.
 	 */
 	housekeeping_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4e); /* N: after housekeeping_init */
-#endif
 
 	/*
 	 * Allow workqueue creation and work item queueing/cancelling
@@ -1116,114 +954,45 @@ void start_kernel_c(void)
 	 * workqueue_init().
 	 */
 	workqueue_init_early();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4f); /* O: after workqueue_init_early */
-#endif
 
 	rcu_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x50); /* P: after rcu_init */
-#endif
 	kvfree_rcu_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x51); /* Q: after kvfree_rcu_init */
-#endif
 
 	/* Trace events are available after this */
 	trace_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x52); /* R: after trace_init */
-#endif
 
 	if (initcall_debug)
 		initcall_debug_enable();
 
 	context_tracking_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x53); /* S: after context_tracking_init */
-#endif
 	/* init some links before init_ISA_irqs() */
 	early_irq_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x54); /* T: after early_irq_init */
-#endif
 	init_IRQ();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x55); /* U: after init_IRQ */
-#endif
 	tick_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x56); /* V: after tick_init */
-#endif
 	rcu_init_nohz();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x57); /* W: after rcu_init_nohz */
-#endif
 	timers_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x58); /* X: after timers_init */
-#endif
 	srcu_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x59); /* Y: after srcu_init */
-#endif
 	hrtimers_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5a); /* Z: after hrtimers_init */
-#endif
 	softirq_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x30); /* 0: after softirq_init */
-#endif
 	timekeeping_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x31); /* 1: after timekeeping_init */
-#endif
 	time_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x32); /* 2: after time_init */
-#endif
 
 	/* This must be after timekeeping is initialized */
 	random_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x33); /* 3: after random_init */
-#endif
 
 	/* These make use of the fully initialized rng */
 	kfence_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x34); /* 4: after kfence_init */
-#endif
 	boot_init_stack_canary();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x35); /* 5: after boot_init_stack_canary */
-#endif
 
 	perf_event_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x36); /* 6: after perf_event_init */
-#endif
 	profile_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x37); /* 7: after profile_init */
-#endif
 	call_function_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x38); /* 8: after call_function_init */
-#endif
 	WARN(!irqs_disabled(), "Interrupts were enabled early\n");
 
 	early_boot_irqs_disabled = false;
 	local_irq_enable();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x39); /* 9: after local_irq_enable */
-#endif
 
 	kmem_cache_init_late();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3a); /* a: after kmem_cache_init_late */
-#endif
 
 	/*
 	 * HACK ALERT! This is early. We're enabling the console before
@@ -1231,9 +1000,6 @@ void start_kernel_c(void)
 	 * this. But we do want output early, in case something goes wrong.
 	 */
 	console_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3b); /* b: after console_init */
-#endif
 	if (panic_later)
 		panic("Too many boot %s vars at `%s'", panic_later,
 		      panic_param);
@@ -1261,22 +1027,10 @@ void start_kernel_c(void)
 	acpi_early_init();
 	if (late_time_init)
 		late_time_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3c); /* c: after late_time_init */
-#endif
 	sched_clock_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3d); /* d: after sched_clock_init */
-#endif
 	calibrate_delay();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3e); /* e: after calibrate_delay */
-#endif
 
 	arch_cpu_finalize_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3f); /* f: after arch_cpu_finalize_init */
-#endif
 
 	pid_idr_init();
 	anon_vma_init();
@@ -1292,9 +1046,6 @@ void start_kernel_c(void)
 	net_ns_init();
 	vfs_caches_init();
 	pagecache_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x40); /* @: after pagecache_init */
-#endif
 	signals_init();
 	seq_file_init();
 	proc_root_init();
@@ -1305,22 +1056,13 @@ void start_kernel_c(void)
 	cgroup_init();
 	taskstats_init_early();
 	delayacct_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x41); /* A: after delayacct_init */
-#endif
 
 	acpi_subsystem_init();
 	arch_post_acpi_subsys_init();
 	kcsan_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x42); /* B: after kcsan_init */
-#endif
 
 	/* Do the rest non-__init'ed, we're now alive */
 	rest_init();
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x43); /* C: after rest_init (normally does not return) */
-#endif
 
 	/*
 	 * Avoid stack canaries in callers of boot_init_stack_canary for gcc-10
@@ -1687,26 +1429,14 @@ static int __ref kernel_init(void *unused)
 {
 	int ret;
 
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4e); /* N: entered kernel_init */
-	#endif
 	/*
 	 * Wait until kthreadd is all set-up.
 	 */
 	wait_for_completion(&kthreadd_done);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x4f); /* O: after waiting for kthreadd */
-	#endif
 
 	kernel_init_freeable();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x50); /* P: after kernel_init_freeable */
-	#endif
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x51); /* Q: after async_synchronize_full */
-	#endif
 
 	system_state = SYSTEM_FREEING_INITMEM;
 	kprobe_free_init_mem();
@@ -1714,9 +1444,6 @@ static int __ref kernel_init(void *unused)
 	kgdb_free_init_mem();
 	exit_boot_config();
 	free_initmem();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x52); /* R: after free_initmem */
-	#endif
 	mark_readonly();
 
 	/*
@@ -1724,9 +1451,6 @@ static int __ref kernel_init(void *unused)
 	 * to finalize PTI.
 	 */
 	pti_finalize();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x53); /* S: after pti_finalize */
-	#endif
 
 	system_state = SYSTEM_RUNNING;
 	numa_default_policy();
@@ -1736,9 +1460,6 @@ static int __ref kernel_init(void *unused)
 	do_sysctl_args();
 
 	if (ramdisk_execute_command) {
-		#ifdef CONFIG_ARCH_MEDIATEK
-		x20_early_c_marker(0x54); /* T: before rdinit */
-		#endif
 		ret = run_init_process(ramdisk_execute_command);
 		if (!ret)
 			return 0;
@@ -1803,83 +1524,32 @@ static noinline void __init kernel_init_freeable(void)
 	 * init can allocate pages on any node
 	 */
 	set_mems_allowed(node_states[N_MEMORY]);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5b); /* [: after set_mems_allowed */
-	#endif
 
 	cad_pid = get_pid(task_pid(current));
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5d); /* ]: after cad_pid */
-	#endif
 
 	smp_prepare_cpus(setup_max_cpus);
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5e); /* ^: after smp_prepare_cpus */
-	#endif
 
 	workqueue_init();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5f); /* _: after workqueue_init */
-	#endif
 
 	init_mm_internals();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x60); /* `: after init_mm_internals */
-	#endif
 
 	do_pre_smp_initcalls();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x7e); /* ~: after do_pre_smp_initcalls */
-	#endif
 	lockup_detector_init();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x7b); /* {: after lockup_detector_init */
-	#endif
 
 	smp_init();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x7d); /* }: after smp_init */
-	#endif
 	sched_init_smp();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x7c); /* |: after sched_init_smp */
-	#endif
 
 	workqueue_init_topology();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x5c); /* backslash: after workqueue_init_topology */
-	#endif
 	async_init();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3a); /* :: after async_init */
-	#endif
 	padata_init();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3b); /* ;: after padata_init */
-	#endif
 	page_alloc_init_late();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3c); /* <: after page_alloc_init_late */
-	#endif
 
 	do_basic_setup();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3d); /* =: after do_basic_setup */
-	#endif
 
 	kunit_run_all_tests();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3e); /* >: after kunit_run_all_tests */
-	#endif
 
 	wait_for_initramfs();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x3f); /* ?: after wait_for_initramfs */
-	#endif
 	console_on_rootfs();
-	#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_c_marker(0x40); /* @: after console_on_rootfs */
-	#endif
 
 	/*
 	 * check if there is an early userspace init.  If yes, let it do all

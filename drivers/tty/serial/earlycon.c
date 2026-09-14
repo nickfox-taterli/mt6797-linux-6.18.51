@@ -27,22 +27,7 @@
 #include <asm/serial.h>
 
 #ifdef CONFIG_ARCH_MEDIATEK
-/* Temporary X20 bring-up markers; remove after the first mainline boot. */
-extern void *x20_debug_uart_base;
-
-static __always_inline void x20_earlycon_marker(u32 ch)
-{
-	void *base = x20_debug_uart_base;
-	volatile u32 *uart = base ? base : (void *)0x11002000;
-	volatile u32 *lsr = (void *)uart + 0x14;
-	/* At 921600 baud the previous byte may still be on the wire. */
-	u32 timeout = 0x100000;
-
-	while (timeout-- && !(*lsr & (1U << 5)))
-		asm volatile("nop");
-	*uart = ch;
-	asm volatile("dsb sy" ::: "memory");
-}
+extern void __iomem *x20_early_uart_base;
 #endif
 
 static struct console early_con = {
@@ -64,9 +49,6 @@ static void __iomem * __init earlycon_map(resource_size_t paddr, size_t size)
 	base += paddr & ~PAGE_MASK;
 #else
 	base = ioremap(paddr, size);
-#endif
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('_');
 #endif
 	if (!base)
 		pr_err("%s: Couldn't map %pa\n", __func__, &paddr);
@@ -162,69 +144,32 @@ static int __init register_earlycon(char *buf, const struct earlycon_id *match)
 	int err;
 	struct uart_port *port = &early_console_dev.port;
 
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('[');
-#endif
-
 	/* On parsing error, pass the options buf to the setup function */
 	if (buf && !parse_options(&early_console_dev, buf))
 		buf = NULL;
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker(']');
-	x20_earlycon_marker('p');
-#endif
 
 	spin_lock_init(&port->lock);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('q');
-#endif
 	if (!port->uartclk)
 		port->uartclk = BASE_BAUD * 16;
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('r');
-#endif
-
 	if (port->mapbase) {
 #ifdef CONFIG_ARCH_MEDIATEK
-		/* X20 setup_arch() installs and validates this UART mapping early. */
-		x20_earlycon_marker('s');
-		if (x20_debug_uart_base)
-			x20_earlycon_marker('t');
-		if (x20_debug_uart_base) {
-			port->membase = x20_debug_uart_base;
-			x20_earlycon_marker('u');
-		} else
+		/* setup_arch() installs the MT6797 UART mapping before earlycon. */
+		if (x20_early_uart_base)
+			port->membase = x20_early_uart_base;
+		else
 #endif
 		port->membase = earlycon_map(port->mapbase, 64);
 	}
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('v');
-#endif
 
 	earlycon_init(&early_console_dev, match->name);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('`');
-#endif
 	err = match->setup(&early_console_dev, buf);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('~');
-#endif
 	earlycon_print_info(&early_console_dev);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('?');
-#endif
 	if (err < 0)
 		return err;
 	if (!early_console_dev.con->write)
 		return -ENODEV;
 
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('#');
-#endif
 	register_console(early_console_dev.con);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('$');
-#endif
 	return 0;
 }
 
@@ -297,10 +242,6 @@ static int __init param_setup_earlycon(char *buf)
 {
 	int err;
 
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('{');
-#endif
-
 	/* Just 'earlycon' is a valid param for devicetree and ACPI SPCR. */
 	if (!buf || !buf[0]) {
 		if (IS_ENABLED(CONFIG_ACPI_SPCR_TABLE)) {
@@ -312,9 +253,6 @@ static int __init param_setup_earlycon(char *buf)
 	}
 
 	err = setup_earlycon(buf);
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_earlycon_marker('}');
-#endif
 	if (err == -ENOENT || err == -EALREADY)
 		return 0;
 	return err;
