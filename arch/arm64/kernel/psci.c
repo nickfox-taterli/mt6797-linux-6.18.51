@@ -9,9 +9,11 @@
 #define pr_fmt(fmt) "psci: " fmt
 
 #include <linux/init.h>
+#include <linux/arm-smccc.h>
 #include <linux/of.h>
 #include <linux/smp.h>
 #include <linux/delay.h>
+#include <linux/io.h>
 #include <linux/psci.h>
 #include <linux/mm.h>
 
@@ -36,8 +38,84 @@ static int __init cpu_psci_cpu_prepare(unsigned int cpu)
 	return 0;
 }
 
+#ifdef CONFIG_ARCH_MEDIATEK
+/*
+ * MT6797's vendor kernel enables cluster-0 coherency before it asks PSCI to
+ * release the first secondary CPU.  The register is MCUSYS write-protected,
+ * while the CCI400 port is directly accessible from the non-secure kernel.
+ * Keep this narrow and keyed to the MT6797 machine so other MediaTek SoCs
+ * using the generic PSCI path are unaffected.
+ */
+#define MT6797_MCUSYS_MP0_AXI_CONFIG		0x1020002c
+#define MT6797_CCI400_BASE			0x10390000
+#define MT6797_CCI400_STATUS			0x000c
+#define MT6797_CCI400_SI4_SNOOP_CONTROL	0x5000
+#define MT6797_ACINACTM				(1U << 4)
+#define MT6797_CCI_REQ				0x3
+#define MTK_SIP_KERNEL_MCUSYS_WRITE		0x82000201
+
+static void mt6797_smp_init(void)
+{
+	static bool initialized;
+	void __iomem *mcucfg;
+	void __iomem *cci;
+	struct arm_smccc_res res;
+	u32 axi_config;
+	u32 snoop_control;
+	unsigned int timeout = 100000;
+
+	if (initialized || !of_machine_is_compatible("mediatek,mt6797"))
+		return;
+
+	mcucfg = ioremap(MT6797_MCUSYS_MP0_AXI_CONFIG & PAGE_MASK,
+			 PAGE_SIZE);
+	cci = ioremap(MT6797_CCI400_BASE, 0x10000);
+	if (!mcucfg || !cci) {
+		pr_err("MT6797 SMP: unable to map MCUSYS/CCI registers\n");
+		goto out;
+	}
+
+	/* This is mt_smp_init_cpus() from the vendor kernel. */
+	axi_config = readl_relaxed(mcucfg +
+			(MT6797_MCUSYS_MP0_AXI_CONFIG & ~PAGE_MASK));
+	arm_smccc_smc(MTK_SIP_KERNEL_MCUSYS_WRITE,
+		      MT6797_MCUSYS_MP0_AXI_CONFIG,
+		      axi_config & ~MT6797_ACINACTM,
+		      0, 0, 0, 0, 0, &res);
+	if ((long)res.a0 < 0)
+		pr_warn("MT6797 SMP: MCUSYS_WRITE returned %ld\n",
+			(long)res.a0);
+
+	snoop_control = readl_relaxed(cci + MT6797_CCI400_SI4_SNOOP_CONTROL);
+	writel_relaxed(snoop_control | MT6797_CCI_REQ,
+		       cci + MT6797_CCI400_SI4_SNOOP_CONTROL);
+	while ((readl_relaxed(cci + MT6797_CCI400_STATUS) & 1) && timeout--)
+		cpu_relax();
+	if (!timeout)
+		pr_warn("MT6797 SMP: CCI400 change did not settle\n");
+
+	pr_info("MT6797 SMP: MP0_AXI_CONFIG 0x%08x -> 0x%08x, CCI SI4 0x%08x\n",
+		axi_config, axi_config & ~MT6797_ACINACTM,
+		readl_relaxed(cci + MT6797_CCI400_SI4_SNOOP_CONTROL));
+
+	iounmap(cci);
+	iounmap(mcucfg);
+	initialized = true;
+	return;
+
+out:
+	if (cci)
+		iounmap(cci);
+	if (mcucfg)
+		iounmap(mcucfg);
+}
+#endif
+
 static int cpu_psci_cpu_boot(unsigned int cpu)
 {
+#ifdef CONFIG_ARCH_MEDIATEK
+	mt6797_smp_init();
+#endif
 	phys_addr_t pa_secondary_entry = __pa_symbol(secondary_entry);
 	int err = psci_ops.cpu_on(cpu_logical_map(cpu), pa_secondary_entry);
 	if (err && err != -EPERM)
@@ -121,4 +199,3 @@ const struct cpu_operations cpu_psci_ops = {
 	.cpu_kill	= cpu_psci_cpu_kill,
 #endif
 };
-
