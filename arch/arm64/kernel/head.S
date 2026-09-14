@@ -407,8 +407,14 @@ SYM_FUNC_END(secondary_holding_pen)
 	 * be used where CPUs are brought online dynamically by the kernel.
 	 */
 SYM_FUNC_START(secondary_entry)
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x73	// s: secondary entry reached
+#endif
 	mov	x0, xzr
 	bl	init_kernel_el			// w0=cpu_boot_mode
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x74	// t: secondary exception level initialised
+#endif
 	b	secondary_startup
 SYM_FUNC_END(secondary_entry)
 
@@ -425,8 +431,14 @@ alternative_else_nop_endif
 #endif
 
 	bl	__cpu_setup			// initialise processor
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x75	// u: secondary CPU setup returned
+#endif
 	adrp	x1, swapper_pg_dir
 	adrp	x2, idmap_pg_dir
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x76	// v: secondary about to enable MMU
+#endif
 	bl	__enable_mmu
 	ldr	x8, =__secondary_switched
 	br	x8
@@ -441,6 +453,9 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 	bl	finalise_el2
 
 	str_l	xzr, __early_cpu_boot_status, x3
+#ifdef CONFIG_ARCH_MEDIATEK
+	x20_early_uart_marker 0x78	// x: secondary reached C handoff
+#endif
 	adr_l	x5, vectors
 	msr	vbar_el1, x5
 	isb
