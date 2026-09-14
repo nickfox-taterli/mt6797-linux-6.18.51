@@ -46,7 +46,7 @@ static int __init cpu_psci_cpu_prepare(unsigned int cpu)
  * Keep this narrow and keyed to the MT6797 machine so other MediaTek SoCs
  * using the generic PSCI path are unaffected.
  */
-#define MT6797_MCUSYS_MP0_AXI_CONFIG		0x1020002c
+#define MT6797_MCUSYS_MP0_AXI_CONFIG		0x1022002c
 #define MT6797_CCI400_BASE			0x10390000
 #define MT6797_CCI400_STATUS			0x000c
 #define MT6797_CCI400_SI4_SNOOP_CONTROL	0x5000
