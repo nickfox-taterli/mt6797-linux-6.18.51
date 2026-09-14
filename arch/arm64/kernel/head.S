@@ -452,9 +452,7 @@ SYM_FUNC_START_LOCAL(__secondary_switched)
 	mov	x0, x20
 	bl	finalise_el2
 
-	/* Diagnostic stage marker: reached the MMU-on C handoff. */
-	mov	x0, #0x55
-	str_l	x0, __early_cpu_boot_status, x3
+	str_l	xzr, __early_cpu_boot_status, x3
 	adr_l	x5, vectors
 	msr	vbar_el1, x5
 	isb
@@ -539,9 +537,6 @@ SYM_FUNC_START(__enable_mmu)
 	x20_early_uart_marker 0x48	// H: granule check and TTBR setup passed
 #endif
 	set_sctlr_el1	x0
-#ifdef CONFIG_ARCH_MEDIATEK
-	x20_early_uart_marker 0x49	// I: MMU enabled and identity-mapped UART works
-#endif
 
 	ret
 SYM_FUNC_END(__enable_mmu)

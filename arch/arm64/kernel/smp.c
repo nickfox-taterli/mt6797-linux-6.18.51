@@ -119,6 +119,11 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 	 */
 	secondary_data.task = idle;
 	update_cpu_boot_status(CPU_MMU_OFF);
+#ifdef CONFIG_ARCH_MEDIATEK
+	/* MT6797 vendor path flushes the boot task before releasing the CPU. */
+	dcache_clean_inval_poc((unsigned long)&secondary_data,
+			       (unsigned long)&secondary_data + sizeof(secondary_data));
+#endif
 
 	/* Now bring the CPU into our world */
 	ret = boot_secondary(cpu, idle);
