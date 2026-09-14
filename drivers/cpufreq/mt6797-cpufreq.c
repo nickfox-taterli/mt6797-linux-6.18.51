@@ -62,6 +62,8 @@ struct mt6797_cluster {
 	unsigned int method_count;
 	struct cpufreq_frequency_table *freq_table;
 	unsigned int current_khz;
+	unsigned int current_uv;
+	bool vproc_owner;
 	bool opp_added;
 };
 
@@ -124,6 +126,25 @@ static struct mt6797_cluster *mt6797_cluster_for_cpu(unsigned int cpu)
 			return &mt6797_data->cluster[i];
 
 	return NULL;
+}
+
+static unsigned int
+mt6797_required_voltage(struct mt6797_cpufreq *data,
+			       const struct mt6797_cluster *changed,
+			       unsigned int target_uv)
+{
+	unsigned int required = target_uv;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(data->cluster); i++) {
+		const struct mt6797_cluster *cluster = &data->cluster[i];
+
+		if (cluster == changed || cluster->vproc != changed->vproc)
+			continue;
+		required = max(required, cluster->current_uv);
+	}
+
+	return required;
 }
 
 static const struct mt6797_freq_method *
@@ -371,10 +392,12 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 		return ret;
 
 	/* This is the ordering used by the vendor set_cur_freq(). */
-	if (cluster->id != 2 && old->pos_div < target->pos_div)
+	if (cluster->id != 2 && old->pos_div < target->pos_div) {
 		mt6797_set_posdiv(data, cluster, target->pos_div);
-	if (old->clk_div < target->clk_div)
+	}
+	if (old->clk_div < target->clk_div) {
 		mt6797_set_clkdiv(data, cluster, target->clk_div);
+	}
 
 	if (cluster->id == 2) {
 		mt6797_clock_switch(data, cluster, 2);
@@ -384,7 +407,6 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 	} else {
 		ret = mt6797_set_direct_pll(data, cluster, target);
 	}
-
 	if (!ret && old->clk_div > target->clk_div)
 		mt6797_set_clkdiv(data, cluster, target->clk_div);
 	if (!ret && cluster->id != 2 && old->pos_div > target->pos_div)
@@ -418,6 +440,7 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 	struct dev_pm_opp *opp;
 	unsigned long target_hz;
 	unsigned int target_uv;
+	unsigned int required_uv;
 	int old_uv, ret;
 	bool voltage_up = false;
 
@@ -437,10 +460,10 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 	mutex_lock(&data->lock);
 	old = mt6797_method_for_rate(cluster, cluster->current_khz);
 	old_uv = regulator_get_voltage(cluster->vproc);
+	required_uv = mt6797_required_voltage(data, cluster, target_uv);
 
-	if (old_uv >= 0 && target_uv > old_uv) {
-		ret = regulator_set_voltage(cluster->vproc, target_uv,
-						    target_uv);
+	if (old_uv >= 0 && required_uv > old_uv) {
+		ret = regulator_set_voltage(cluster->vproc, required_uv, required_uv);
 		if (ret)
 			goto out_unlock;
 		voltage_up = true;
@@ -454,8 +477,10 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 	}
 
 	cluster->current_khz = target->khz;
-	if (old_uv >= 0 && target_uv < old_uv) {
-		ret = regulator_set_voltage(cluster->vproc, target_uv, target_uv);
+	cluster->current_uv = target_uv;
+	required_uv = mt6797_required_voltage(data, cluster, target_uv);
+	if (old_uv >= 0 && required_uv < old_uv) {
+		ret = regulator_set_voltage(cluster->vproc, required_uv, required_uv);
 		if (ret)
 			dev_warn(data->dev, "cluster%u left at %ukHz with voltage %duV: %d\n",
 				 cluster->id, target->khz, old_uv, ret);
@@ -528,6 +553,21 @@ static struct cpufreq_driver mt6797_cpufreq_driver = {
 	.exit = mt6797_cpufreq_exit,
 };
 
+/* TOPCKGEN is already owned by the common clock driver; share the mapping. */
+static void __iomem *mt6797_iomap_shared(struct platform_device *pdev,
+						 const char *name)
+{
+	struct resource *resource;
+	void __iomem *base;
+
+	resource = platform_get_resource_byname(pdev, IORESOURCE_MEM, name);
+	if (!resource)
+		return ERR_PTR(-EINVAL);
+
+	base = devm_ioremap(&pdev->dev, resource->start, resource_size(resource));
+	return base ? base : ERR_PTR(-ENOMEM);
+}
+
 static int mt6797_cpufreq_probe(struct platform_device *pdev)
 {
 	struct mt6797_cpufreq *data;
@@ -540,13 +580,13 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 
 	data->dev = &pdev->dev;
 	mutex_init(&data->lock);
-	data->mcumixed = devm_platform_ioremap_resource_byname(pdev, "mcumixed");
+	data->mcumixed = mt6797_iomap_shared(pdev, "mcumixed");
 	if (IS_ERR(data->mcumixed))
 		return PTR_ERR(data->mcumixed);
-	data->topckgen = devm_platform_ioremap_resource_byname(pdev, "topckgen");
+	data->topckgen = mt6797_iomap_shared(pdev, "topckgen");
 	if (IS_ERR(data->topckgen))
 		return PTR_ERR(data->topckgen);
-	data->semaphore = devm_platform_ioremap_resource_byname(pdev, "semaphore");
+	data->semaphore = mt6797_iomap_shared(pdev, "semaphore");
 	if (IS_ERR(data->semaphore))
 		return PTR_ERR(data->semaphore);
 
@@ -565,6 +605,7 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 
 	for (i = 0; i < ARRAY_SIZE(data->cluster); i++) {
 		struct mt6797_cluster *cluster = &data->cluster[i];
+		int voltage_uv;
 
 		cpumask_clear(&cluster->cpus);
 		cpumask_set_cpu(cluster->first_cpu, &cluster->cpus);
@@ -579,26 +620,34 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 			ret = -EPROBE_DEFER;
 			goto err_regulators;
 		}
-		cluster->vproc = regulator_get(cluster->cpu_dev, "cpu");
-		if (IS_ERR(cluster->vproc)) {
-			ret = dev_err_probe(&pdev->dev, PTR_ERR(cluster->vproc),
-					    "cluster%u: failed to get Vproc\n", i);
-			cluster->vproc = NULL;
-			goto err_regulators;
-		}
-		ret = regulator_enable(cluster->vproc);
-		if (ret) {
-			dev_err_probe(&pdev->dev, ret,
-				      "cluster%u: failed to enable Vproc\n", i);
-			regulator_put(cluster->vproc);
-			cluster->vproc = NULL;
-			goto err_regulators;
+		if (i == 1) {
+			/* LL and L share DA9214 BUCKA/VPROC1. */
+			cluster->vproc = data->cluster[0].vproc;
+		} else {
+			cluster->vproc = regulator_get(cluster->cpu_dev, "cpu");
+			if (IS_ERR(cluster->vproc)) {
+				ret = dev_err_probe(&pdev->dev, PTR_ERR(cluster->vproc),
+						    "cluster%u: failed to get Vproc\n", i);
+				cluster->vproc = NULL;
+				goto err_regulators;
+			}
+			cluster->vproc_owner = true;
+			ret = regulator_enable(cluster->vproc);
+			if (ret) {
+				dev_err_probe(&pdev->dev, ret,
+					      "cluster%u: failed to enable Vproc\n", i);
+				regulator_put(cluster->vproc);
+				cluster->vproc = NULL;
+				goto err_regulators;
+			}
 		}
 
 		cluster->current_khz = mt6797_method_for_rate(cluster,
 						      mt6797_read_rate(data, cluster))->khz;
+		voltage_uv = regulator_get_voltage(cluster->vproc);
+		cluster->current_uv = voltage_uv > 0 ? voltage_uv : 0;
 		dev_info(&pdev->dev, "cluster%u: current rate %ukHz, Vproc %duV\n",
-			 i, cluster->current_khz, regulator_get_voltage(cluster->vproc));
+			 i, cluster->current_khz, cluster->current_uv);
 	}
 
 	mt6797_data = data;
@@ -614,7 +663,7 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 
 err_regulators:
 	while (i--) {
-		if (data->cluster[i].vproc) {
+		if (data->cluster[i].vproc && data->cluster[i].vproc_owner) {
 			regulator_disable(data->cluster[i].vproc);
 			regulator_put(data->cluster[i].vproc);
 		}
@@ -630,8 +679,10 @@ static void mt6797_cpufreq_remove(struct platform_device *pdev)
 	cpufreq_unregister_driver(&mt6797_cpufreq_driver);
 	mt6797_data = NULL;
 	for (i = 0; i < ARRAY_SIZE(data->cluster); i++) {
-		regulator_disable(data->cluster[i].vproc);
-		regulator_put(data->cluster[i].vproc);
+		if (data->cluster[i].vproc && data->cluster[i].vproc_owner) {
+			regulator_disable(data->cluster[i].vproc);
+			regulator_put(data->cluster[i].vproc);
+		}
 	}
 }
 
