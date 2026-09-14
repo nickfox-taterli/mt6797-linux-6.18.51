@@ -54,6 +54,47 @@ static int __init cpu_psci_cpu_prepare(unsigned int cpu)
 #define MT6797_CCI_REQ				0x3
 #define MTK_SIP_KERNEL_MCUSYS_WRITE		0x82000201
 
+/*
+ * The vendor MT6797 port performs this part of the MP2 power-up in the
+ * kernel before it calls PSCI for CPU8/CPU9.  The remaining MP2 reset,
+ * PLL and core sequence is performed by the existing secure firmware.
+ */
+#define MT6797_SPM_BASE_ADDR			0x10006000
+#define MT6797_SPM_MP2_CPUSYS_PWR_CON		0x0218
+#define MT6797_SPM_CPU_EXT_BUCK_ISO		0x0290
+#define MT6797_WDT_BASE_ADDR			0x10007000
+#define MT6797_WDT_SWSYSRST			0x0018
+#define MT6797_IDVFS_BASE_ADDR			0x10222000
+#define MT6797_IDVFS_MP2_PLL_CON0		0x04a0
+#define MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST	0x0800
+#define MT6797_WDT_SWSYS_RST_KEY			0x88000000
+#define MTK_SIP_KERNEL_IDVFS_BIGIDVFSSRAMLDOSET	0xc20003bf
+
+/* The vendor MT6797 I2C6 controller is left clocked for the vproc buck. */
+#define MT6797_I2C6_BASE			0x1100e000
+#define MT6797_DA9214_ADDR			0x68
+#define MT6797_I2C_DATA_PORT			0x000
+#define MT6797_I2C_SLAVE_ADDR			0x004
+#define MT6797_I2C_INTR_MASK			0x008
+#define MT6797_I2C_INTR_STAT			0x00c
+#define MT6797_I2C_CONTROL			0x010
+#define MT6797_I2C_TRANSFER_LEN			0x014
+#define MT6797_I2C_TRANSAC_LEN			0x018
+#define MT6797_I2C_TIMING			0x020
+#define MT6797_I2C_START			0x024
+#define MT6797_I2C_FIFO_STAT			0x030
+#define MT6797_I2C_FIFO_ADDR_CLR		0x038
+#define MT6797_I2C_IO_CONFIG			0x040
+#define MT6797_I2C_HS				0x048
+#define MT6797_I2C_SOFTRESET			0x050
+#define MT6797_I2C_ACKERR			BIT(1)
+#define MT6797_I2C_HS_NACKERR			BIT(2)
+#define MT6797_I2C_TRANSAC_COMP			BIT(0)
+#define MT6797_I2C_CONTROL_RS			BIT(1)
+#define MT6797_I2C_CONTROL_CLK_EXT_EN		BIT(3)
+#define MT6797_I2C_CONTROL_DIR_CHANGE		BIT(4)
+#define MT6797_I2C_CONTROL_ACKERR_DET_EN	BIT(5)
+
 static void mt6797_smp_init(void)
 {
 	static bool initialized;
@@ -109,12 +150,203 @@ out:
 	if (mcucfg)
 		iounmap(mcucfg);
 }
+
+static int mt6797_i2c6_transfer(void __iomem *base, u8 addr,
+				const u8 *tx, u8 tx_len, u8 *rx, u8 rx_len)
+{
+	u16 control;
+	u16 status;
+	unsigned int i;
+
+	if ((!tx_len && !rx_len) || tx_len > 8 || rx_len > 8)
+		return -EINVAL;
+
+	/* Match the vendor I2C6 high-speed, push-pull FIFO transaction. */
+	control = MT6797_I2C_CONTROL_RS |
+		  MT6797_I2C_CONTROL_CLK_EXT_EN |
+		  MT6797_I2C_CONTROL_ACKERR_DET_EN;
+	if (tx_len && rx_len)
+		control |= MT6797_I2C_CONTROL_DIR_CHANGE;
+
+	writew(control, base + MT6797_I2C_CONTROL);
+	writew(0x10, base + MT6797_I2C_TIMING);
+	writew(0x0201, base + MT6797_I2C_HS);
+	writew(0x0000, base + MT6797_I2C_IO_CONFIG);
+	writew((addr << 1) | (tx_len ? 0 : 1),
+	       base + MT6797_I2C_SLAVE_ADDR);
+	writew(readw(base + MT6797_I2C_INTR_MASK) &
+	       ~(MT6797_I2C_HS_NACKERR | MT6797_I2C_ACKERR |
+		 MT6797_I2C_TRANSAC_COMP),
+	       base + MT6797_I2C_INTR_MASK);
+	writew(MT6797_I2C_HS_NACKERR | MT6797_I2C_ACKERR |
+	       MT6797_I2C_TRANSAC_COMP, base + MT6797_I2C_INTR_STAT);
+	writew(0x0001, base + MT6797_I2C_FIFO_ADDR_CLR);
+	writew((tx_len & 0xff) | ((rx_len << 8) & 0x1f00),
+	       base + MT6797_I2C_TRANSFER_LEN);
+	writew((tx_len && rx_len) ? 2 : 1, base + MT6797_I2C_TRANSAC_LEN);
+
+	while (tx_len--)
+		writew(*tx++, base + MT6797_I2C_DATA_PORT);
+
+	/* All controller registers must be ready before START. */
+	mb();
+	writew(0x0001, base + MT6797_I2C_START);
+
+	for (i = 0; i < 100000; i++) {
+		status = readw(base + MT6797_I2C_INTR_STAT);
+		if (status & (MT6797_I2C_HS_NACKERR | MT6797_I2C_ACKERR))
+			break;
+		if (status & MT6797_I2C_TRANSAC_COMP)
+			goto complete;
+		cpu_relax();
+	}
+
+	writew(0x0001, base + MT6797_I2C_SOFTRESET);
+	writew(MT6797_I2C_HS_NACKERR | MT6797_I2C_ACKERR |
+	       MT6797_I2C_TRANSAC_COMP, base + MT6797_I2C_INTR_STAT);
+	writew(0x0001, base + MT6797_I2C_FIFO_ADDR_CLR);
+	return i == 100000 ? -ETIMEDOUT : -EIO;
+
+complete:
+	if (rx_len) {
+		if (((readw(base + MT6797_I2C_FIFO_STAT) >> 4) & 0xf) < rx_len)
+			return -EIO;
+		while (rx_len--)
+			*rx++ = readw(base + MT6797_I2C_DATA_PORT) & 0xff;
+	}
+
+	return 0;
+}
+
+static int mt6797_da9214_read(void __iomem *i2c, u8 reg, u8 *value)
+{
+	return mt6797_i2c6_transfer(i2c, MT6797_DA9214_ADDR,
+				    &reg, 1, value, 1);
+}
+
+static int mt6797_da9214_write(void __iomem *i2c, u8 reg, u8 value)
+{
+	u8 data[2] = { reg, value };
+
+	return mt6797_i2c6_transfer(i2c, MT6797_DA9214_ADDR,
+				    data, ARRAY_SIZE(data), NULL, 0);
+}
+
+static int mt6797_da9214_enable_buck(void)
+{
+	void __iomem *i2c;
+	u8 page;
+	u8 buckb;
+	int ret;
+
+	i2c = ioremap(MT6797_I2C6_BASE, PAGE_SIZE);
+	if (!i2c)
+		return -ENOMEM;
+
+	ret = mt6797_da9214_read(i2c, 0x00, &page);
+	if (ret)
+		goto out;
+	ret = mt6797_da9214_write(i2c, 0x00, page & ~0x0f);
+	if (ret)
+		goto out;
+
+	ret = mt6797_da9214_read(i2c, 0x5e, &buckb);
+	if (ret)
+		goto out;
+	ret = mt6797_da9214_write(i2c, 0x5e, buckb | BIT(0));
+	if (!ret)
+		pr_info("MT6797 SMP: DA9214 buck B enabled (0x5e=0x%02x)\n",
+			(unsigned int)(buckb | BIT(0)));
+
+out:
+	iounmap(i2c);
+	return ret;
+}
+
+static int mt6797_big_cluster_prepare(void)
+{
+	static bool prepared;
+	void __iomem *spm;
+	void __iomem *wdt;
+	void __iomem *idvfs;
+	struct arm_smccc_res res;
+	u32 tmp;
+
+	if (prepared)
+		return 0;
+
+	spm = ioremap(MT6797_SPM_BASE_ADDR, PAGE_SIZE);
+	wdt = ioremap(MT6797_WDT_BASE_ADDR, PAGE_SIZE);
+	idvfs = ioremap(MT6797_IDVFS_BASE_ADDR, PAGE_SIZE);
+	if (!spm || !wdt || !idvfs) {
+		pr_err("MT6797 SMP: unable to map MP2 power registers\n");
+		if (idvfs)
+			iounmap(idvfs);
+		if (wdt)
+			iounmap(wdt);
+		if (spm)
+			iounmap(spm);
+		return -ENOMEM;
+	}
+
+	/* Matches vendor cpu_power_on_buck(), before PSCI CPU_ON. */
+	writel(readl(spm + MT6797_SPM_MP2_CPUSYS_PWR_CON) | BIT(0),
+	       spm + MT6797_SPM_MP2_CPUSYS_PWR_CON);
+
+	/* The vendor sequence deliberately performs this read as a barrier. */
+	(void)readl(idvfs + MT6797_IDVFS_MP2_PLL_CON0);
+
+	tmp = readl(wdt + MT6797_WDT_SWSYSRST);
+	writel(tmp | MT6797_WDT_SWSYS_RST_KEY |
+	       MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST,
+	       wdt + MT6797_WDT_SWSYSRST);
+
+	/* Vendor cpu_power_on_buck(hotplug=1) enables the external vproc buck. */
+	if (mt6797_da9214_enable_buck()) {
+		pr_err("MT6797 SMP: DA9214 buck B enable failed\n");
+		iounmap(idvfs);
+		iounmap(wdt);
+		iounmap(spm);
+		return -EIO;
+	}
+	udelay(1000);
+
+	writel(readl(spm + MT6797_SPM_CPU_EXT_BUCK_ISO) & ~0x3U,
+	       spm + MT6797_SPM_CPU_EXT_BUCK_ISO);
+
+	tmp = readl(wdt + MT6797_WDT_SWSYSRST);
+	writel((tmp & ~MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST) |
+	       MT6797_WDT_SWSYS_RST_KEY,
+	       wdt + MT6797_WDT_SWSYSRST);
+
+	udelay(240);
+	arm_smccc_smc(MTK_SIP_KERNEL_IDVFS_BIGIDVFSSRAMLDOSET,
+		      110000, 0, 0, 0, 0, 0, 0, &res);
+	if ((long)res.a0 < 0)
+		pr_warn("MT6797 SMP: MP2 SRAM LDO SMC returned %ld\n",
+			(long)res.a0);
+	udelay(240);
+
+	iounmap(idvfs);
+	iounmap(wdt);
+	iounmap(spm);
+	prepared = true;
+	pr_info("MT6797 SMP: MP2 power preconditioning complete\n");
+
+	return 0;
+}
 #endif
 
 static int cpu_psci_cpu_boot(unsigned int cpu)
 {
 #ifdef CONFIG_ARCH_MEDIATEK
 	mt6797_smp_init();
+	if (of_machine_is_compatible("mediatek,mt6797") && cpu >= 8) {
+		int prep_err = mt6797_big_cluster_prepare();
+
+		if (prep_err)
+			return prep_err;
+	}
 #endif
 	phys_addr_t pa_secondary_entry = __pa_symbol(secondary_entry);
 	int err = psci_ops.cpu_on(cpu_logical_map(cpu), pa_secondary_entry);
