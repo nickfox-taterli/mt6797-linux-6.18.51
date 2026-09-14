@@ -536,7 +536,13 @@ SYM_FUNC_START(__enable_mmu)
 #ifdef CONFIG_ARCH_MEDIATEK
 	x20_early_uart_marker 0x48	// H: granule check and TTBR setup passed
 #endif
+#ifdef CONFIG_ARCH_MEDIATEK
+	/* MT6797 vendor __turn_mmu_on only writes SCTLR and synchronizes. */
+	msr	sctlr_el1, x0
+	isb
+#else
 	set_sctlr_el1	x0
+#endif
 
 	ret
 SYM_FUNC_END(__enable_mmu)
