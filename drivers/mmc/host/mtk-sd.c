@@ -76,6 +76,7 @@
 #define SDC_ACMD_RESP    0x80
 #define DMA_SA_H4BIT     0x8c
 #define MSDC_DMA_SA      0x90
+#define MSDC_DMA_LEN     0xa8
 #define MSDC_DMA_CTRL    0x98
 #define MSDC_DMA_CFG     0x9c
 #define MSDC_PATCH_BIT   0xb0
@@ -859,6 +860,24 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 
 	sg = data->sg;
 
+	/* MT6797's vendor driver uses Basic DMA for a single mapped segment. */
+	if (data->sg_count == 1) {
+		dma_address = sg_dma_address(sg);
+		dma_len = sg_dma_len(sg);
+
+		sdr_clr_bits(host->base + MSDC_DMA_CFG, MSDC_DMA_CFG_DECSEN);
+		sdr_set_field(host->base + MSDC_DMA_CTRL,
+			      MSDC_DMA_CTRL_BRUSTSZ, MSDC_BURST_64B);
+		sdr_clr_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_MODE);
+		sdr_set_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF);
+		writel(dma_len, host->base + MSDC_DMA_LEN);
+		if (host->dev_comp->support_64g)
+			sdr_set_field(host->base + DMA_SA_H4BIT, DMA_ADDR_HIGH_4BIT,
+				      upper_32_bits(dma_address) & 0xf);
+		writel(lower_32_bits(dma_address), host->base + MSDC_DMA_SA);
+		return;
+	}
+
 	gpd = dma->gpd;
 	bd = dma->bd;
 
@@ -903,6 +922,7 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 	}
 
 	sdr_set_field(host->base + MSDC_DMA_CFG, MSDC_DMA_CFG_DECSEN, 1);
+	sdr_clr_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF);
 	dma_ctrl = readl_relaxed(host->base + MSDC_DMA_CTRL);
 	dma_ctrl &= ~(MSDC_DMA_CTRL_BRUSTSZ | MSDC_DMA_CTRL_MODE);
 	dma_ctrl |= (MSDC_BURST_64B << 12 | BIT(8));
