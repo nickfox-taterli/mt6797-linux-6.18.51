@@ -182,13 +182,12 @@
 };
 
 &mmc0 {
-	/* Diagnostic probe: exercise the vendor-supported 1.8 V HS200 path. */
+	/* Conservative control profile while MT6797 HS400 read timing is debugged. */
 	bus-width = <8>;
-	max-frequency = <200000000>;
+	max-frequency = <52000000>;
 	cap-mmc-highspeed;
 	mmc-ddr-1_8v;
 	mmc-hs200-1_8v;
-	mmc-hs400-1_8v;
 	mediatek,latch-ck = <1>;
 	mediatek,tuning-step = <64>;
 	non-removable;
