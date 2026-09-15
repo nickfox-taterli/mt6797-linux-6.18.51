@@ -182,7 +182,7 @@
 };
 
 &mmc0 {
-	/* PIO isolates MT6797 HS400 timing from the DMA/cache path. */
+	/* Keep HS400 timing fixed while the synchronous DMA path is checked. */
 	bus-width = <8>;
 	max-frequency = <200000000>;
 	cap-mmc-highspeed;
@@ -196,7 +196,6 @@
 	no-sdio;
 	mediatek,disable-hsq;
 	mediatek,disable-async-dma;
-	mediatek,force-pio;
 	vmmc-supply = <&reg_vmmc>;
 	vqmmc-supply = <&reg_vqmmc>;
 	pinctrl-names = "default", "state_uhs";
