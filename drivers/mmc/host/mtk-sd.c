@@ -2447,13 +2447,23 @@ static inline void msdc_set_data_sample_edge(struct msdc_host *host, bool rising
 	u32 value = rising ? 0 : 1;
 
 	if (host->dev_comp->vendor_timing_init) {
-		/* MT6797 has separate FIFO edge selectors in PB0/PB2. */
-		sdr_set_field(host->base + MSDC_PATCH_BIT,
-			      MSDC_PATCH_BIT_RD_DAT_SEL, value);
-		sdr_set_field(host->base + MSDC_PATCH_BIT2,
-			      MSDC_PB2_CFGCRCSTSEDGE, value);
-		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_DSPL, value);
-		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL, value);
+		/*
+		 * MT6797 HS400 follows the vendor clock path: read data edge is
+		 * selected by IOCON.R_D_SMPL.  PB0[3] is fixed by the HS400
+		 * clock-mode setup and write CRC uses the eMMC50 edge selector.
+		 */
+		if (host->hs400_mode) {
+			sdr_set_field(host->base + MSDC_IOCON,
+				      MSDC_IOCON_DSPL, value);
+		} else {
+			/* Keep the existing non-HS400 MTK tuning behavior. */
+			sdr_set_field(host->base + MSDC_PATCH_BIT,
+				      MSDC_PATCH_BIT_RD_DAT_SEL, value);
+			sdr_set_field(host->base + MSDC_PATCH_BIT2,
+				      MSDC_PB2_CFGCRCSTSEDGE, value);
+			sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_DSPL, value);
+			sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL, value);
+		}
 	} else if (host->dev_comp->support_new_rx) {
 		sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL, value);
 		sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_CFGCRCSTSEDGE, value);
