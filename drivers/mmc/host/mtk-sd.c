@@ -561,6 +561,7 @@ struct msdc_host {
 	bool disable_hsq;	/* disable the software queue for board diagnostics */
 	bool disable_async_dma;	/* map data only for the active request */
 	bool force_pio;		/* bypass DMA for controller diagnostics */
+	bool force_basic_dma;	/* keep MT6797 requests to one Basic-DMA SG */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	u8 pio_buf[MSDC_FIFO_SIZE];
 	struct msdc_save_para save_para; /* used when gate HCLK */
@@ -3392,6 +3393,8 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 							 "mediatek,disable-async-dma");
 	host->force_pio = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,force-pio");
+	host->force_basic_dma = of_property_read_bool(pdev->dev.of_node,
+						 "mediatek,force-basic-dma");
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3542,6 +3545,8 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "using synchronous DMA mappings\n");
 	if (host->force_pio)
 		dev_info(&pdev->dev, "using PIO data transfers\n");
+	if (host->force_basic_dma)
+		dev_info(&pdev->dev, "using single-segment Basic DMA\n");
 
 	host->dev = &pdev->dev;
 	host->src_clk_freq = clk_get_rate(host->src_clk);
@@ -3569,7 +3574,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	if (host->cqhci)
 		mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
 	/* MMC core transfer sizes tunable parameters */
-	mmc->max_segs = MAX_BD_NUM;
+	mmc->max_segs = host->force_basic_dma ? 1 : MAX_BD_NUM;
 	if (host->dev_comp->support_64g)
 		mmc->max_seg_size = BDMA_DESC_BUFLEN_EXT;
 	else
