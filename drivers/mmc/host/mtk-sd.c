@@ -921,8 +921,19 @@ static bool msdc_data_prepared(struct mmc_data *data)
 
 static void msdc_unprepare_data(struct msdc_host *host, struct mmc_data *data)
 {
-	if (data->host_cookie & MSDC_ASYNC_FLAG)
+	if (data->host_cookie & MSDC_ASYNC_FLAG) {
+		/*
+		 * A pre_req mapping keeps the buffer owned by the DMA API until
+		 * post_req().  The MMC block layer may, however, inspect a read
+		 * buffer as soon as the host reports completion.  Return ownership
+		 * to the CPU at that boundary while retaining the mapping for the
+		 * later unmap in post_req().
+		 */
+		if (data->host_cookie & MSDC_PREPARE_FLAG)
+			dma_sync_sg_for_cpu(host->dev, data->sg, data->sg_len,
+					    mmc_get_dma_dir(data));
 		return;
+	}
 
 	if (data->host_cookie & MSDC_PREPARE_FLAG) {
 		dma_unmap_sg(host->dev, data->sg, data->sg_len,
