@@ -2880,7 +2880,6 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	struct msdc_host *host = mmc_priv(mmc);
 	struct msdc_delay_phase dly1_delay;
 	u32 val, result_dly1 = 0;
-	u8 *ext_csd;
 	int i, ret;
 
 	if (host->top_base) {
@@ -2901,11 +2900,10 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 		else
 			sdr_set_field(host->base + PAD_DS_TUNE,
 				      PAD_DS_TUNE_DLY1, i);
-		ret = mmc_get_ext_csd(card, &ext_csd);
-		if (!ret) {
+		/* Vendor MT6797 autok uses CMD17 here, not only EXT_CSD. */
+		ret = mmc_read_tuning(mmc, 512, 1);
+		if (!ret)
 			result_dly1 |= BIT(i);
-			kfree(ext_csd);
-		}
 	}
 	host->hs400_tuning = false;
 
