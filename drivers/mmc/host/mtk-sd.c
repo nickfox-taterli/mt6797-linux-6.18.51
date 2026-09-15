@@ -86,6 +86,10 @@
 #define MSDC_DAT_RDDLY3  0x104
 #define PAD_DS_TUNE      0x188
 #define PAD_CMD_TUNE     0x18c
+#define EMMC50_PAD_DAT01_TUNE 0x190
+#define EMMC50_PAD_DAT23_TUNE 0x194
+#define EMMC50_PAD_DAT45_TUNE 0x198
+#define EMMC50_PAD_DAT67_TUNE 0x19c
 #define EMMC51_CFG0	 0x204
 #define EMMC50_CFG0      0x208
 #define EMMC50_CFG1      0x20c
@@ -119,6 +123,7 @@
 #define MSDC_CFG_CKMOD          GENMASK(17, 16)	/* RW */
 #define MSDC_CFG_HS400_CK_MODE  BIT(18)	/* RW */
 #define MSDC_CFG_HS400_CK_MODE_EXTRA  BIT(22)	/* RW */
+#define MSDC_CFG_START_BIT      GENMASK(24, 23)	/* RW */
 #define MSDC_CFG_CKDIV_EXTRA    GENMASK(19, 8)	/* RW */
 #define MSDC_CFG_CKMOD_EXTRA    GENMASK(21, 20)	/* RW */
 
@@ -303,6 +308,17 @@
 #define PAD_DS_TUNE_DLY3	  GENMASK(16, 12) /* RW */
 
 #define PAD_CMD_TUNE_RX_DLY3	  GENMASK(5, 1)   /* RW */
+#define PAD_CMD_TUNE_TX_DLY	  GENMASK(10, 6)  /* RW */
+
+/* EMMC50_PAD_DATxx_TUNE TX delay masks */
+#define PAD_DAT0_TX_DLY	       GENMASK(10, 6)  /* RW */
+#define PAD_DAT1_TX_DLY	       GENMASK(26, 22) /* RW */
+#define PAD_DAT2_TX_DLY	       GENMASK(10, 6)  /* RW */
+#define PAD_DAT3_TX_DLY	       GENMASK(26, 22) /* RW */
+#define PAD_DAT4_TX_DLY	       GENMASK(10, 6)  /* RW */
+#define PAD_DAT5_TX_DLY	       GENMASK(26, 22) /* RW */
+#define PAD_DAT6_TX_DLY	       GENMASK(10, 6)  /* RW */
+#define PAD_DAT7_TX_DLY	       GENMASK(26, 22) /* RW */
 
 /* EMMC51_CFG0 mask */
 #define CMDQ_RDAT_CNT		  GENMASK(21, 12) /* RW */
@@ -311,6 +327,7 @@
 #define EMMC50_CFG_CRCSTS_EDGE    BIT(3)   /* RW */
 #define EMMC50_CFG_CFCSTS_SEL     BIT(4)   /* RW */
 #define EMMC50_CFG_CMD_RESP_SEL   BIT(9)   /* RW */
+#define EMMC50_CFG_TXSKEW_SEL     BIT(29)  /* RW */
 
 /* EMMC_CFG0 mask (the pre-eMMC5 boot-control register) */
 #define EMMC_CFG0_BOOTSUPP        BIT(15)  /* RW */
@@ -1020,6 +1037,8 @@ static void msdc_new_tx_setting(struct msdc_host *host)
 	writel(val, host->top_base + LOOP_TEST_CONTROL);
 }
 
+static void msdc_mt6797_hs400_timing_init(struct msdc_host *host);
+
 static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 {
 	struct mmc_host *mmc = mmc_from_priv(host);
@@ -1151,6 +1170,8 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 		sdr_set_field(host->base + tune_reg,
 			      MSDC_PAD_TUNE_CMDRRDLY,
 			      host->hs400_cmd_int_delay);
+	if (timing == MMC_TIMING_MMC_HS400)
+		msdc_mt6797_hs400_timing_init(host);
 	if (host->dev_comp->support_new_tx && timing_changed)
 		msdc_new_tx_setting(host);
 
@@ -2455,6 +2476,56 @@ static void msdc_mt6797_hs200_tuning_init(struct msdc_host *host)
 		      MSDC_PB2_RESPSTSENSEL, 3);
 	sdr_set_field(host->base + MSDC_PATCH_BIT2,
 		      MSDC_PB2_CRCSTSENSEL, 3);
+}
+
+static void msdc_mt6797_hs400_timing_init(struct msdc_host *host)
+{
+	if (!host->dev_comp->vendor_timing_init)
+		return;
+
+	/* Mirror Vendor autok_path_sel()/autok_init_hs400(). */
+	sdr_clr_bits(host->base + MSDC_IOCON,
+		     MSDC_IOCON_RSPL | MSDC_IOCON_DSPL |
+		     MSDC_IOCON_DDLSEL | MSDC_IOCON_DSPLSEL |
+		     MSDC_IOCON_W_DSPL | MSDC_IOCON_W_DSPLSEL);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_RXDLYSEL);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
+		     MSDC_PATCH_BIT2_CFGRESP | MSDC_PATCH_BIT2_CFGCRCSTS |
+		     MSDC_PB2_CFGCRCSTSEDGE);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2,
+		      MSDC_PB2_RESPSTSENSEL, 5);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2,
+		      MSDC_PB2_CRCSTSENSEL, 5);
+
+	/* HS400 starts data on both clock edges and returns CRC through eMMC50. */
+	sdr_set_field(host->base + MSDC_CFG, MSDC_CFG_START_BIT, 2);
+	sdr_set_bits(host->base + EMMC50_CFG0, EMMC50_CFG_CFCSTS_SEL);
+	sdr_clr_bits(host->base + EMMC50_CFG0,
+		     EMMC50_CFG_PADCMD_LATCHCK | EMMC50_CFG_CMD_RESP_SEL |
+		     EMMC50_CFG_CRCSTS_EDGE | EMMC50_CFG_TXSKEW_SEL);
+
+	/* Vendor autok_msdc_tx_setting() defaults for the 200 MHz HS400 path. */
+	sdr_set_field(host->base + MSDC_PAD_TUNE0,
+		      MSDC_PAD_TUNE_CLKTDLY, 0);
+	sdr_set_field(host->base + PAD_CMD_TUNE, PAD_CMD_TUNE_TX_DLY, 9);
+	sdr_set_field(host->base + EMMC50_PAD_DAT01_TUNE,
+		      PAD_DAT0_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT01_TUNE,
+		      PAD_DAT1_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT23_TUNE,
+		      PAD_DAT2_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT23_TUNE,
+		      PAD_DAT3_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT45_TUNE,
+		      PAD_DAT4_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT45_TUNE,
+		      PAD_DAT5_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT67_TUNE,
+		      PAD_DAT6_TX_DLY, 0);
+	sdr_set_field(host->base + EMMC50_PAD_DAT67_TUNE,
+		      PAD_DAT7_TX_DLY, 0);
 }
 
 static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
