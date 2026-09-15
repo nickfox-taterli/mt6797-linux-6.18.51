@@ -130,6 +130,7 @@
 #define MSDC_IOCON_DDR50CKD     BIT(4)	/* RW */
 #define MSDC_IOCON_DSPLSEL      BIT(5)	/* RW */
 #define MSDC_IOCON_W_DSPL       BIT(8)	/* RW */
+#define MSDC_IOCON_W_DSPLSEL    BIT(9)	/* RW */
 #define MSDC_IOCON_D0SPL        BIT(16)	/* RW */
 #define MSDC_IOCON_D1SPL        BIT(17)	/* RW */
 #define MSDC_IOCON_D2SPL        BIT(18)	/* RW */
@@ -2368,6 +2369,15 @@ static inline void msdc_set_cmd_delay(struct msdc_host *host, u32 value)
 			sdr_set_field(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST,
 				      MSDC_PAD_TUNE_CMDRDLY2, value - PAD_DELAY_HALF);
 		}
+
+		/* MT6797 selects the active delay bank explicitly. */
+		if (host->dev_comp->vendor_timing_init) {
+			sdr_set_field(host->base + tune_reg, MSDC_PAD_TUNE_CMD_SEL,
+				      value > 0);
+			sdr_set_field(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST,
+				      MSDC_PAD_TUNE_CMD2_SEL,
+				      value > PAD_DELAY_HALF);
+		}
 	}
 }
 
@@ -2399,6 +2409,15 @@ static inline void msdc_set_data_delay(struct msdc_host *host, u32 value)
 			sdr_set_field(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST,
 				      MSDC_PAD_TUNE_DATRRDLY2, value - PAD_DELAY_HALF);
 		}
+
+		/* MT6797 selects the active delay bank explicitly. */
+		if (host->dev_comp->vendor_timing_init) {
+			sdr_set_field(host->base + tune_reg, MSDC_PAD_TUNE_RD_SEL,
+				      value > 0);
+			sdr_set_field(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST,
+				      MSDC_PAD_TUNE_RD2_SEL,
+				      value > PAD_DELAY_HALF);
+		}
 	}
 }
 
@@ -2406,13 +2425,36 @@ static inline void msdc_set_data_sample_edge(struct msdc_host *host, bool rising
 {
 	u32 value = rising ? 0 : 1;
 
-	if (host->dev_comp->support_new_rx) {
+	if (host->dev_comp->vendor_timing_init) {
+		/* MT6797 has separate FIFO edge selectors in PB0/PB2. */
+		sdr_set_field(host->base + MSDC_PATCH_BIT,
+			      MSDC_PATCH_BIT_RD_DAT_SEL, value);
+		sdr_set_field(host->base + MSDC_PATCH_BIT2,
+			      MSDC_PB2_CFGCRCSTSEDGE, value);
+		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_DSPL, value);
+		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL, value);
+	} else if (host->dev_comp->support_new_rx) {
 		sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL, value);
 		sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_CFGCRCSTSEDGE, value);
 	} else {
 		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_DSPL, value);
 		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_W_DSPL, value);
 	}
+}
+
+static void msdc_mt6797_hs200_tuning_init(struct msdc_host *host)
+{
+	if (!host->dev_comp->vendor_timing_init)
+		return;
+
+	/* Mirror Vendor autok_init_hs200()/autok_path_sel(). */
+	sdr_clr_bits(host->base + MSDC_IOCON,
+		     MSDC_IOCON_DSPLSEL | MSDC_IOCON_W_DSPLSEL);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2,
+		      MSDC_PB2_RESPSTSENSEL, 3);
+	sdr_set_field(host->base + MSDC_PATCH_BIT2,
+		      MSDC_PB2_CRCSTSENSEL, 3);
 }
 
 static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
@@ -2672,6 +2714,9 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	struct msdc_host *host = mmc_priv(mmc);
 	int ret;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
+
+	if (mmc->ios.timing == MMC_TIMING_MMC_HS200)
+		msdc_mt6797_hs200_tuning_init(host);
 
 	if (host->dev_comp->data_tune && host->dev_comp->async_fifo) {
 		ret = msdc_tune_together(mmc, opcode);
