@@ -2975,12 +2975,7 @@ static int msdc_mt6797_hs400_tune_data(struct mmc_host *mmc,
 		return -EIO;
 	}
 
-	/*
-	 * MT6797 boards may report equal windows on both data edges.  The
-	 * Vendor board profile uses the falling edge in that tie case; keep
-	 * the choice deterministic instead of always biasing rising.
-	 */
-	if (fall_phase.maxlen >= rise_phase.maxlen) {
+	if (fall_phase.maxlen > rise_phase.maxlen) {
 		msdc_set_data_sample_edge(host, false);
 		final_delay = fall_phase.final_phase;
 	} else {
