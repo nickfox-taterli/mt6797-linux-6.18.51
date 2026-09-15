@@ -2880,7 +2880,7 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	struct msdc_host *host = mmc_priv(mmc);
 	struct msdc_delay_phase dly1_delay;
 	u32 val, result_dly1 = 0;
-	int i, ret;
+	int i, j, ret, data_delay = -1;
 
 	if (host->top_base) {
 		sdr_set_bits(host->top_base + EMMC50_PAD_DS_TUNE,
@@ -2893,6 +2893,24 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	}
 
 	host->hs400_tuning = true;
+	/* Vendor MT6797 autok finds the DAT pad boundary before DS tuning. */
+	for (i = 0; i < PAD_DELAY_HALF; i++) {
+		msdc_set_data_delay(host, i);
+		for (j = 0; j < 5; j++) {
+			ret = mmc_read_tuning(mmc, 512, 1);
+			if (ret) {
+				data_delay = i;
+				break;
+			}
+		}
+		if (data_delay >= 0)
+			break;
+	}
+	if (data_delay >= 0)
+		msdc_set_data_delay(host, data_delay);
+	dev_info(host->dev, "MT6797 HS400 DAT boundary: delay=%d\n",
+		 data_delay);
+
 	for (i = 0; i < PAD_DELAY_HALF; i++) {
 		if (host->top_base)
 			sdr_set_field(host->top_base + EMMC50_PAD_DS_TUNE,
