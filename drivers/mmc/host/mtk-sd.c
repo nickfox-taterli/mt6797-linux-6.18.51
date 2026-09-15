@@ -370,6 +370,13 @@
 #define PAD_DS_DLY1		GENMASK(14, 10)	/* RW */
 #define PAD_DS_DLY3		GENMASK(4, 0)	/* RW */
 
+/* MT6797 uses the original eMMC50 DS register layout. */
+#define MT6797_PAD_DS_DLY_SEL	BIT(0)	/* RW */
+#define MT6797_PAD_DS_DLY2_SEL	BIT(1)	/* RW */
+#define MT6797_PAD_DS_DLY1	GENMASK(6, 2)	/* RW */
+#define MT6797_PAD_DS_DLY2	GENMASK(11, 7)	/* RW */
+#define MT6797_PAD_DS_DLY3	GENMASK(16, 12)	/* RW */
+
 /* LOOP_TEST_CONTROL mask */
 #define TEST_LOOP_DSCLK_MUX_SEL        BIT(0)	/* RW */
 #define TEST_LOOP_LATCH_MUX_SEL        BIT(1)	/* RW */
@@ -2865,7 +2872,9 @@ static int msdc_prepare_hs400_tuning(struct mmc_host *mmc, struct mmc_ios *ios)
 	} else {
 		if (host->hs400_ds_dly3)
 			sdr_set_field(host->base + PAD_DS_TUNE,
-				      PAD_DS_TUNE_DLY3, host->hs400_ds_dly3);
+				      host->dev_comp->vendor_timing_init ?
+				      MT6797_PAD_DS_DLY3 : PAD_DS_TUNE_DLY3,
+				      host->hs400_ds_dly3);
 		if (host->hs400_ds_delay)
 			writel(host->hs400_ds_delay, host->base + PAD_DS_TUNE);
 	}
@@ -2887,6 +2896,9 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 			     PAD_DS_DLY_SEL);
 		sdr_clr_bits(host->top_base + EMMC50_PAD_DS_TUNE,
 			     PAD_DS_DLY2_SEL);
+	} else if (host->dev_comp->vendor_timing_init) {
+		sdr_set_bits(host->base + PAD_DS_TUNE, MT6797_PAD_DS_DLY_SEL);
+		sdr_clr_bits(host->base + PAD_DS_TUNE, MT6797_PAD_DS_DLY2_SEL);
 	} else {
 		sdr_set_bits(host->base + PAD_DS_TUNE, PAD_DS_TUNE_DLY_SEL);
 		sdr_clr_bits(host->base + PAD_DS_TUNE, PAD_DS_TUNE_DLY2_SEL);
@@ -2917,7 +2929,8 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 				      PAD_DS_DLY1, i);
 		else
 			sdr_set_field(host->base + PAD_DS_TUNE,
-				      PAD_DS_TUNE_DLY1, i);
+				      host->dev_comp->vendor_timing_init ?
+				      MT6797_PAD_DS_DLY1 : PAD_DS_TUNE_DLY1, i);
 		/* Vendor MT6797 autok uses CMD17 here, not only EXT_CSD. */
 		ret = mmc_read_tuning(mmc, 512, 1);
 		if (!ret)
@@ -2935,7 +2948,9 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 			      PAD_DS_DLY1, dly1_delay.final_phase);
 	else
 		sdr_set_field(host->base + PAD_DS_TUNE,
-			      PAD_DS_TUNE_DLY1, dly1_delay.final_phase);
+			      host->dev_comp->vendor_timing_init ?
+			      MT6797_PAD_DS_DLY1 : PAD_DS_TUNE_DLY1,
+			      dly1_delay.final_phase);
 
 	if (host->top_base)
 		val = readl(host->top_base + EMMC50_PAD_DS_TUNE);
