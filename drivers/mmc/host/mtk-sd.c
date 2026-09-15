@@ -2867,6 +2867,124 @@ static int msdc_prepare_hs400_tuning(struct mmc_host *mmc, struct mmc_ios *ios)
 	return 0;
 }
 
+static int msdc_mt6797_hs400_tune_cmd(struct mmc_host *mmc,
+					       struct mmc_card *card)
+{
+	struct msdc_host *host = mmc_priv(mmc);
+	struct msdc_delay_phase rise_phase, fall_phase;
+	u64 rise_delay = 0, fall_delay = 0;
+	u32 steps = min_t(u32, host->tuning_step, PAD_DELAY_FULL);
+	u8 final_delay;
+	int edge, i, retry, ret;
+
+	for (edge = 0; edge < 2; edge++) {
+		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_RSPL, edge);
+		for (i = 0; i < steps; i++) {
+			msdc_set_cmd_delay(host, i);
+			ret = -EIO;
+			for (retry = 0; retry < 3; retry++) {
+				ret = mmc_send_status(card, NULL);
+				if (!ret)
+					break;
+			}
+			if (!ret) {
+				if (edge)
+					fall_delay |= BIT_ULL(i);
+				else
+					rise_delay |= BIT_ULL(i);
+			}
+		}
+	}
+
+	rise_phase = get_best_delay(host, rise_delay);
+	fall_phase = get_best_delay(host, fall_delay);
+	if (!rise_phase.maxlen && !fall_phase.maxlen) {
+		dev_err(host->dev,
+			"MT6797 HS400 command tuning found no valid phase\n");
+		return -EIO;
+	}
+
+	if (fall_phase.maxlen > rise_phase.maxlen) {
+		sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_RSPL);
+		final_delay = fall_phase.final_phase;
+	} else {
+		sdr_clr_bits(host->base + MSDC_IOCON, MSDC_IOCON_RSPL);
+		final_delay = rise_phase.final_phase;
+	}
+	msdc_set_cmd_delay(host, final_delay);
+
+	dev_info(host->dev,
+		 "MT6797 HS400 CMD tune: rise=%016llx fall=%016llx "
+		 "edge=%u delay=%u\n",
+		 (unsigned long long)rise_delay,
+		 (unsigned long long)fall_delay,
+		 readl(host->base + MSDC_IOCON) & MSDC_IOCON_RSPL ? 1 : 0,
+		 final_delay);
+
+	return 0;
+}
+
+static int msdc_mt6797_hs400_tune_data(struct mmc_host *mmc,
+						struct mmc_card *card)
+{
+	struct msdc_host *host = mmc_priv(mmc);
+	struct msdc_delay_phase rise_phase, fall_phase;
+	u64 rise_delay = 0, fall_delay = 0;
+	u32 steps = min_t(u32, host->tuning_step, PAD_DELAY_FULL);
+	u8 final_delay;
+	u8 *ext_csd;
+	int edge, i, retry, ret;
+
+	for (edge = 0; edge < 2; edge++) {
+		msdc_set_data_sample_edge(host, edge == 0);
+		for (i = 0; i < steps; i++) {
+			msdc_set_data_delay(host, i);
+			ret = -EIO;
+			for (retry = 0; retry < 3; retry++) {
+				ext_csd = NULL;
+				ret = mmc_get_ext_csd(card, &ext_csd);
+				if (!ret) {
+					kfree(ext_csd);
+					break;
+				}
+			}
+			if (!ret) {
+				if (edge)
+					fall_delay |= BIT_ULL(i);
+				else
+					rise_delay |= BIT_ULL(i);
+			}
+		}
+	}
+
+	rise_phase = get_best_delay(host, rise_delay);
+	fall_phase = get_best_delay(host, fall_delay);
+	if (!rise_phase.maxlen && !fall_phase.maxlen) {
+		dev_err(host->dev,
+			"MT6797 HS400 data tuning found no valid phase\n");
+		return -EIO;
+	}
+
+	if (fall_phase.maxlen > rise_phase.maxlen) {
+		msdc_set_data_sample_edge(host, false);
+		final_delay = fall_phase.final_phase;
+	} else {
+		msdc_set_data_sample_edge(host, true);
+		final_delay = rise_phase.final_phase;
+	}
+	msdc_set_data_delay(host, final_delay);
+
+	dev_info(host->dev,
+		 "MT6797 HS400 DATA tune: rise=%016llx fall=%016llx "
+		 "edge=%u delay=%u\n",
+		 (unsigned long long)rise_delay,
+		 (unsigned long long)fall_delay,
+		 readl(host->base + MSDC_PATCH_BIT) & MSDC_PATCH_BIT_RD_DAT_SEL ? 1 : 0,
+		 final_delay);
+
+	return 0;
+}
+
 static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -2886,6 +3004,13 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	}
 
 	host->hs400_tuning = true;
+	ret = msdc_mt6797_hs400_tune_cmd(mmc, card);
+	if (ret)
+		goto fail_tuning;
+	ret = msdc_mt6797_hs400_tune_data(mmc, card);
+	if (ret)
+		goto fail_tuning;
+
 	for (i = 0; i < PAD_DELAY_HALF; i++) {
 		if (host->top_base)
 			sdr_set_field(host->top_base + EMMC50_PAD_DS_TUNE,
@@ -2921,6 +3046,11 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	dev_info(host->dev, "Final PAD_DS_TUNE: 0x%x\n", val);
 
 	return 0;
+
+fail_tuning:
+	host->hs400_tuning = false;
+	dev_err(host->dev, "Failed to tune MT6797 HS400 command/data path\n");
+	return ret;
 
 fail:
 	dev_err(host->dev, "Failed to tuning DS pin delay!\n");
