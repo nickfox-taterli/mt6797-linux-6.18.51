@@ -1936,7 +1936,7 @@ static void msdc_mt6797_vendor_timing_init(struct msdc_host *host)
 	writel(0x00000000, host->base + MSDC_DAT_RDDLY3);
 	writel(0x403c000f, host->base + MSDC_PATCH_BIT);
 	writel(0xfffe00c9, host->base + MSDC_PATCH_BIT1);
-	writel(0x14801803, host->base + MSDC_PATCH_BIT2);
+	writel(0x14881803, host->base + MSDC_PATCH_BIT2);
 
 	/* Vendor msdc_init_tune_setting()/autok_path_sel() defaults. */
 	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_RESPWAIT, 3);
