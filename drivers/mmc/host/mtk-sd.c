@@ -973,12 +973,14 @@ static int msdc_pio_transfer(struct msdc_host *host, struct mmc_data *data)
 	size_t total_len = (size_t)data->blocks * data->blksz;
 	size_t pos = 0;
 	unsigned long timeout = jiffies + DAT_TIMEOUT;
+	bool xfer_done = false;
 	u32 ints, fifo, chunk, i, value;
 	size_t copied;
 	int ret = 0;
 
-	while (pos < total_len ||
-	       !(readl(host->base + MSDC_INT) & MSDC_INT_XFER_COMPL)) {
+	while (!xfer_done || pos < total_len ||
+	       (!read && ((readl(host->base + MSDC_FIFOCS) &
+                   MSDC_FIFOCS_TXCNT) >> 16))) {
 		ints = readl(host->base + MSDC_INT);
 		if (ints & MSDC_INT_DATTMO) {
 			writel(MSDC_INT_DATTMO, host->base + MSDC_INT);
@@ -1035,10 +1037,14 @@ static int msdc_pio_transfer(struct msdc_host *host, struct mmc_data *data)
 		}
 
 		if (ints & MSDC_INT_XFER_COMPL) {
+			xfer_done = true;
 			writel(MSDC_INT_XFER_COMPL, host->base + MSDC_INT);
-			if (pos == total_len)
-				break;
 		}
+
+		if (xfer_done && pos == total_len &&
+		    (read || !((readl(host->base + MSDC_FIFOCS) &
+				MSDC_FIFOCS_TXCNT) >> 16)))
+			break;
 
 		if (time_after(jiffies, timeout)) {
 			ret = -ETIMEDOUT;
