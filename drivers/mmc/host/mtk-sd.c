@@ -570,6 +570,11 @@ struct msdc_host {
 	u32 cq_ssc1_time;
 };
 
+static inline bool msdc_pio_enabled(const struct msdc_host *host)
+{
+	return host->force_pio || host->hs400_tuning;
+}
+
 static const struct mtk_mmc_compatible mt2701_compat = {
 	.clk_div_bits = 12,
 	.recheck_sdio_irq = true,
@@ -935,7 +940,7 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 
 static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 {
-	if (host->force_pio) {
+	if (msdc_pio_enabled(host)) {
 		data->sg_count = data->sg_len;
 		data->host_cookie |= MSDC_PREPARE_FLAG;
 		return;
@@ -956,7 +961,7 @@ static bool msdc_data_prepared(struct mmc_data *data)
 
 static void msdc_unprepare_data(struct msdc_host *host, struct mmc_data *data)
 {
-	if (host->force_pio) {
+	if (msdc_pio_enabled(host)) {
 		data->host_cookie &= ~(MSDC_PREPARE_FLAG | MSDC_ASYNC_FLAG);
 		return;
 	}
@@ -1429,7 +1434,7 @@ static inline u32 msdc_cmd_prepare_raw_cmd(struct msdc_host *host,
 			rawcmd |= BIT(12);
 		else
 			rawcmd |= BIT(11);
-		if (host->force_pio)
+		if (msdc_pio_enabled(host))
 			sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
 		else
 			sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
@@ -1454,7 +1459,7 @@ static void msdc_start_data(struct msdc_host *host, struct mmc_command *cmd,
 	host->data = data;
 	read = data->flags & MMC_DATA_READ;
 
-	if (host->force_pio) {
+	if (msdc_pio_enabled(host)) {
 		/* Drop stale data status before polling the FIFO synchronously. */
 		writel(data_ints_mask, host->base + MSDC_INT);
 		sdr_set_bits(host->base + MSDC_INTEN, data_ints_mask);
@@ -1781,7 +1786,7 @@ static void msdc_pre_req(struct mmc_host *mmc, struct mmc_request *mrq)
 	 * controller reports completion, keeping the DMA ownership transition
 	 * local to one request.
 	 */
-	if (host->disable_async_dma || host->force_pio)
+	if (host->disable_async_dma || msdc_pio_enabled(host))
 		return;
 
 	if (!data)
@@ -3089,6 +3094,7 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 	}
 
 	host->hs400_tuning = true;
+	dev_info(host->dev, "using PIO for MT6797 HS400 tuning\n");
 	/* Vendor MT6797 autok finds the DAT pad boundary before DS tuning. */
 	for (i = 0; i < PAD_DELAY_HALF; i++) {
 		msdc_set_data_delay(host, i);
