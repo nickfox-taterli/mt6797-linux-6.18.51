@@ -554,6 +554,7 @@ struct msdc_host {
 	bool internal_cd;	/* Use internal card-detect logic */
 	bool cqhci;		/* support eMMC hw cmdq */
 	bool disable_hsq;	/* disable the software queue for board diagnostics */
+	bool disable_async_dma;	/* map data only for the active request */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
@@ -1612,6 +1613,15 @@ static void msdc_pre_req(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct msdc_host *host = mmc_priv(mmc);
 	struct mmc_data *data = mrq->data;
+
+	/*
+	 * MT6797 board diagnostics can disable speculative mappings.  The
+	 * synchronous path maps in msdc_ops_request() and unmaps after the
+	 * controller reports completion, keeping the DMA ownership transition
+	 * local to one request.
+	 */
+	if (host->disable_async_dma)
+		return;
 
 	if (!data)
 		return;
@@ -3211,6 +3221,8 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 
 	host->disable_hsq = of_property_read_bool(pdev->dev.of_node,
 						  "mediatek,disable-hsq");
+	host->disable_async_dma = of_property_read_bool(pdev->dev.of_node,
+							 "mediatek,disable-async-dma");
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3357,6 +3369,8 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	}
 
 	msdc_of_property_parse(pdev, host);
+	if (host->disable_async_dma)
+		dev_info(&pdev->dev, "using synchronous DMA mappings\n");
 
 	host->dev = &pdev->dev;
 	host->src_clk_freq = clk_get_rate(host->src_clk);
