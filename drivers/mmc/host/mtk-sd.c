@@ -2620,7 +2620,8 @@ skip_fall:
 	}
 	msdc_set_cmd_delay(host, final_delay);
 
-	if (host->dev_comp->async_fifo || host->hs200_cmd_int_delay)
+	if (host->dev_comp->async_fifo || host->hs200_cmd_int_delay ||
+	    (host->dev_comp->vendor_timing_init && host->hs400_mode))
 		goto skip_internal;
 
 	for (i = 0; i < host->tuning_step; i++) {
