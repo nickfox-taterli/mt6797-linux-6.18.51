@@ -553,6 +553,7 @@ struct msdc_host {
 	bool hs400_tuning;	/* hs400 mode online tuning */
 	bool internal_cd;	/* Use internal card-detect logic */
 	bool cqhci;		/* support eMMC hw cmdq */
+	bool disable_hsq;	/* disable the software queue for board diagnostics */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
@@ -3196,6 +3197,9 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 		host->cqhci = true;
 	else
 		host->cqhci = false;
+
+	host->disable_hsq = of_property_read_bool(pdev->dev.of_node,
+						  "mediatek,disable-hsq");
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3426,7 +3430,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		mmc->max_seg_size = 64 * 1024;
 		/* Reduce CIT to 0x40 that corresponds to 2.35us */
 		msdc_cqe_cit_cal(host, 2350);
-	} else if (mmc->caps2 & MMC_CAP2_NO_SDIO) {
+	} else if ((mmc->caps2 & MMC_CAP2_NO_SDIO) && !host->disable_hsq) {
 		/* Use HSQ on eMMC/SD (but not on SDIO) if HW CQE not supported */
 		struct mmc_hsq *hsq = devm_kzalloc(&pdev->dev, sizeof(*hsq), GFP_KERNEL);
 		if (!hsq) {
