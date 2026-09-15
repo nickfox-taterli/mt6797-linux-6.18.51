@@ -1153,6 +1153,23 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 	if (host->dev_comp->support_new_tx && timing_changed)
 		msdc_new_tx_setting(host);
 
+	if (host->dev_comp->vendor_timing_init &&
+	    (timing == MMC_TIMING_MMC_HS200 ||
+	     timing == MMC_TIMING_MMC_HS400))
+		dev_info(host->dev,
+			 "MT6797 timing diag: requested=%u actual=%u src=%u timing=%u "
+			 "cfg=%08x iocon=%08x pad0=%08x pad1=%08x pb0=%08x pb1=%08x "
+			 "pb2=%08x emmc50=%08x\n",
+			 hz, mmc->actual_clock, host->src_clk_freq, timing,
+			 readl(host->base + MSDC_CFG),
+			 readl(host->base + MSDC_IOCON),
+			 readl(host->base + MSDC_PAD_TUNE0),
+			 readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST),
+			 readl(host->base + MSDC_PATCH_BIT),
+			 readl(host->base + MSDC_PATCH_BIT1),
+			 readl(host->base + MSDC_PATCH_BIT2),
+			 readl(host->base + EMMC50_CFG0));
+
 	dev_dbg(host->dev, "sclk: %d, timing: %d\n", mmc->actual_clock,
 		timing);
 }
@@ -1640,6 +1657,24 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 				data->error = -ETIMEDOUT;
 			else if (events & MSDC_INT_DATCRCERR)
 				data->error = -EILSEQ;
+
+			if (host->dev_comp->vendor_timing_init &&
+			    (events & (MSDC_INT_DATCRCERR | MSDC_INT_DATTMO)))
+				dev_err(host->dev,
+					"MT6797 data diag: cmd=%d events=%08x actual=%u "
+					"cfg=%08x iocon=%08x pad0=%08x pad1=%08x pb0=%08x "
+					"pb1=%08x pb2=%08x emmc50=%08x\n",
+					mrq->cmd->opcode, events,
+					mmc_from_priv(host)->actual_clock,
+					readl(host->base + MSDC_CFG),
+					readl(host->base + MSDC_IOCON),
+					readl(host->base + MSDC_PAD_TUNE0),
+					readl(host->base + MSDC_PAD_TUNE0 +
+						TUNING_REG2_FIXED_OFFEST),
+					readl(host->base + MSDC_PATCH_BIT),
+					readl(host->base + MSDC_PATCH_BIT1),
+					readl(host->base + MSDC_PATCH_BIT2),
+					readl(host->base + EMMC50_CFG0));
 
 			dev_dbg(host->dev, "%s: cmd=%d; blocks=%d",
 				__func__, mrq->cmd->opcode, data->blocks);
@@ -2660,6 +2695,20 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 		if (ret == -EIO)
 			dev_err(host->dev, "Tune data fail!\n");
 	}
+
+	if (host->dev_comp->vendor_timing_init)
+		dev_info(host->dev,
+			 "MT6797 tuning diag: opcode=%u timing=%u hs400_mode=%u ret=%d "
+			 "iocon=%08x pad0=%08x pad1=%08x pb0=%08x pb1=%08x pb2=%08x "
+			 "emmc50=%08x\n",
+			 opcode, mmc->ios.timing, host->hs400_mode, ret,
+			 readl(host->base + MSDC_IOCON),
+			 readl(host->base + MSDC_PAD_TUNE0),
+			 readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST),
+			 readl(host->base + MSDC_PATCH_BIT),
+			 readl(host->base + MSDC_PATCH_BIT1),
+			 readl(host->base + MSDC_PATCH_BIT2),
+			 readl(host->base + EMMC50_CFG0));
 
 tune_done:
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
