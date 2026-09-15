@@ -193,6 +193,7 @@
 	no-sdio;
 	mediatek,disable-hsq;
 	mediatek,disable-async-dma;
+	mediatek,force-pio;
 	vmmc-supply = <&reg_vmmc>;
 	vqmmc-supply = <&reg_vqmmc>;
 	pinctrl-names = "default", "state_uhs";

@@ -24,6 +24,7 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/reset.h>
+#include <linux/scatterlist.h>
 
 #include <linux/mmc/card.h>
 #include <linux/mmc/core.h>
@@ -57,6 +58,8 @@
 #define MSDC_INT         0x0c
 #define MSDC_INTEN       0x10
 #define MSDC_FIFOCS      0x14
+#define MSDC_TXDATA      0x18
+#define MSDC_RXDATA      0x1c
 #define SDC_CFG          0x30
 #define SDC_CMD          0x34
 #define SDC_ARG          0x38
@@ -202,6 +205,7 @@
 #define MSDC_FIFOCS_RXCNT       GENMASK(7, 0)	/* R */
 #define MSDC_FIFOCS_TXCNT       GENMASK(23, 16)	/* R */
 #define MSDC_FIFOCS_CLR         BIT(31)	/* RW */
+#define MSDC_FIFO_SIZE          128
 
 /* SDC_CFG mask */
 #define SDC_CFG_SDIOINTWKUP     BIT(0)	/* RW */
@@ -555,7 +559,9 @@ struct msdc_host {
 	bool cqhci;		/* support eMMC hw cmdq */
 	bool disable_hsq;	/* disable the software queue for board diagnostics */
 	bool disable_async_dma;	/* map data only for the active request */
+	bool force_pio;		/* bypass DMA for controller diagnostics */
 	bool hsq_en;		/* Host Software Queue is enabled */
+	u8 pio_buf[MSDC_FIFO_SIZE];
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
@@ -821,6 +827,8 @@ static void msdc_reset_hw(struct msdc_host *host)
 
 static void msdc_cmd_next(struct msdc_host *host,
 		struct mmc_request *mrq, struct mmc_command *cmd);
+static void msdc_data_xfer_next(struct msdc_host *host,
+		struct mmc_request *mrq);
 static void __msdc_enable_sdio_irq(struct msdc_host *host, int enb);
 
 static const u32 cmd_ints_mask = MSDC_INTEN_CMDRDY | MSDC_INTEN_RSPCRCERR |
@@ -907,6 +915,12 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 
 static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 {
+	if (host->force_pio) {
+		data->sg_count = data->sg_len;
+		data->host_cookie |= MSDC_PREPARE_FLAG;
+		return;
+	}
+
 	if (!(data->host_cookie & MSDC_PREPARE_FLAG)) {
 		data->sg_count = dma_map_sg(host->dev, data->sg, data->sg_len,
 					    mmc_get_dma_dir(data));
@@ -922,6 +936,11 @@ static bool msdc_data_prepared(struct mmc_data *data)
 
 static void msdc_unprepare_data(struct msdc_host *host, struct mmc_data *data)
 {
+	if (host->force_pio) {
+		data->host_cookie &= ~(MSDC_PREPARE_FLAG | MSDC_ASYNC_FLAG);
+		return;
+	}
+
 	if (data->host_cookie & MSDC_ASYNC_FLAG) {
 		/*
 		 * A pre_req mapping keeps the buffer owned by the DMA API until
@@ -941,6 +960,103 @@ static void msdc_unprepare_data(struct msdc_host *host, struct mmc_data *data)
 			     mmc_get_dma_dir(data));
 		data->host_cookie &= ~MSDC_PREPARE_FLAG;
 	}
+}
+
+/*
+ * The upstream driver only exercises the MTK FIFO through the DMA engine.
+ * Keep a small PIO path for MT6797 board diagnostics so DMA/cache ownership
+ * can be separated from the controller's command and data timing.
+ */
+static int msdc_pio_transfer(struct msdc_host *host, struct mmc_data *data)
+{
+	bool read = data->flags & MMC_DATA_READ;
+	size_t total_len = (size_t)data->blocks * data->blksz;
+	size_t pos = 0;
+	unsigned long timeout = jiffies + DAT_TIMEOUT;
+	u32 ints, fifo, chunk, i, value;
+	size_t copied;
+	int ret = 0;
+
+	while (pos < total_len ||
+	       !(readl(host->base + MSDC_INT) & MSDC_INT_XFER_COMPL)) {
+		ints = readl(host->base + MSDC_INT);
+		if (ints & MSDC_INT_DATTMO) {
+			writel(MSDC_INT_DATTMO, host->base + MSDC_INT);
+			ret = -ETIMEDOUT;
+			break;
+		}
+		if (ints & MSDC_INT_DATCRCERR) {
+			writel(MSDC_INT_DATCRCERR, host->base + MSDC_INT);
+			ret = -EILSEQ;
+			break;
+		}
+
+		if (read) {
+			fifo = readl(host->base + MSDC_FIFOCS) & MSDC_FIFOCS_RXCNT;
+			chunk = min_t(size_t, fifo, total_len - pos);
+			if (chunk) {
+				for (i = 0; i + sizeof(value) <= chunk;
+				     i += sizeof(value)) {
+					value = readl(host->base + MSDC_RXDATA);
+					memcpy(host->pio_buf + i, &value, sizeof(value));
+				}
+				for (; i < chunk; i++)
+					host->pio_buf[i] = readb(host->base + MSDC_RXDATA);
+
+				copied = sg_pcopy_from_buffer(data->sg, data->sg_len,
+						      host->pio_buf, chunk, pos);
+				if (copied != chunk) {
+					ret = -EIO;
+					break;
+				}
+				pos += copied;
+			}
+		} else {
+			fifo = (readl(host->base + MSDC_FIFOCS) & MSDC_FIFOCS_TXCNT) >> 16;
+			if (fifo < MSDC_FIFO_SIZE && pos < total_len) {
+				chunk = min_t(size_t, MSDC_FIFO_SIZE - fifo,
+						      total_len - pos);
+				copied = sg_pcopy_to_buffer(data->sg, data->sg_len,
+						    host->pio_buf, chunk, pos);
+				if (copied != chunk) {
+					ret = -EIO;
+					break;
+				}
+
+				for (i = 0; i + sizeof(value) <= chunk;
+				     i += sizeof(value)) {
+					memcpy(&value, host->pio_buf + i, sizeof(value));
+					writel(value, host->base + MSDC_TXDATA);
+				}
+				for (; i < chunk; i++)
+					writeb(host->pio_buf[i], host->base + MSDC_TXDATA);
+				pos += copied;
+			}
+		}
+
+		if (ints & MSDC_INT_XFER_COMPL) {
+			writel(MSDC_INT_XFER_COMPL, host->base + MSDC_INT);
+			if (pos == total_len)
+				break;
+		}
+
+		if (time_after(jiffies, timeout)) {
+			ret = -ETIMEDOUT;
+			break;
+		}
+		cpu_relax();
+	}
+
+	if (ret) {
+		data->error = ret;
+		data->bytes_xfered = 0;
+		msdc_reset_hw(host);
+	} else {
+		data->error = 0;
+		data->bytes_xfered = total_len;
+	}
+
+	return ret;
 }
 
 static u64 msdc_timeout_cal(struct msdc_host *host, u64 ns, u64 clks)
@@ -1287,8 +1403,10 @@ static inline u32 msdc_cmd_prepare_raw_cmd(struct msdc_host *host,
 			rawcmd |= BIT(12);
 		else
 			rawcmd |= BIT(11);
-		/* Always use dma mode */
-		sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
+		if (host->force_pio)
+			sdr_set_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
+		else
+			sdr_clr_bits(host->base + MSDC_CFG, MSDC_CFG_PIO);
 
 		if (host->timeout_ns != data->timeout_ns ||
 		    host->timeout_clks != data->timeout_clks)
@@ -1304,10 +1422,27 @@ static void msdc_start_data(struct msdc_host *host, struct mmc_command *cmd,
 		struct mmc_data *data)
 {
 	bool read;
+	struct mmc_request *mrq = host->mrq;
 
 	WARN_ON(host->data);
 	host->data = data;
 	read = data->flags & MMC_DATA_READ;
+
+	if (host->force_pio) {
+		/* Drop stale data status before polling the FIFO synchronously. */
+		writel(data_ints_mask, host->base + MSDC_INT);
+		sdr_set_bits(host->base + MSDC_INTEN, data_ints_mask);
+		dev_dbg(host->dev, "PIO start\n");
+		dev_dbg(host->dev, "%s: cmd=%d PIO data: %d blocks; read=%d\n",
+			__func__, cmd->opcode, data->blocks, read);
+		msdc_pio_transfer(host, data);
+		sdr_clr_bits(host->base + MSDC_INTEN, data_ints_mask);
+		host->data = NULL;
+		if (data->error)
+			host->error |= REQ_DAT_ERR;
+		msdc_data_xfer_next(host, mrq);
+		return;
+	}
 
 	mod_delayed_work(system_wq, &host->req_timeout, DAT_TIMEOUT);
 	msdc_dma_setup(host, &host->dma, data);
@@ -1620,7 +1755,7 @@ static void msdc_pre_req(struct mmc_host *mmc, struct mmc_request *mrq)
 	 * controller reports completion, keeping the DMA ownership transition
 	 * local to one request.
 	 */
-	if (host->disable_async_dma)
+	if (host->disable_async_dma || host->force_pio)
 		return;
 
 	if (!data)
@@ -3223,6 +3358,8 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 						  "mediatek,disable-hsq");
 	host->disable_async_dma = of_property_read_bool(pdev->dev.of_node,
 							 "mediatek,disable-async-dma");
+	host->force_pio = of_property_read_bool(pdev->dev.of_node,
+						 "mediatek,force-pio");
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3371,6 +3508,8 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	msdc_of_property_parse(pdev, host);
 	if (host->disable_async_dma)
 		dev_info(&pdev->dev, "using synchronous DMA mappings\n");
+	if (host->force_pio)
+		dev_info(&pdev->dev, "using PIO data transfers\n");
 
 	host->dev = &pdev->dev;
 	host->src_clk_freq = clk_get_rate(host->src_clk);
