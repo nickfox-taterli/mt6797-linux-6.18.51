@@ -10,6 +10,7 @@
 /dts-v1/;
 
 #include <dt-bindings/pinctrl/mt65xx.h>
+#include <dt-bindings/gpio/gpio.h>
 #include "mt6797.dtsi"
 
 / {
@@ -205,6 +206,20 @@
 	status = "okay";
 };
 
+&mmc1 {
+	/* TF is a runtime peripheral only; the Loader still boots eMMC/MSDC0. */
+	bus-width = <4>;
+	max-frequency = <50000000>;
+	cap-sd-highspeed;
+	/* Vendor wiring uses an active-low card-detect switch. */
+	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
+	vmmc-supply = <&reg_vmmc>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc1_pins_default>;
+	pinctrl-1 = <&mmc1_pins_uhs>;
+	status = "okay";
+};
+
 &pio {
 	mmc0_pins_default: mmc0-default-pins {
 		pins-cmd-dat {
@@ -303,6 +318,62 @@
 			drive-strength = <4>;
 			mediatek,tdsel = <0>;
 			mediatek,rdsel = <0>;
+		};
+	};
+
+	mmc1_pins_default: mmc1-default-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <6>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <6>;
+		};
+
+		pins-cd {
+			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	mmc1_pins_uhs: mmc1-uhs-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
+				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <3>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+		};
+
+		pins-cd {
+			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			input-enable;
+			bias-pull-up;
 		};
 	};
 };
