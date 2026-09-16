@@ -487,6 +487,8 @@ struct mtk_mmc_compatible {
 	u8 pop_en_cnt;
 	bool enhance_rx;
 	bool support_64g;
+	/* MT6797 BD descriptors have a 24-bit length field, independent of DMA address width. */
+	bool bdma_len_24bit;
 	bool use_internal_cd;
 	bool support_new_tx;
 	bool support_new_rx;
@@ -650,6 +652,7 @@ static const struct mtk_mmc_compatible mt6797_compat = {
 	.stop_clk_fix = false,
 	.enhance_rx = false,
 	.support_64g = false,
+	.bdma_len_24bit = true,
 };
 
 static const struct mtk_mmc_compatible mt7620_compat = {
@@ -909,7 +912,7 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 					 << 28;
 		}
 
-		if (host->dev_comp->support_64g) {
+		if (host->dev_comp->bdma_len_24bit) {
 			bd[j].bd_data_len &= ~BDMA_DESC_BUFLEN_EXT;
 			bd[j].bd_data_len |= (dma_len & BDMA_DESC_BUFLEN_EXT);
 		} else {
@@ -3593,7 +3596,7 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	 */
 	if (host->force_basic_dma)
 		mmc->max_seg_size = mmc->max_req_size;
-	else if (host->dev_comp->support_64g)
+	else if (host->dev_comp->bdma_len_24bit)
 		mmc->max_seg_size = BDMA_DESC_BUFLEN_EXT;
 	else
 		mmc->max_seg_size = BDMA_DESC_BUFLEN;
