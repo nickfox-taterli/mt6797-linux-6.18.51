@@ -183,10 +183,15 @@
 };
 
 &mmc0 {
-	/* Diagnostic control: test Basic DMA below the HS400 timing path. */
+	/* Keep HS400 timing enabled while the descriptor DMA path is validated. */
 	bus-width = <8>;
-	max-frequency = <52000000>;
+	max-frequency = <200000000>;
 	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	mediatek,latch-ck = <1>;
+	mediatek,tuning-step = <64>;
 	non-removable;
 	no-sd;
 	no-sdio;
