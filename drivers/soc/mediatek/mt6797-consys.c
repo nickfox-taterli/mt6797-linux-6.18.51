@@ -60,6 +60,7 @@
 
 struct mt6797_consys {
 	struct device *dev;
+	void __iomem *base[4];
 	void __iomem *mcu;
 	void __iomem *rgu;
 	void __iomem *topckgen;
@@ -314,31 +315,31 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	struct mt6797_consys *cs;
 	struct resource *r;
 	int ret;
+	int i;
 
 	cs = devm_kzalloc(&pdev->dev, sizeof(*cs), GFP_KERNEL);
 	if (!cs)
 		return -ENOMEM;
 
 	cs->dev = &pdev->dev;
-	cs->mcu = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(cs->mcu))
-		return PTR_ERR(cs->mcu);
 	/*
-	 * The RGU window is owned by the watchdog driver; map it shared
-	 * (no request_mem_region) since only the CONSYS reset bit is touched.
+	 * Every window here is (partly) owned by another driver: the RGU by
+	 * the watchdog, TOPCKGEN by the clock driver.  Map them shared
+	 * (devm_ioremap, no request_mem_region) and touch only the ConSys
+	 * registers defined above.
 	 */
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	if (!r)
-		return -ENODEV;
-	cs->rgu = devm_ioremap(&pdev->dev, r->start, resource_size(r));
-	if (!cs->rgu)
-		return -ENOMEM;
-	cs->topckgen = devm_platform_ioremap_resource(pdev, 2);
-	if (IS_ERR(cs->topckgen))
-		return PTR_ERR(cs->topckgen);
-	cs->spm = devm_platform_ioremap_resource(pdev, 3);
-	if (IS_ERR(cs->spm))
-		return PTR_ERR(cs->spm);
+	for (i = 0; i < ARRAY_SIZE(cs->base); i++) {
+		r = platform_get_resource(pdev, IORESOURCE_MEM, i);
+		if (!r)
+			return -ENODEV;
+		cs->base[i] = devm_ioremap(&pdev->dev, r->start, resource_size(r));
+		if (!cs->base[i])
+			return -ENOMEM;
+	}
+	cs->mcu = cs->base[0];
+	cs->rgu = cs->base[1];
+	cs->topckgen = cs->base[2];
+	cs->spm = cs->base[3];
 
 	/*
 	 * The WLAN MAC window has no DT node of its own; map it directly for
