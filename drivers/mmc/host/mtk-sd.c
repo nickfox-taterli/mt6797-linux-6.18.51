@@ -572,6 +572,7 @@ struct msdc_host {
 	bool force_pio;		/* bypass DMA for controller diagnostics */
 	bool force_basic_dma;	/* keep MT6797 requests to one Basic-DMA SG */
 	bool descriptor_dma;	/* opt in to MT6797 chained descriptor DMA */
+	u32 descriptor_max_req_size;	/* optional MT6797 descriptor request size */
 	bool basic_dma_bounce;	/* aggregate MT6797 multi-SG requests in software */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	void *basic_bounce_buf;
@@ -3615,6 +3616,10 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 						 "mediatek,force-basic-dma");
 	host->descriptor_dma = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,descriptor-dma");
+	if (host->descriptor_dma)
+		of_property_read_u32(pdev->dev.of_node,
+				      "mediatek,descriptor-max-req-size",
+				      &host->descriptor_max_req_size);
 	if (host->descriptor_dma) {
 		/*
 		 * The X20 descriptor path is a board-level probe.  Keep it
@@ -3826,6 +3831,17 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	mmc->max_segs = host->force_basic_dma ? 1 : MAX_BD_NUM;
 	mmc->max_blk_size = 2048;
 	mmc->max_req_size = 512 * 1024;
+	if (host->descriptor_dma && host->descriptor_max_req_size) {
+		u32 max_req_size;
+
+		max_req_size = clamp_t(u32, host->descriptor_max_req_size,
+					       512 * 1024, 4 * 1024 * 1024);
+		max_req_size = round_down(max_req_size, 512U);
+		mmc->max_req_size = max_req_size;
+		dev_info(&pdev->dev,
+			 "descriptor DMA request size: %u bytes\n",
+			 mmc->max_req_size);
+	}
 	if (host->dev_comp->support_64g)
 		host->dma_mask = DMA_BIT_MASK(36);
 	else

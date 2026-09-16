@@ -188,6 +188,14 @@ properties:
       performance diagnostics.  This overrides mediatek,force-basic-dma and
       requires mediatek,disable-async-dma; it is ignored for PIO or CQE.
 
+  mediatek,descriptor-max-req-size:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Optional MT6797 descriptor-DMA request size in bytes.  It is clamped to
+      512 KiB through 4 MiB and ignored unless mediatek,descriptor-dma is set.
+    minimum: 524288
+    maximum: 4194304
+
   mediatek,basic-dma-bounce:
     $ref: /schemas/types.yaml#/definitions/flag
     description:
