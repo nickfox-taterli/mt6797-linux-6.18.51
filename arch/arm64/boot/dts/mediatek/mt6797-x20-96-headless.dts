@@ -214,6 +214,7 @@
 	/* Vendor wiring uses an active-low card-detect switch. */
 	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
 	vmmc-supply = <&mt6351_vmch>;
+	vqmmc-supply = <&mt6351_vmc>;
 	pinctrl-names = "default", "state_uhs";
 	pinctrl-0 = <&mmc1_pins_default>;
 	pinctrl-1 = <&mmc1_pins_uhs>;
@@ -229,6 +230,13 @@
 			regulator-min-microvolt = <3300000>;
 			regulator-max-microvolt = <3300000>;
 			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		mt6351_vmc: ldo_vmc {
+			regulator-name = "vmc";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <3000000>;
 			regulator-boot-on;
 		};
 	};
