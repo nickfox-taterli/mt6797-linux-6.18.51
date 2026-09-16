@@ -89,4 +89,14 @@ config MTK_SOCINFO
 	  information about the SoC to the userspace including the
 	  manufacturer name, marketing name and soc name.
 
+
+config MTK_MT6797_CONSYS
+	tristate "MT6797 ConSys power/bring-up driver"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	help
+	  Power-on/bring-up support for the MT6797 connectivity subsystem
+	  (ConSys) that hosts the WLAN/BT/GPS baseband and drives the external
+	  MT6631 radio.  Exposes a sysfs power switch and chip-ID readback for
+	  board bring-up; protocol stacks are separate drivers.
+
 endmenu
