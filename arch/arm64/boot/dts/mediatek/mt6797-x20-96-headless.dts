@@ -349,8 +349,10 @@
 			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
 			input-enable;
 			input-schmitt-enable;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
-			drive-strength = <6>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <3>;
 		};
 
 		pins-dat {
@@ -360,16 +362,20 @@
 				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
 			input-enable;
 			input-schmitt-enable;
-			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
-			drive-strength = <6>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <3>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
-			input-disable;
+			input-enable;
 			input-schmitt-enable;
-			bias-disable;
-			drive-strength = <6>;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-cd {
@@ -384,8 +390,10 @@
 			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
 			input-enable;
 			input-schmitt-enable;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
-			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-dat {
@@ -395,16 +403,20 @@
 				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
 			input-enable;
 			input-schmitt-enable;
-			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
-			drive-strength = <3>;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-clk {
 			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
-			input-disable;
+			input-enable;
 			input-schmitt-enable;
-			bias-disable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
 			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
 		};
 
 		pins-cd {
