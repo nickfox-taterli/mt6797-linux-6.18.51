@@ -200,6 +200,8 @@
 	mediatek,disable-hsq;
 	mediatek,disable-async-dma;
 	mediatek,force-basic-dma;
+	/* Diagnostic isolation: bypass the suspect DMA ownership path. */
+	mediatek,force-pio;
 	vmmc-supply = <&reg_vmmc>;
 	vqmmc-supply = <&reg_vqmmc>;
 	pinctrl-names = "default", "state_uhs";
