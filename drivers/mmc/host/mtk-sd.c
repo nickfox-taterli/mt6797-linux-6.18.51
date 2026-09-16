@@ -1010,10 +1010,13 @@ static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 			return;
 		}
 
+		/* The mapping covers the maximum request, but this request owns only
+		 * its active prefix.  Avoid cleaning/invalidation of unused cache lines.
+		 */
 		if (data->flags & MMC_DATA_WRITE) {
 			/* Reclaim the persistently mapped area before the CPU fills it. */
 			dma_sync_single_for_cpu(host->dev, host->basic_bounce_dma,
-						MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
+						len, DMA_BIDIRECTIONAL);
 		}
 		if ((data->flags & MMC_DATA_WRITE) &&
 		    sg_copy_to_buffer(data->sg, data->sg_len,
@@ -1021,9 +1024,9 @@ static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 			dev_warn(host->dev, "short SG copy into Basic-DMA bounce\n");
 			return;
 		}
-		/* Transfer ownership of the cacheable bounce area to the device. */
+		/* Transfer ownership of the active range to the device. */
 		dma_sync_single_for_device(host->dev, host->basic_bounce_dma,
-					   MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
+					   len, DMA_BIDIRECTIONAL);
 		host->basic_bounce_len = len;
 		host->basic_bounce_data = data;
 		data->sg_count = 1;
@@ -1073,10 +1076,10 @@ static void msdc_finish_bounce(struct msdc_host *host, struct mmc_data *data)
 		return;
 	}
 
-	/* DMA completion/reset has returned ownership of the mapped area to CPU. */
+	/* DMA completion/reset has returned ownership of the active range to CPU. */
 	bounce_len = host->basic_bounce_len;
 	dma_sync_single_for_cpu(host->dev, host->basic_bounce_dma,
-				MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
+				bounce_len, DMA_BIDIRECTIONAL);
 	host->basic_bounce_len = 0;
 	host->basic_bounce_data = NULL;
 	data->host_cookie &=
