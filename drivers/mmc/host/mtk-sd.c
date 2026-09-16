@@ -3583,12 +3583,20 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		mmc->caps2 |= MMC_CAP2_CQE | MMC_CAP2_CQE_DCMD;
 	/* MMC core transfer sizes tunable parameters */
 	mmc->max_segs = host->force_basic_dma ? 1 : MAX_BD_NUM;
-	if (host->dev_comp->support_64g)
+	mmc->max_blk_size = 2048;
+	mmc->max_req_size = 512 * 1024;
+	/*
+	 * Basic DMA writes the complete byte count to MSDC_DMA_LEN, so its
+	 * single segment is not limited by the 16-bit length field used by a
+	 * chained BD descriptor.  Keep the chained path's hardware limit, but
+	 * let the validated single-segment path use the full MMC request size.
+	 */
+	if (host->force_basic_dma)
+		mmc->max_seg_size = mmc->max_req_size;
+	else if (host->dev_comp->support_64g)
 		mmc->max_seg_size = BDMA_DESC_BUFLEN_EXT;
 	else
 		mmc->max_seg_size = BDMA_DESC_BUFLEN;
-	mmc->max_blk_size = 2048;
-	mmc->max_req_size = 512 * 1024;
 	mmc->max_blk_count = mmc->max_req_size / 512;
 	if (host->dev_comp->support_64g)
 		host->dma_mask = DMA_BIT_MASK(36);
