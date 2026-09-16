@@ -400,9 +400,13 @@
 #define MSDC_ASYNC_FLAG BIT(1)
 #define MSDC_MMAP_FLAG BIT(2)
 #define MSDC_BOUNCE_FLAG BIT(3)
+/* Values 1 and 2 identify one of the optional prefetch bounce slots. */
+#define MSDC_BOUNCE_SLOT_SHIFT 4
+#define MSDC_BOUNCE_SLOT_MASK GENMASK(5, 4)
 
 /* A single Basic-DMA transfer is the safe MT6797 data path. */
 #define MSDC_BASIC_BOUNCE_SIZE (512 * 1024)
+#define MSDC_BASIC_BOUNCE_SLOTS 2
 
 #define MTK_MMC_AUTOSUSPEND_DELAY	50
 #define CMD_TIMEOUT         (HZ/10 * 5)	/* 100ms x5 */
@@ -513,6 +517,14 @@ struct msdc_delay_phase {
 	u8 final_phase;
 };
 
+struct msdc_basic_bounce_slot {
+	void *buf;
+	dma_addr_t dma;
+	bool mapped;
+	struct mmc_data *data;
+	unsigned int len;
+};
+
 struct msdc_host {
 	struct device *dev;
 	const struct mtk_mmc_compatible *dev_comp;
@@ -574,12 +586,15 @@ struct msdc_host {
 	bool descriptor_dma;	/* opt in to MT6797 chained descriptor DMA */
 	u32 descriptor_max_req_size;	/* optional MT6797 descriptor request size */
 	bool basic_dma_bounce;	/* aggregate MT6797 multi-SG requests in software */
+	bool basic_dma_double_bounce;	/* prefetch through two cacheable bounce slots */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	void *basic_bounce_buf;
 	dma_addr_t basic_bounce_dma;
 	bool basic_bounce_mapped;
 	unsigned int basic_bounce_len;
 	struct mmc_data *basic_bounce_data;
+	struct msdc_basic_bounce_slot
+		basic_bounce_slots[MSDC_BASIC_BOUNCE_SLOTS];
 	u8 pio_buf[MSDC_FIFO_SIZE];
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
@@ -872,6 +887,34 @@ static u8 msdc_dma_calcs(u8 *buf, u32 len)
 	return 0xff - (u8) sum;
 }
 
+static int msdc_double_bounce_slot_index(const struct mmc_data *data)
+{
+	unsigned int slot;
+
+	slot = (data->host_cookie & MSDC_BOUNCE_SLOT_MASK) >>
+		MSDC_BOUNCE_SLOT_SHIFT;
+	if (!slot || slot > MSDC_BASIC_BOUNCE_SLOTS)
+		return -EINVAL;
+
+	return slot - 1;
+}
+
+static struct msdc_basic_bounce_slot *
+msdc_double_bounce_slot(struct msdc_host *host, const struct mmc_data *data)
+{
+	int index;
+
+	if (!host->basic_dma_double_bounce ||
+	    !(data->host_cookie & MSDC_BOUNCE_SLOT_MASK))
+		return NULL;
+
+	index = msdc_double_bounce_slot_index(data);
+	if (index < 0)
+		return NULL;
+
+	return &host->basic_bounce_slots[index];
+}
+
 static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 		struct mmc_data *data)
 {
@@ -881,18 +924,30 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 	struct scatterlist *sg;
 	struct mt_gpdma_desc *gpd;
 	struct mt_bdma_desc *bd;
+	struct msdc_basic_bounce_slot *bounce_slot;
 
 	sg = data->sg;
 
 	/* MT6797's vendor driver uses Basic DMA for a single mapped segment. */
 	if (data->sg_count == 1) {
+		bounce_slot = NULL;
 		if (data->host_cookie & MSDC_BOUNCE_FLAG) {
-			dma_address = host->basic_bounce_dma;
-			dma_len = host->basic_bounce_len;
+			bounce_slot = msdc_double_bounce_slot(host, data);
+			if (bounce_slot) {
+				dma_address = bounce_slot->dma;
+				dma_len = bounce_slot->len;
+			} else {
+				dma_address = host->basic_bounce_dma;
+				dma_len = host->basic_bounce_len;
+			}
 		} else {
 			dma_address = sg_dma_address(sg);
 			dma_len = sg_dma_len(sg);
 		}
+		if (bounce_slot)
+			/* A pre_req bounce remains CPU-owned until DMA is started. */
+			dma_sync_single_for_device(host->dev, bounce_slot->dma,
+					   bounce_slot->len, DMA_BIDIRECTIONAL);
 
 		sdr_clr_bits(host->base + MSDC_DMA_CFG, MSDC_DMA_CFG_DECSEN);
 		if (host->dev_comp->support_64g)
@@ -983,6 +1038,72 @@ static bool msdc_sg_has_len(struct mmc_data *data, size_t len)
 	return false;
 }
 
+/*
+ * Reserve and fill one of the optional prefetch buffers.  This deliberately
+ * does not map the request's original SG list, nor does it hand the bounce
+ * range to the device.  DMA ownership is transferred by msdc_dma_setup(),
+ * immediately before the controller is started.
+ */
+static bool msdc_prepare_double_bounce(struct msdc_host *host,
+					       struct mmc_data *data)
+{
+	struct msdc_basic_bounce_slot *slot = NULL;
+	unsigned long flags;
+	size_t len = (size_t)data->blocks * data->blksz;
+	unsigned int i;
+	int slot_index = -1;
+
+	if (!host->basic_dma_double_bounce || data->sg_len <= 1 ||
+	    len > MSDC_BASIC_BOUNCE_SIZE || !msdc_sg_has_len(data, len))
+		return false;
+
+	spin_lock_irqsave(&host->lock, flags);
+	for (i = 0; i < MSDC_BASIC_BOUNCE_SLOTS; i++) {
+		if (!host->basic_bounce_slots[i].data) {
+			slot = &host->basic_bounce_slots[i];
+			slot_index = i;
+			slot->data = data;
+			slot->len = len;
+			data->sg_count = 1;
+			data->host_cookie |= MSDC_PREPARE_FLAG |
+				MSDC_BOUNCE_FLAG |
+				((i + 1) << MSDC_BOUNCE_SLOT_SHIFT);
+			break;
+		}
+	}
+	spin_unlock_irqrestore(&host->lock, flags);
+
+	/*
+	 * No slot is not an error: the request remains unprepared and the
+	 * active path retries after an older queued request releases a slot.
+	 */
+	if (slot_index < 0)
+		return false;
+
+	if (data->flags & MMC_DATA_WRITE) {
+		/* The previous request returned this range to the CPU. */
+		dma_sync_single_for_cpu(host->dev, slot->dma, len,
+					DMA_BIDIRECTIONAL);
+		if (sg_copy_to_buffer(data->sg, data->sg_len, slot->buf, len) != len) {
+			dev_warn(host->dev,
+				 "short SG copy into prefetched Basic-DMA bounce\n");
+			spin_lock_irqsave(&host->lock, flags);
+			if (slot->data == data) {
+				slot->data = NULL;
+				slot->len = 0;
+			}
+			spin_unlock_irqrestore(&host->lock, flags);
+			data->sg_count = 0;
+			data->host_cookie &=
+				~(MSDC_PREPARE_FLAG | MSDC_BOUNCE_FLAG |
+				  MSDC_BOUNCE_SLOT_MASK);
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 {
 	size_t len = (size_t)data->blocks * data->blksz;
@@ -990,6 +1111,21 @@ static void msdc_prepare_data(struct msdc_host *host, struct mmc_data *data)
 	if (msdc_pio_enabled(host)) {
 		data->sg_count = data->sg_len;
 		data->host_cookie |= MSDC_PREPARE_FLAG;
+		return;
+	}
+
+	/* A pre_req() call may already own a double-bounce slot. */
+	if (host->basic_dma_double_bounce &&
+	    (data->host_cookie & MSDC_BOUNCE_FLAG) &&
+	    (data->host_cookie & MSDC_BOUNCE_SLOT_MASK)) {
+		data->sg_count = 1;
+		return;
+	}
+
+	if (host->basic_dma_double_bounce && data->sg_len > 1) {
+		if (msdc_prepare_double_bounce(host, data))
+			return;
+		/* A double-bounce request must never fall through to an unmapped SG. */
 		return;
 	}
 
@@ -1052,6 +1188,74 @@ static bool msdc_data_prepared(struct mmc_data *data)
 	return data->host_cookie & MSDC_PREPARE_FLAG;
 }
 
+static void msdc_finish_double_bounce(struct msdc_host *host,
+					      struct mmc_data *data)
+{
+	struct msdc_basic_bounce_slot *slot;
+	unsigned long flags;
+	size_t len;
+	int slot_index;
+
+	slot_index = msdc_double_bounce_slot_index(data);
+	if (slot_index < 0) {
+		dev_warn(host->dev, "invalid prefetched Basic-DMA bounce slot\n");
+		data->error = -EIO;
+		data->bytes_xfered = 0;
+		data->host_cookie &=
+			~(MSDC_PREPARE_FLAG | MSDC_ASYNC_FLAG |
+			  MSDC_BOUNCE_FLAG | MSDC_BOUNCE_SLOT_MASK);
+		return;
+	}
+
+	slot = &host->basic_bounce_slots[slot_index];
+	if (!slot->buf || !slot->mapped || slot->data != data || !slot->len) {
+		dev_warn(host->dev, "invalid prefetched Basic-DMA bounce state\n");
+		data->error = -EIO;
+		data->bytes_xfered = 0;
+		spin_lock_irqsave(&host->lock, flags);
+		if (slot->data == data) {
+			slot->data = NULL;
+			slot->len = 0;
+		}
+		spin_unlock_irqrestore(&host->lock, flags);
+		data->host_cookie &=
+			~(MSDC_PREPARE_FLAG | MSDC_ASYNC_FLAG |
+			  MSDC_BOUNCE_FLAG | MSDC_BOUNCE_SLOT_MASK);
+		return;
+	}
+
+	len = slot->len;
+	/* DMA completion/reset has returned ownership of the active range. */
+	dma_sync_single_for_cpu(host->dev, slot->dma, len, DMA_BIDIRECTIONAL);
+
+	if ((data->flags & MMC_DATA_READ) && !data->error) {
+		if (data->bytes_xfered > len) {
+			dev_warn(host->dev,
+				 "prefetched Basic-DMA result exceeds buffer (%u > %zu)\n",
+				 data->bytes_xfered, len);
+			data->error = -EIO;
+			data->bytes_xfered = 0;
+		} else if (sg_copy_from_buffer(data->sg, data->sg_len,
+					       slot->buf, data->bytes_xfered) !=
+				   data->bytes_xfered) {
+			dev_warn(host->dev,
+				 "short SG copy from prefetched Basic-DMA bounce\n");
+			data->error = -EIO;
+			data->bytes_xfered = 0;
+		}
+	}
+
+	spin_lock_irqsave(&host->lock, flags);
+	if (slot->data == data) {
+		slot->data = NULL;
+		slot->len = 0;
+	}
+	spin_unlock_irqrestore(&host->lock, flags);
+	data->host_cookie &=
+		~(MSDC_PREPARE_FLAG | MSDC_ASYNC_FLAG |
+		  MSDC_BOUNCE_FLAG | MSDC_BOUNCE_SLOT_MASK);
+}
+
 static void msdc_finish_bounce(struct msdc_host *host, struct mmc_data *data)
 {
 	unsigned int bounce_len;
@@ -1059,6 +1263,10 @@ static void msdc_finish_bounce(struct msdc_host *host, struct mmc_data *data)
 
 	if (!(data->host_cookie & MSDC_BOUNCE_FLAG))
 		return;
+	if (data->host_cookie & MSDC_BOUNCE_SLOT_MASK) {
+		msdc_finish_double_bounce(host, data);
+		return;
+	}
 
 	/* A late post_req() must not touch a bounce buffer reused by another MRQ. */
 	if (host->basic_bounce_data != data) {
@@ -1120,6 +1328,24 @@ static void msdc_unmap_basic_bounce(void *arg)
 	dma_unmap_single(host->dev, host->basic_bounce_dma,
 			 MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
 	host->basic_bounce_mapped = false;
+}
+
+static void msdc_unmap_basic_bounce_slots(void *arg)
+{
+	struct msdc_host *host = arg;
+	unsigned int i;
+
+	for (i = 0; i < MSDC_BASIC_BOUNCE_SLOTS; i++) {
+		struct msdc_basic_bounce_slot *slot =
+			&host->basic_bounce_slots[i];
+
+		if (!slot->mapped)
+			continue;
+
+		dma_unmap_single(host->dev, slot->dma,
+				 MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
+		slot->mapped = false;
+	}
 }
 
 static void msdc_unprepare_data(struct msdc_host *host, struct mmc_data *data)
@@ -1971,16 +2197,28 @@ static void msdc_pre_req(struct mmc_host *mmc, struct mmc_request *mrq)
 	struct mmc_data *data = mrq->data;
 
 	/*
-	 * MT6797 board diagnostics can disable speculative mappings.  The
+	 * MT6797 board diagnostics can disable speculative mappings.  The normal
 	 * synchronous path maps in msdc_ops_request() and unmaps after the
-	 * controller reports completion, keeping the DMA ownership transition
-	 * local to one request.
+	 * controller reports completion.  The opt-in double-bounce path is the
+	 * exception: it only prepares a private CPU buffer here, and still defers
+	 * DMA ownership of that buffer until the controller is started.
 	 */
-	if (host->disable_async_dma || msdc_pio_enabled(host))
+	if (msdc_pio_enabled(host))
 		return;
 
 	if (!data)
 		return;
+
+	/*
+	 * The double-bounce experiment keeps disable-async-dma semantics for
+	 * the original SG list: pre_req() may only copy into a private slot.
+	 * DMA mapping and device ownership are deferred until start_data().
+	 */
+	if (host->disable_async_dma) {
+		if (host->basic_dma_double_bounce && data->sg_len > 1)
+			msdc_prepare_data(host, data);
+		return;
+	}
 
 	msdc_prepare_data(host, data);
 	data->host_cookie |= MSDC_ASYNC_FLAG;
@@ -3614,6 +3852,24 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 						 "mediatek,force-pio");
 	host->force_basic_dma = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,force-basic-dma");
+	{
+		bool basic_dma_bounce;
+
+		basic_dma_bounce = of_property_read_bool(pdev->dev.of_node,
+						 "mediatek,basic-dma-bounce");
+		host->basic_dma_double_bounce =
+			of_property_read_bool(pdev->dev.of_node,
+						     "mediatek,basic-dma-double-bounce") &&
+			host->dev_comp == &mt6797_compat &&
+			host->force_basic_dma && host->disable_async_dma &&
+			!host->force_pio && !host->cqhci;
+		/* The double-buffer property implies the ordinary bounce path. */
+		host->basic_dma_bounce =
+			(basic_dma_bounce || host->basic_dma_double_bounce) &&
+			host->dev_comp == &mt6797_compat &&
+			host->force_basic_dma && host->disable_async_dma &&
+			!host->force_pio && !host->cqhci;
+	}
 	host->descriptor_dma = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,descriptor-dma");
 	if (host->descriptor_dma)
@@ -3636,17 +3892,11 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 			host->force_basic_dma = false;
 		}
 	}
-	/*
-	 * Keep force-basic-dma's historical one-SG limit as the default.  The
-	 * cacheable bounce path is a board-specific, experimentally validated
-	 * optimization and must be explicitly enabled by the DT.
-	 */
-	host->basic_dma_bounce =
-		of_property_read_bool(pdev->dev.of_node,
-				      "mediatek,basic-dma-bounce") &&
-		host->dev_comp == &mt6797_compat &&
-		host->force_basic_dma && host->disable_async_dma &&
-		!host->force_pio && !host->cqhci;
+	/* Descriptor DMA and either Basic-DMA bounce mode are mutually exclusive. */
+	if (!host->force_basic_dma) {
+		host->basic_dma_bounce = false;
+		host->basic_dma_double_bounce = false;
+	}
 }
 
 static int msdc_of_clock_parse(struct platform_device *pdev,
@@ -3847,7 +4097,62 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	else
 		host->dma_mask = DMA_BIT_MASK(32);
 	mmc_dev(mmc)->dma_mask = &host->dma_mask;
-	if (host->basic_dma_bounce) {
+	if (host->basic_dma_bounce && host->basic_dma_double_bounce) {
+		bool alloc_failed = false;
+		unsigned int i, j;
+
+		for (i = 0; i < MSDC_BASIC_BOUNCE_SLOTS; i++) {
+			struct msdc_basic_bounce_slot *slot =
+				&host->basic_bounce_slots[i];
+
+			slot->buf = devm_kmalloc(&pdev->dev,
+						 MSDC_BASIC_BOUNCE_SIZE, GFP_KERNEL);
+			if (!slot->buf) {
+				alloc_failed = true;
+				break;
+			}
+
+			slot->dma = dma_map_single(&pdev->dev, slot->buf,
+						   MSDC_BASIC_BOUNCE_SIZE,
+						   DMA_BIDIRECTIONAL);
+			if (dma_mapping_error(&pdev->dev, slot->dma)) {
+				slot->dma = 0;
+				alloc_failed = true;
+				break;
+			}
+			slot->mapped = true;
+		}
+
+		if (alloc_failed) {
+			/* No cleanup action is registered until all maps succeeded. */
+			for (j = 0; j < MSDC_BASIC_BOUNCE_SLOTS; j++) {
+				struct msdc_basic_bounce_slot *slot =
+					&host->basic_bounce_slots[j];
+
+				if (!slot->mapped)
+					continue;
+				dma_unmap_single(&pdev->dev, slot->dma,
+						 MSDC_BASIC_BOUNCE_SIZE, DMA_BIDIRECTIONAL);
+				slot->mapped = false;
+			}
+			dev_warn(&pdev->dev,
+				 "double Basic-DMA bounce allocation failed; retaining max_segs=1\n");
+			host->basic_dma_bounce = false;
+			host->basic_dma_double_bounce = false;
+		} else if (devm_add_action_or_reset(&pdev->dev,
+						       msdc_unmap_basic_bounce_slots,
+						       host)) {
+			dev_warn(&pdev->dev,
+				 "double Basic-DMA bounce cleanup setup failed; retaining max_segs=1\n");
+			host->basic_dma_bounce = false;
+			host->basic_dma_double_bounce = false;
+		} else {
+			dev_info(&pdev->dev,
+				 "prefetching multi-SG requests through %u %u-byte cacheable Basic-DMA bounce slots\n",
+				 MSDC_BASIC_BOUNCE_SLOTS, MSDC_BASIC_BOUNCE_SIZE);
+		}
+	}
+	if (host->basic_dma_bounce && !host->basic_dma_double_bounce) {
 		/*
 		 * Keep the CPU side cacheable.  The controller only accepts one
 		 * Basic-DMA segment here, so map this physically contiguous kmalloc

@@ -204,6 +204,16 @@ properties:
       controller path.  It is intentionally opt-in because it changes the
       default max_segs limit and is board-specific.
 
+  mediatek,basic-dma-double-bounce:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Opt in to two 512 KiB cacheable Basic-DMA buffers.  The driver may copy
+      a multi-SG request during pre_req() and transfers ownership only when
+      DMA starts.  This requires mediatek,force-basic-dma and
+      mediatek,disable-async-dma; it is ignored for PIO or CQE and falls back
+      to preparation at request start when no slot is available during
+      pre_req().
+
   mediatek,axi-rd-outstanding:
     $ref: /schemas/types.yaml#/definitions/uint32
     description:
