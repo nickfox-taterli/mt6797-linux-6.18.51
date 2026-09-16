@@ -183,7 +183,7 @@
 };
 
 &mmc0 {
-	/* Keep the validated single-segment DMA path for HS400. */
+	/* Validated high-throughput descriptor DMA path for HS400. */
 	bus-width = <8>;
 	max-frequency = <200000000>;
 	cap-mmc-highspeed;
@@ -196,7 +196,8 @@
 	no-sd;
 	no-sdio;
 	mediatek,disable-async-dma;
-	mediatek,force-basic-dma;
+	mediatek,descriptor-dma;
+	mediatek,descriptor-max-req-size = <4194304>;
 	vmmc-supply = <&reg_vmmc>;
 	vqmmc-supply = <&reg_vqmmc>;
 	pinctrl-names = "default", "state_uhs";
