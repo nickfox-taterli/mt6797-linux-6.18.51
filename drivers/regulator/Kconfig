@@ -881,6 +881,13 @@ config REGULATOR_MT6315
 	  This driver supports the control of different power rails of device
 	  through regulator interface.
 
+config REGULATOR_MT6351
+	tristate "MediaTek MT6351 VMCH regulator"
+	depends on MTK_PMIC_WRAP && OF
+	help
+	  Enable the minimal MT6351 VMCH regulator used by the MT6797 X20
+	  board's TF card slot.
+
 config REGULATOR_MT6323
 	tristate "MediaTek MT6323 PMIC"
 	depends on MFD_MT6397
