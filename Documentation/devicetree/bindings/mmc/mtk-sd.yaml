@@ -228,6 +228,16 @@ properties:
     minimum: 0
     maximum: 31
 
+  mediatek,axi-burst-len:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      Optional MT6797 AXI burst length in beats.  The driver encodes the
+      value minus one in EMMC50_CFG2 bits 27:24; omit the property to retain
+      the hardware reset/default value.  This property does not alter the
+      AXI outstanding limits.
+    minimum: 1
+    maximum: 16
+
   resets:
     maxItems: 1
 

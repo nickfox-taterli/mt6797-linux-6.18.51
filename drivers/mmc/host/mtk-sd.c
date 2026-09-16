@@ -342,7 +342,7 @@
 
 /* EMMC50_CFG2 mask */
 #define EMMC50_CFG2_AXI_RD_OUTS_NUM GENMASK(23, 19) /* RW, MT6797 */
-#define EMMC50_CFG2_AXI_SET_LEN   GENMASK(27, 24) /* RW */
+#define EMMC50_CFG2_AXI_SET_LEN   GENMASK(27, 24) /* RW, MT6797 */
 
 #define EMMC50_CFG3_OUTS_WR       GENMASK(4, 0)   /* RW */
 
@@ -572,6 +572,7 @@ struct msdc_host {
 	u32 hs400_cmd_int_delay; /* cmd internal delay for HS400 */
 	u32 axi_rd_outs_num; /* MT6797 EMMC50_CFG2 AXI read outstanding */
 	u32 axi_wr_outs_num; /* MT6797 EMMC50_CFG3 AXI write outstanding */
+	u32 axi_burst_len; /* MT6797 EMMC50_CFG2 AXI burst length, in beats */
 	u32 tuning_step;
 	bool hs400_cmd_resp_sel_rising;
 				 /* cmd response sample selection for HS400 */
@@ -2610,6 +2611,7 @@ static void msdc_mt6797_vendor_timing_init(struct msdc_host *host)
 static void msdc_init_hw(struct msdc_host *host)
 {
 	u32 val, pb1_val, pb2_val;
+	u32 axi_burst_len;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 	struct mmc_host *mmc = mmc_from_priv(host);
 
@@ -2698,6 +2700,20 @@ static void msdc_init_hw(struct msdc_host *host)
 
 	/* First MSDC_PATCH_BIT setup is done: pull the trigger! */
 	writel(val, host->base + MSDC_PATCH_BIT);
+
+	/*
+	 * MT6797's AXI burst length is encoded as length minus one in
+	 * EMMC50_CFG2[27:24].  Keep the reset value unless a board explicitly
+	 * opts in; only this field is changed here.
+	 */
+	if (host->dev_comp == &mt6797_compat && host->axi_burst_len) {
+		axi_burst_len = min_t(u32, host->axi_burst_len, 16);
+		sdr_set_field(host->base + EMMC50_CFG2,
+			      EMMC50_CFG2_AXI_SET_LEN, axi_burst_len - 1);
+		dev_info(host->dev,
+			 "MT6797 AXI burst length: %u beats cfg2=%08x\n",
+			 axi_burst_len, readl(host->base + EMMC50_CFG2));
+	}
 
 	/* Set wr data, crc status, cmd response turnaround period for UHS104 */
 	pb1_val = FIELD_PREP(MSDC_PB1_WRDAT_CRC_TACNTR, 1);
@@ -3823,6 +3839,8 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 			     &host->axi_rd_outs_num);
 	of_property_read_u32(pdev->dev.of_node, "mediatek,axi-wr-outstanding",
 			     &host->axi_wr_outs_num);
+	of_property_read_u32(pdev->dev.of_node, "mediatek,axi-burst-len",
+			     &host->axi_burst_len);
 
 	if (of_property_read_bool(pdev->dev.of_node,
 				  "mediatek,hs400-cmd-resp-sel-rising"))
