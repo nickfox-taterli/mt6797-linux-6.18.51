@@ -336,9 +336,16 @@
 	};
 
 	mmc1_pins_default: mmc1-default-pins {
-		pins-cmd-dat {
-			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
-				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+		pins-cmd {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <6>;
+		};
+
+		pins-dat {
+			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
 				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
 				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
 				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
@@ -350,9 +357,9 @@
 
 		pins-clk {
 			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
-			input-enable;
+			input-disable;
 			input-schmitt-enable;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			bias-disable;
 			drive-strength = <6>;
 		};
 
@@ -364,9 +371,16 @@
 	};
 
 	mmc1_pins_uhs: mmc1-uhs-pins {
-		pins-cmd-dat {
-			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>,
-				 <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+		pins-cmd {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <3>;
+		};
+
+		pins-dat {
+			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
 				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
 				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
 				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
@@ -378,9 +392,9 @@
 
 		pins-clk {
 			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
-			input-enable;
+			input-disable;
 			input-schmitt-enable;
-			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			bias-disable;
 			drive-strength = <4>;
 		};
 
