@@ -341,6 +341,7 @@
 #define EMMC50_CFG1_DS_CFG        BIT(28)  /* RW */
 
 /* EMMC50_CFG2 mask */
+#define EMMC50_CFG2_AXI_RD_OUTS_NUM GENMASK(23, 19) /* RW, MT6797 */
 #define EMMC50_CFG2_AXI_SET_LEN   GENMASK(27, 24) /* RW */
 
 #define EMMC50_CFG3_OUTS_WR       GENMASK(4, 0)   /* RW */
@@ -557,6 +558,8 @@ struct msdc_host {
 	u32 hs400_ds_dly3;
 	u32 hs200_cmd_int_delay; /* cmd internal delay for HS200/SDR104 */
 	u32 hs400_cmd_int_delay; /* cmd internal delay for HS400 */
+	u32 axi_rd_outs_num; /* MT6797 EMMC50_CFG2 AXI read outstanding */
+	u32 axi_wr_outs_num; /* MT6797 EMMC50_CFG3 AXI write outstanding */
 	u32 tuning_step;
 	bool hs400_cmd_resp_sel_rising;
 				 /* cmd response sample selection for HS400 */
@@ -3240,6 +3243,27 @@ static int msdc_prepare_hs400_tuning(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	host->hs400_mode = true;
 
+	/*
+	 * MT6797 exposes AXI read/write outstanding limits in the eMMC50
+	 * registers. Keep reset values by default; board DTS may opt in to a
+	 * measured value for a throughput probe without changing DMA mode.
+	 */
+	if (host->dev_comp == &mt6797_compat && host->axi_rd_outs_num)
+		sdr_set_field(host->base + EMMC50_CFG2,
+			      EMMC50_CFG2_AXI_RD_OUTS_NUM,
+			      min_t(u32, host->axi_rd_outs_num, 31));
+	if (host->dev_comp == &mt6797_compat && host->axi_wr_outs_num)
+		sdr_set_field(host->base + EMMC50_CFG3,
+			      EMMC50_CFG3_OUTS_WR,
+			      min_t(u32, host->axi_wr_outs_num, 31));
+	if (host->dev_comp == &mt6797_compat &&
+	    (host->axi_rd_outs_num || host->axi_wr_outs_num))
+		dev_info(host->dev,
+			 "MT6797 AXI outstanding: read=%u write=%u cfg2=%08x cfg3=%08x\n",
+			 host->axi_rd_outs_num, host->axi_wr_outs_num,
+			 readl(host->base + EMMC50_CFG2),
+			 readl(host->base + EMMC50_CFG3));
+
 	if (host->top_base) {
 		if (host->hs400_ds_dly3)
 			sdr_set_field(host->top_base + EMMC50_PAD_DS_TUNE,
@@ -3554,6 +3578,11 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 
 	of_property_read_u32(pdev->dev.of_node, "mediatek,hs400-cmd-int-delay",
 			     &host->hs400_cmd_int_delay);
+
+	of_property_read_u32(pdev->dev.of_node, "mediatek,axi-rd-outstanding",
+			     &host->axi_rd_outs_num);
+	of_property_read_u32(pdev->dev.of_node, "mediatek,axi-wr-outstanding",
+			     &host->axi_wr_outs_num);
 
 	if (of_property_read_bool(pdev->dev.of_node,
 				  "mediatek,hs400-cmd-resp-sel-rising"))
