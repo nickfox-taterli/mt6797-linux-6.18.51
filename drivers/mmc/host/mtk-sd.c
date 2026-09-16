@@ -875,15 +875,16 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 		dma_len = sg_dma_len(sg);
 
 		sdr_clr_bits(host->base + MSDC_DMA_CFG, MSDC_DMA_CFG_DECSEN);
-		sdr_set_field(host->base + MSDC_DMA_CTRL,
-			      MSDC_DMA_CTRL_BRUSTSZ, MSDC_BURST_64B);
-		sdr_clr_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_MODE);
-		sdr_set_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF);
-		writel(dma_len, host->base + MSDC_DMA_LEN);
 		if (host->dev_comp->support_64g)
 			sdr_set_field(host->base + DMA_SA_H4BIT, DMA_ADDR_HIGH_4BIT,
 				      upper_32_bits(dma_address) & 0xf);
+		/* Match the MT6797 vendor order for the Basic DMA registers. */
 		writel(lower_32_bits(dma_address), host->base + MSDC_DMA_SA);
+		sdr_set_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_LASTBUF);
+		writel(dma_len, host->base + MSDC_DMA_LEN);
+		sdr_set_field(host->base + MSDC_DMA_CTRL,
+			      MSDC_DMA_CTRL_BRUSTSZ, MSDC_BURST_64B);
+		sdr_clr_bits(host->base + MSDC_DMA_CTRL, MSDC_DMA_CTRL_MODE);
 		return;
 	}
 
