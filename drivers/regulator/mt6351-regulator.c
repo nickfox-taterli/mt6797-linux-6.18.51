@@ -13,6 +13,10 @@
 #define MT6351_VMCH_ANA_CON0	0x0ace
 #define MT6351_LDO_VMC_CON0	0x0aaa
 #define MT6351_VMC_ANA_CON0	0x0ae2
+#define MT6351_LDO_VCN18_CON0	0x0a52
+#define MT6351_LDO_VCN28_CON0	0x0a0c
+#define MT6351_LDO_VCN33_CON3	0x0a98
+#define MT6351_LDO_VCN33_CON4	0x0a9a
 
 static const unsigned int mt6351_vmch_voltages[] = {
 	3000000,
@@ -80,6 +84,41 @@ static const struct regulator_desc mt6351_vmc_desc = {
 	.ops = &mt6351_vmc_ops,
 };
 
+/*
+ * Connectivity rails for the MT6797 ConSys / MT6631 combo. Each output has a
+ * hardware-fixed voltage and a single software enable bit; VCN33 has separate
+ * BT and WiFi outputs (LDO_VCN33_CON3/CON4).
+ */
+#define MT6351_FIXED_LDO(_name, _id, _of, _reg)				\
+static const struct regulator_desc mt6351_##_name##_desc = {		\
+	.name = #_name,							\
+	.of_match = of_match_ptr(_of),					\
+	.regulators_node = of_match_ptr("regulators"),			\
+	.type = REGULATOR_VOLTAGE,					\
+	.owner = THIS_MODULE,						\
+	.n_voltages = 1,						\
+	.fixed_uV = _id##_UV,						\
+	.enable_reg = _reg,						\
+	.enable_mask = BIT(1),						\
+	.ops = &mt6351_vcn_ops,						\
+}
+
+static const struct regulator_ops mt6351_vcn_ops = {
+	.enable = regulator_enable_regmap,
+	.disable = regulator_disable_regmap,
+	.is_enabled = regulator_is_enabled_regmap,
+};
+
+#define MT6351_VCN18_UV 1800000
+#define MT6351_VCN28_UV 2800000
+#define MT6351_VCN33_BT_UV 3300000
+#define MT6351_VCN33_WIFI_UV 3300000
+
+MT6351_FIXED_LDO(vcn18, MT6351_VCN18, "ldo_vcn18", MT6351_LDO_VCN18_CON0);
+MT6351_FIXED_LDO(vcn28, MT6351_VCN28, "ldo_vcn28", MT6351_LDO_VCN28_CON0);
+MT6351_FIXED_LDO(vcn33_bt, MT6351_VCN33_BT, "ldo_vcn33_bt", MT6351_LDO_VCN33_CON3);
+MT6351_FIXED_LDO(vcn33_wifi, MT6351_VCN33_WIFI, "ldo_vcn33_wifi", MT6351_LDO_VCN33_CON4);
+
 static int mt6351_regulator_probe(struct platform_device *pdev)
 {
 	struct regulator_config config = {
@@ -89,6 +128,10 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 	const struct regulator_desc *descs[] = {
 		&mt6351_vmch_desc,
 		&mt6351_vmc_desc,
+		&mt6351_vcn18_desc,
+		&mt6351_vcn28_desc,
+		&mt6351_vcn33_bt_desc,
+		&mt6351_vcn33_wifi_desc,
 	};
 	unsigned int i;
 	struct regulator_dev *rdev;
@@ -123,5 +166,5 @@ static struct platform_driver mt6351_regulator_driver = {
 };
 module_platform_driver(mt6351_regulator_driver);
 
-MODULE_DESCRIPTION("Minimal MT6351 VMC/VMCH regulator driver");
+MODULE_DESCRIPTION("Minimal MT6351 VMC/VMCH/VCN regulator driver");
 MODULE_LICENSE("GPL");
