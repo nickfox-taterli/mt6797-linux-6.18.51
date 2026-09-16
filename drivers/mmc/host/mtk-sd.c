@@ -1299,6 +1299,10 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 	mmc->actual_clock = sclk;
 	host->mclk = hz;
 	host->timing = timing;
+	if (mmc->index == 1 && timing == MMC_TIMING_SD_HS)
+		dev_info(host->dev,
+			 "TF clock: requested=%u actual=%u source=%u mode=%u div=%u\n",
+			 hz, sclk, host->src_clk_freq, mode, div);
 	/* need because clk changed. */
 	msdc_set_timeout(host, host->timeout_ns, host->timeout_clks);
 	sdr_set_bits(host->base + MSDC_INTEN, flags);
