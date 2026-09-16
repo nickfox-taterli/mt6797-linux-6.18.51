@@ -183,10 +183,13 @@
 };
 
 &mmc0 {
-	/* Temporary eMMC DMA control: legacy high-speed at 52 MHz. */
+	/* Keep the validated single-segment DMA path for HS400. */
 	bus-width = <8>;
-	max-frequency = <52000000>;
+	max-frequency = <200000000>;
 	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
 	mediatek,latch-ck = <1>;
 	mediatek,tuning-step = <64>;
 	non-removable;
