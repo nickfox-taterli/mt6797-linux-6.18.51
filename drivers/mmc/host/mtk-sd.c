@@ -2160,9 +2160,20 @@ static void msdc_mt6797_vendor_timing_init(struct msdc_host *host)
 	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_RESPWAIT, 3);
 	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_RESPSTSENSEL, 0);
 	sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_CRCSTSENSEL, 0);
-	sdr_clr_bits(host->base + MSDC_PAD_TUNE0, MSDC_PAD_TUNE_RXDLYSEL);
-	sdr_set_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGCRCSTS);
-	sdr_clr_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGRESP);
+	/* The shipped MT6797 configuration leaves FEATURE_ASYNC_PATH_ENABLE
+	 * disabled, so command/data receive timing uses the delay-line path.
+	 */
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_RXDLYSEL | MSDC_PAD_TUNE_RD_SEL);
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST,
+		     MSDC_PAD_TUNE_RD2_SEL);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_CMD_SEL);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST,
+		     MSDC_PAD_TUNE_CMD2_SEL);
+	sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_DDLSEL);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGCRCSTS);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGRESP);
 	sdr_clr_bits(host->base + EMMC50_CFG0,
 			EMMC50_CFG_CFCSTS_SEL | EMMC50_CFG_CMD_RESP_SEL |
 			EMMC50_CFG_CRCSTS_EDGE);
@@ -2677,8 +2688,15 @@ static void msdc_mt6797_hs200_tuning_init(struct msdc_host *host)
 	/* Mirror Vendor autok_init_hs200()/autok_path_sel(). */
 	/* Use the eMMC 4.5 write path while HS200 is active. */
 	sdr_clr_bits(host->base + SDC_ADV_CFG0, SDC_NEW_TX_EN);
-	sdr_set_bits(host->base + MSDC_PATCH_BIT2,
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
 		     MSDC_PATCH_BIT2_CFGCRCSTS);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT2,
+		     MSDC_PATCH_BIT2_CFGRESP);
+	sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_DDLSEL);
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_RXDLYSEL | MSDC_PAD_TUNE_RD_SEL);
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST,
+		     MSDC_PAD_TUNE_RD2_SEL);
 	sdr_clr_bits(host->base + MSDC_IOCON,
 		     MSDC_IOCON_DSPLSEL | MSDC_IOCON_W_DSPLSEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
@@ -2696,17 +2714,24 @@ static void msdc_mt6797_hs400_timing_init(struct msdc_host *host)
 	/* Mirror Vendor autok_path_sel()/autok_init_hs400(). */
 	/* Use the eMMC 5.0 write path and synchronous write CRC in HS400. */
 	sdr_set_bits(host->base + SDC_ADV_CFG0, SDC_NEW_TX_EN);
-	sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
-		     MSDC_PATCH_BIT2_CFGRESP);
+	/* MT6797 vendor builds use the delay-line receive path. */
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_RXDLYSEL | MSDC_PAD_TUNE_RD_SEL);
+	sdr_set_bits(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST,
+		     MSDC_PAD_TUNE_RD2_SEL);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0,
+		     MSDC_PAD_TUNE_CMD_SEL);
+	sdr_clr_bits(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST,
+		     MSDC_PAD_TUNE_CMD2_SEL);
+	sdr_set_bits(host->base + MSDC_IOCON, MSDC_IOCON_DDLSEL);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT2, MSDC_PATCH_BIT2_CFGRESP);
 	sdr_clr_bits(host->base + MSDC_IOCON,
 		     MSDC_IOCON_RSPL | MSDC_IOCON_DSPL |
-		     MSDC_IOCON_DDLSEL | MSDC_IOCON_DSPLSEL |
+		     MSDC_IOCON_DSPLSEL |
 		     MSDC_IOCON_W_DSPL | MSDC_IOCON_W_DSPLSEL);
-	sdr_clr_bits(host->base + MSDC_PAD_TUNE0,
-		     MSDC_PAD_TUNE_RXDLYSEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
-		     MSDC_PATCH_BIT2_CFGRESP | MSDC_PATCH_BIT2_CFGCRCSTS |
+		     MSDC_PATCH_BIT2_CFGCRCSTS |
 		     MSDC_PB2_CFGCRCSTSEDGE);
 	sdr_set_field(host->base + MSDC_PATCH_BIT2,
 		      MSDC_PB2_RESPSTSENSEL, 5);
