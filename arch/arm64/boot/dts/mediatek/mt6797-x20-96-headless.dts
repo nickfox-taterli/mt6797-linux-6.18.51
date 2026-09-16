@@ -213,11 +213,25 @@
 	cap-sd-highspeed;
 	/* Vendor wiring uses an active-low card-detect switch. */
 	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
-	vmmc-supply = <&reg_vmmc>;
+	vmmc-supply = <&mt6351_vmch>;
 	pinctrl-names = "default", "state_uhs";
 	pinctrl-0 = <&mmc1_pins_default>;
 	pinctrl-1 = <&mmc1_pins_uhs>;
 	status = "okay";
+};
+
+&pmic {
+	regulators {
+		compatible = "mediatek,mt6351-regulator";
+
+		mt6351_vmch: ldo_vmch {
+			regulator-name = "vmch";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+	};
 };
 
 &pio {
