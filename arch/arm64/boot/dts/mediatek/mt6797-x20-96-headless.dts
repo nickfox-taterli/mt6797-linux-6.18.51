@@ -211,8 +211,8 @@
 	bus-width = <4>;
 	max-frequency = <50000000>;
 	cap-sd-highspeed;
-	/* Probe the socket independently of the card-detect switch. */
-	non-removable;
+	/* Vendor wiring uses an active-low card-detect switch. */
+	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
 	vmmc-supply = <&mt6351_vmch>;
 	vqmmc-supply = <&mt6351_vmc>;
 	pinctrl-names = "default", "state_uhs";
