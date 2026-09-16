@@ -181,6 +181,13 @@ properties:
       Keep data transfers on the controller's single-segment Basic-DMA path.
       Without mediatek,basic-dma-bounce, this also preserves max_segs=1.
 
+  mediatek,descriptor-dma:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Opt in to the MT6797 chained descriptor DMA path for board-level
+      performance diagnostics.  This overrides mediatek,force-basic-dma and
+      requires mediatek,disable-async-dma; it is ignored for PIO or CQE.
+
   mediatek,basic-dma-bounce:
     $ref: /schemas/types.yaml#/definitions/flag
     description:

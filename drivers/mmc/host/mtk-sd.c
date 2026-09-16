@@ -571,6 +571,7 @@ struct msdc_host {
 	bool disable_async_dma;	/* map data only for the active request */
 	bool force_pio;		/* bypass DMA for controller diagnostics */
 	bool force_basic_dma;	/* keep MT6797 requests to one Basic-DMA SG */
+	bool descriptor_dma;	/* opt in to MT6797 chained descriptor DMA */
 	bool basic_dma_bounce;	/* aggregate MT6797 multi-SG requests in software */
 	bool hsq_en;		/* Host Software Queue is enabled */
 	void *basic_bounce_buf;
@@ -3612,6 +3613,24 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 						 "mediatek,force-pio");
 	host->force_basic_dma = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,force-basic-dma");
+	host->descriptor_dma = of_property_read_bool(pdev->dev.of_node,
+						 "mediatek,descriptor-dma");
+	if (host->descriptor_dma) {
+		/*
+		 * The X20 descriptor path is a board-level probe.  Keep it
+		 * synchronous and mutually exclusive with the diagnostic paths
+		 * whose lifetime/ownership rules differ from streaming DMA.
+		 */
+		if (host->dev_comp != &mt6797_compat ||
+		    !host->disable_async_dma || host->force_pio || host->cqhci) {
+			dev_warn(&pdev->dev,
+				 "descriptor-dma ignored unless MT6797 synchronous non-PIO DMA is used\n");
+			host->descriptor_dma = false;
+		} else {
+			/* Explicit opt-in overrides the board's force-basic default. */
+			host->force_basic_dma = false;
+		}
+	}
 	/*
 	 * Keep force-basic-dma's historical one-SG limit as the default.  The
 	 * cacheable bounce path is a board-specific, experimentally validated
@@ -3775,6 +3794,8 @@ static int msdc_drv_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "using PIO data transfers\n");
 	if (host->force_basic_dma)
 		dev_info(&pdev->dev, "using single-segment Basic DMA\n");
+	if (host->descriptor_dma)
+		dev_info(&pdev->dev, "using opt-in chained descriptor DMA\n");
 
 	host->dev = &pdev->dev;
 	host->src_clk_freq = clk_get_rate(host->src_clk);
