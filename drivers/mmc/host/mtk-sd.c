@@ -955,6 +955,8 @@ static inline void msdc_dma_setup(struct msdc_host *host, struct msdc_dma *dma,
 	if (host->dev_comp->support_64g)
 		sdr_set_field(host->base + DMA_SA_H4BIT, DMA_ADDR_HIGH_4BIT,
 			      upper_32_bits(dma->gpd_addr) & 0xf);
+	/* Publish the coherent descriptor contents before handing them to DMA. */
+	dma_wmb();
 	writel(lower_32_bits(dma->gpd_addr), host->base + MSDC_DMA_SA);
 }
 
