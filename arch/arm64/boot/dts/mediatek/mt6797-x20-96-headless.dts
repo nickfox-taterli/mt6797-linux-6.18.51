@@ -196,6 +196,7 @@
 	no-sd;
 	no-sdio;
 	mediatek,disable-hsq;
+	mediatek,disable-async-dma;
 	mediatek,force-basic-dma;
 	vmmc-supply = <&reg_vmmc>;
 	vqmmc-supply = <&reg_vqmmc>;
