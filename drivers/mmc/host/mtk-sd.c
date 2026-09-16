@@ -3612,7 +3612,15 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 						 "mediatek,force-pio");
 	host->force_basic_dma = of_property_read_bool(pdev->dev.of_node,
 						 "mediatek,force-basic-dma");
-	host->basic_dma_bounce = host->dev_comp == &mt6797_compat &&
+	/*
+	 * Keep force-basic-dma's historical one-SG limit as the default.  The
+	 * cacheable bounce path is a board-specific, experimentally validated
+	 * optimization and must be explicitly enabled by the DT.
+	 */
+	host->basic_dma_bounce =
+		of_property_read_bool(pdev->dev.of_node,
+				      "mediatek,basic-dma-bounce") &&
+		host->dev_comp == &mt6797_compat &&
 		host->force_basic_dma && host->disable_async_dma &&
 		!host->force_pio && !host->cqhci;
 }

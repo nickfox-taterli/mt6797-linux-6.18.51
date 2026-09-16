@@ -158,6 +158,51 @@ properties:
     enum: [32, 64]
     default: 32
 
+  mediatek,disable-hsq:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Disable the MTK host software queue.  This is intended for board-level
+      diagnostics when the queue does not improve throughput.
+
+  mediatek,disable-async-dma:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Disable speculative/asynchronous DMA mappings and map only the active
+      request.
+
+  mediatek,force-pio:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Force PIO data transfers for controller diagnostics.
+
+  mediatek,force-basic-dma:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Keep data transfers on the controller's single-segment Basic-DMA path.
+      Without mediatek,basic-dma-bounce, this also preserves max_segs=1.
+
+  mediatek,basic-dma-bounce:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description:
+      Opt in to the MT6797 cacheable Basic-DMA bounce buffer.  This aggregates
+      multi-SG requests in software while retaining the single-segment DMA
+      controller path.  It is intentionally opt-in because it changes the
+      default max_segs limit and is board-specific.
+
+  mediatek,axi-rd-outstanding:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      MT6797 HS400 AXI read outstanding limit used by a board-level probe.
+    minimum: 0
+    maximum: 31
+
+  mediatek,axi-wr-outstanding:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      MT6797 HS400 AXI write outstanding limit used by a board-level probe.
+    minimum: 0
+    maximum: 31
+
   resets:
     maxItems: 1
 
