@@ -206,10 +206,11 @@
 };
 
 &mmc1 {
-	/* TF is a runtime peripheral only; the Loader still boots eMMC/MSDC0. */
+	/* Validated UHS-I path; the Loader still boots eMMC/MSDC0 only. */
 	bus-width = <4>;
-	max-frequency = <50000000>;
+	max-frequency = <104000000>;
 	cap-sd-highspeed;
+	sd-uhs-sdr104;
 	/* This X20-96 board reports card insertion high on GPIO67. */
 	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
 	vmmc-supply = <&mt6351_vmch>;
