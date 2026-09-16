@@ -191,6 +191,8 @@
 	mmc-hs200-1_8v;
 	mmc-hs400-1_8v;
 	mediatek,latch-ck = <1>;
+	/* MT6797 vendor autok fixes the HS400 DS ZDLY tap at 20. */
+	mediatek,hs400-ds-dly3 = <20>;
 	mediatek,tuning-step = <64>;
 	non-removable;
 	no-sd;
