@@ -312,6 +312,7 @@ ATTRIBUTE_GROUPS(consys);
 static int mt6797_consys_probe(struct platform_device *pdev)
 {
 	struct mt6797_consys *cs;
+	struct resource *r;
 	int ret;
 
 	cs = devm_kzalloc(&pdev->dev, sizeof(*cs), GFP_KERNEL);
@@ -322,9 +323,16 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	cs->mcu = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(cs->mcu))
 		return PTR_ERR(cs->mcu);
-	cs->rgu = devm_platform_ioremap_resource(pdev, 1);
-	if (IS_ERR(cs->rgu))
-		return PTR_ERR(cs->rgu);
+	/*
+	 * The RGU window is owned by the watchdog driver; map it shared
+	 * (no request_mem_region) since only the CONSYS reset bit is touched.
+	 */
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (!r)
+		return -ENODEV;
+	cs->rgu = devm_ioremap(&pdev->dev, r->start, resource_size(r));
+	if (!cs->rgu)
+		return -ENOMEM;
 	cs->topckgen = devm_platform_ioremap_resource(pdev, 2);
 	if (IS_ERR(cs->topckgen))
 		return PTR_ERR(cs->topckgen);
