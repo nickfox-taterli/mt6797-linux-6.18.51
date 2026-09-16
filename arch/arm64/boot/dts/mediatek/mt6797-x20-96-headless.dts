@@ -183,17 +183,10 @@
 };
 
 &mmc0 {
-	/* Keep HS400 timing fixed while the synchronous DMA path is checked. */
+	/* Diagnostic control: test Basic DMA below the HS400 timing path. */
 	bus-width = <8>;
-	max-frequency = <200000000>;
+	max-frequency = <52000000>;
 	cap-mmc-highspeed;
-	mmc-ddr-1_8v;
-	mmc-hs200-1_8v;
-	mmc-hs400-1_8v;
-	mediatek,latch-ck = <1>;
-	/* MT6797 vendor autok fixes the HS400 DS ZDLY tap at 20. */
-	mediatek,hs400-ds-dly3 = <20>;
-	mediatek,tuning-step = <64>;
 	non-removable;
 	no-sd;
 	no-sdio;
