@@ -72,6 +72,7 @@ static const struct regulator_desc mt6351_vmc_desc = {
 	.type = REGULATOR_VOLTAGE,
 	.owner = THIS_MODULE,
 	.n_voltages = ARRAY_SIZE(mt6351_vmc_voltages),
+	.volt_table = mt6351_vmc_voltages,
 	.vsel_reg = MT6351_VMC_ANA_CON0,
 	.vsel_mask = 0x7 << 8,
 	.enable_reg = MT6351_LDO_VMC_CON0,
