@@ -223,6 +223,24 @@
 		reg = <0 0x10007000 0 0x100>;
 	};
 
+	/*
+	 * Connectivity subsystem: hosts the WLAN/BT/GPS baseband and drives
+	 * the external MT6631 radio over dedicated CONN_IF pins.  The AP_RGU
+	 * region is shared with the watchdog for the ConSys MCU software reset.
+	 */
+	consys: consys@18070000 {
+		compatible = "mediatek,mt6797-consys";
+		reg = <0 0x18070000 0 0x200>,   /* CONN_MCU_CONFIG */
+		      <0 0x10007000 0 0x100>,   /* AP_RGU (TOPRGU) */
+		      <0 0x10000000 0 0x2000>,  /* TOPCKGEN */
+		      <0 0x10006000 0 0x1000>;  /* SPM */
+		vcn18-supply = <&mt6351_vcn18>;
+		vcn28-supply = <&mt6351_vcn28>;
+		vcn33-bt-supply = <&mt6351_vcn33_bt>;
+		vcn33-wifi-supply = <&mt6351_vcn33_wifi>;
+		status = "disabled";
+	};
+
 	apmixedsys: apmixed@1000c000 {
 		compatible = "mediatek,mt6797-apmixedsys";
 		reg = <0 0x1000c000 0 0x1000>;
