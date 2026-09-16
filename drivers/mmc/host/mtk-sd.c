@@ -2678,7 +2678,7 @@ static void msdc_mt6797_hs200_tuning_init(struct msdc_host *host)
 	/* Use the eMMC 4.5 write path while HS200 is active. */
 	sdr_clr_bits(host->base + SDC_ADV_CFG0, SDC_NEW_TX_EN);
 	sdr_set_bits(host->base + MSDC_PATCH_BIT2,
-		     MSDC_PATCH_BIT2_CFGRESP);
+		     MSDC_PATCH_BIT2_CFGCRCSTS);
 	sdr_clr_bits(host->base + MSDC_IOCON,
 		     MSDC_IOCON_DSPLSEL | MSDC_IOCON_W_DSPLSEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
