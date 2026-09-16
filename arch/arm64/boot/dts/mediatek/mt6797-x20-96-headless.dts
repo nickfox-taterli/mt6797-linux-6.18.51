@@ -211,7 +211,7 @@
 	bus-width = <4>;
 	max-frequency = <50000000>;
 	cap-sd-highspeed;
-	/* Temporary polarity probe; the socket may report insertion high. */
+	/* This X20-96 board reports card insertion high on GPIO67. */
 	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
 	vmmc-supply = <&mt6351_vmch>;
 	vqmmc-supply = <&mt6351_vmc>;
