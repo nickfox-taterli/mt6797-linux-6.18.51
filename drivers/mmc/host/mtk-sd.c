@@ -2675,6 +2675,10 @@ static void msdc_mt6797_hs200_tuning_init(struct msdc_host *host)
 		return;
 
 	/* Mirror Vendor autok_init_hs200()/autok_path_sel(). */
+	/* Use the eMMC 4.5 write path while HS200 is active. */
+	sdr_clr_bits(host->base + SDC_ADV_CFG0, SDC_NEW_TX_EN);
+	sdr_set_bits(host->base + MSDC_PATCH_BIT2,
+		     MSDC_PATCH_BIT2_CFGRESP);
 	sdr_clr_bits(host->base + MSDC_IOCON,
 		     MSDC_IOCON_DSPLSEL | MSDC_IOCON_W_DSPLSEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
@@ -2690,6 +2694,10 @@ static void msdc_mt6797_hs400_timing_init(struct msdc_host *host)
 		return;
 
 	/* Mirror Vendor autok_path_sel()/autok_init_hs400(). */
+	/* Use the eMMC 5.0 write path and synchronous write CRC in HS400. */
+	sdr_set_bits(host->base + SDC_ADV_CFG0, SDC_NEW_TX_EN);
+	sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
+		     MSDC_PATCH_BIT2_CFGRESP);
 	sdr_clr_bits(host->base + MSDC_IOCON,
 		     MSDC_IOCON_RSPL | MSDC_IOCON_DSPL |
 		     MSDC_IOCON_DDLSEL | MSDC_IOCON_DSPLSEL |
