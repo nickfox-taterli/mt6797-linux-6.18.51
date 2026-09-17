@@ -20,6 +20,7 @@
 #include <linux/kstrtox.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sysfs.h>
@@ -53,6 +54,28 @@
 #define CONSYS_SPM_PWR_ACK_S_OFF	0x0184
 #define CONSYS_SPM_PWR_ACK_BIT		BIT(1)
 
+/*
+ * These bits describe an attempted stage, rather than only a successful
+ * stage.  That distinction matters when a register write succeeds but its
+ * following ACK poll times out: cleanup must still undo the write.
+ */
+#define CONSYS_STAGE_VCN18		BIT(0)
+#define CONSYS_STAGE_VCN28		BIT(1)
+#define CONSYS_STAGE_SLEEP_MASK		BIT(2)
+#define CONSYS_STAGE_RGU_RESET		BIT(3)
+#define CONSYS_STAGE_PWR_CFG		BIT(4)
+#define CONSYS_STAGE_PWR_ON		BIT(5)
+#define CONSYS_STAGE_PWR_ON_S		BIT(6)
+#define CONSYS_STAGE_CLK_ON		BIT(7)
+#define CONSYS_STAGE_ISO_RELEASED	BIT(8)
+#define CONSYS_STAGE_SPM_RESET		BIT(9)
+#define CONSYS_STAGE_AXI		BIT(10)
+#define CONSYS_STAGE_CHIP_ID		BIT(11)
+#define CONSYS_STAGE_RGU_RELEASED	BIT(12)
+
+#define CONSYS_STAGE_POWERED		(CONSYS_STAGE_CHIP_ID | \
+					 CONSYS_STAGE_RGU_RELEASED)
+
 struct mt6797_consys {
 	struct device *dev;
 	void __iomem *base[4];
@@ -64,6 +87,9 @@ struct mt6797_consys {
 	struct regulator *vcn28;
 	struct regulator *vcn33_bt;
 	struct regulator *vcn33_wifi;
+	struct mutex lock;
+	u32 stages;
+	int last_error;
 	bool powered;
 };
 
@@ -75,6 +101,18 @@ static int consys_wait_ack(struct mt6797_consys *cs, u32 off, u32 mask)
 	ret = readl_poll_timeout(cs->spm + off, val, val & mask, 10, 100000);
 	if (ret)
 		dev_err(cs->dev, "timeout waiting SPM ack @0x%x (val=0x%08x)\n",
+			off, val);
+	return ret;
+}
+
+static int consys_wait_ack_clear(struct mt6797_consys *cs, u32 off, u32 mask)
+{
+	u32 val;
+	int ret;
+
+	ret = readl_poll_timeout(cs->spm + off, val, !(val & mask), 10, 100000);
+	if (ret)
+		dev_err(cs->dev, "timeout clearing SPM ack @0x%x (val=0x%08x)\n",
 			off, val);
 	return ret;
 }
@@ -91,13 +129,137 @@ static void consys_rgu_sw_rst(struct mt6797_consys *cs, bool assert)
 	writel(val, cs->rgu + CONSYS_RGU_SWSYSRST_OFF);
 }
 
-static int consys_power_on(struct mt6797_consys *cs)
+static int consys_axi_protect(struct mt6797_consys *cs, bool enable)
+{
+	u32 val;
+
+	val = readl(cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
+	if (enable)
+		val |= CONSYS_TOPAXI_PROT_MASK;
+	else
+		val &= ~CONSYS_TOPAXI_PROT_MASK;
+	writel(val, cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
+
+	if (enable)
+		return readl_poll_timeout(cs->topckgen + CONSYS_TOPAXI_PROT_STA1_OFF,
+					  val, (val & CONSYS_TOPAXI_PROT_MASK) ==
+					       CONSYS_TOPAXI_PROT_MASK,
+					  10, 100000);
+
+	return readl_poll_timeout(cs->topckgen + CONSYS_TOPAXI_PROT_STA1_OFF,
+				  val, !(val & CONSYS_TOPAXI_PROT_MASK),
+				  10, 100000);
+}
+
+/* Called with cs->lock held. */
+static int consys_cleanup_locked(struct mt6797_consys *cs)
+{
+	int ret = 0;
+	int tmp;
+	u32 val;
+
+	if (cs->stages & CONSYS_STAGE_RGU_RELEASED) {
+		consys_rgu_sw_rst(cs, true);
+		cs->stages &= ~CONSYS_STAGE_RGU_RELEASED;
+	}
+
+	if (cs->stages & CONSYS_STAGE_AXI) {
+		tmp = consys_axi_protect(cs, true);
+		if (tmp && !ret) {
+			ret = tmp;
+			dev_err(cs->dev, "failed to re-enable AXI protection: %d\n", tmp);
+		}
+		cs->stages &= ~CONSYS_STAGE_AXI;
+	}
+
+	if (cs->stages & CONSYS_STAGE_SPM_RESET) {
+		val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		writel(val & ~CONSYS_SPM_PWR_RST_BIT,
+		       cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		cs->stages &= ~CONSYS_STAGE_SPM_RESET;
+	}
+
+	if (cs->stages & CONSYS_STAGE_ISO_RELEASED) {
+		val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		writel(val | CONSYS_SPM_PWR_ISO_S_BIT,
+		       cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		cs->stages &= ~CONSYS_STAGE_ISO_RELEASED;
+	}
+
+	if (cs->stages & CONSYS_STAGE_CLK_ON) {
+		val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		writel(val | CONSYS_SPM_CLK_DIS_BIT,
+		       cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		udelay(1);
+		cs->stages &= ~CONSYS_STAGE_CLK_ON;
+	}
+
+	if (cs->stages & (CONSYS_STAGE_PWR_ON | CONSYS_STAGE_PWR_ON_S)) {
+		val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		writel(val & ~(CONSYS_SPM_PWR_ON_BIT | CONSYS_SPM_PWR_ON_S_BIT),
+		       cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+		tmp = consys_wait_ack_clear(cs, CONSYS_SPM_PWR_ACK_OFF,
+					     CONSYS_SPM_PWR_ACK_BIT);
+		if (tmp && !ret)
+			ret = tmp;
+		tmp = consys_wait_ack_clear(cs, CONSYS_SPM_PWR_ACK_S_OFF,
+					     CONSYS_SPM_PWR_ACK_BIT);
+		if (tmp && !ret)
+			ret = tmp;
+		cs->stages &= ~(CONSYS_STAGE_PWR_ON | CONSYS_STAGE_PWR_ON_S);
+	}
+
+	if (cs->stages & CONSYS_STAGE_PWR_CFG) {
+		writel(CONSYS_SPM_PWRON_CONFG_EN_VAL & ~0x1,
+		       cs->spm + CONSYS_SPM_PWRON_CONFG_EN_OFF);
+		cs->stages &= ~CONSYS_STAGE_PWR_CFG;
+	}
+
+	/* The chip ID is an observation, not a power-off action. */
+	cs->stages &= ~CONSYS_STAGE_CHIP_ID;
+
+	if (cs->stages & CONSYS_STAGE_RGU_RESET)
+		cs->stages &= ~CONSYS_STAGE_RGU_RESET;
+
+	if (cs->stages & CONSYS_STAGE_SLEEP_MASK) {
+		val = readl(cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
+		writel(val & ~CONSYS_CONN2AP_SLEEP_MASK_BIT,
+		       cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
+		cs->stages &= ~CONSYS_STAGE_SLEEP_MASK;
+	}
+
+	if (cs->stages & CONSYS_STAGE_VCN28) {
+		tmp = regulator_disable(cs->vcn28);
+		if (tmp && !ret)
+			ret = tmp;
+		cs->stages &= ~CONSYS_STAGE_VCN28;
+	}
+	if (cs->stages & CONSYS_STAGE_VCN18) {
+		tmp = regulator_disable(cs->vcn18);
+		if (tmp && !ret)
+			ret = tmp;
+		cs->stages &= ~CONSYS_STAGE_VCN18;
+	}
+
+	cs->powered = false;
+	return ret;
+}
+
+/* Called with cs->lock held. */
+static int consys_power_on_locked(struct mt6797_consys *cs)
 {
 	u32 val, chipid;
 	int ret, retry;
 
 	if (cs->powered)
 		return 0;
+	if (cs->stages) {
+		dev_warn(cs->dev, "recovering incomplete state before power-on (0x%x)\n",
+			 cs->stages);
+		ret = consys_cleanup_locked(cs);
+		if (ret)
+			return ret;
+	}
 
 	/* Step 1: connectivity LDOs (vendor order: VCN18, settle, VCN28). */
 	ret = regulator_enable(cs->vcn18);
@@ -105,57 +267,65 @@ static int consys_power_on(struct mt6797_consys *cs)
 		dev_err(cs->dev, "failed to enable vcn18: %d\n", ret);
 		return ret;
 	}
+	cs->stages |= CONSYS_STAGE_VCN18;
 	udelay(240);
 	ret = regulator_enable(cs->vcn28);
 	if (ret) {
 		dev_err(cs->dev, "failed to enable vcn28: %d\n", ret);
-		goto err_vcn28;
+		goto err_cleanup;
 	}
+	cs->stages |= CONSYS_STAGE_VCN28;
 
 	/* Mask ConSys sleep requests while the MCU boots. */
 	val = readl(cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
 	writel(val | CONSYS_CONN2AP_SLEEP_MASK_BIT,
 	       cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
+	cs->stages |= CONSYS_STAGE_SLEEP_MASK;
 
 	/* Step 2: hold the ConSys MCU in software reset during power-up. */
 	consys_rgu_sw_rst(cs, true);
+	cs->stages |= CONSYS_STAGE_RGU_RESET;
 
 	/* Step 3: unmask SPM power-on control for the CONN domain. */
 	writel(CONSYS_SPM_PWRON_CONFG_EN_VAL,
 	       cs->spm + CONSYS_SPM_PWRON_CONFG_EN_OFF);
+	cs->stages |= CONSYS_STAGE_PWR_CFG;
 
 	/* Step 4: MTCMOS power-up with ISO release and clock enable. */
 	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
 	writel(val | CONSYS_SPM_PWR_ON_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+	cs->stages |= CONSYS_STAGE_PWR_ON;
 	ret = consys_wait_ack(cs, CONSYS_SPM_PWR_ACK_OFF, CONSYS_SPM_PWR_ACK_BIT);
 	if (ret)
-		goto err_pwr;
+		goto err_cleanup;
 
 	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
 	writel(val | CONSYS_SPM_PWR_ON_S_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+	cs->stages |= CONSYS_STAGE_PWR_ON_S;
 	ret = consys_wait_ack(cs, CONSYS_SPM_PWR_ACK_S_OFF, CONSYS_SPM_PWR_ACK_BIT);
 	if (ret)
-		goto err_pwr;
+		goto err_cleanup;
 
 	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
 	writel(val & ~CONSYS_SPM_CLK_DIS_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+	cs->stages |= CONSYS_STAGE_CLK_ON;
 	udelay(1);
 
 	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
 	writel(val & ~CONSYS_SPM_PWR_ISO_S_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+	cs->stages |= CONSYS_STAGE_ISO_RELEASED;
 
 	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
 	writel(val | CONSYS_SPM_PWR_RST_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
+	cs->stages |= CONSYS_STAGE_SPM_RESET;
 
 	/* Step 5: release the ConSys AXI bus protection. */
-	val = readl(cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
-	writel(val & ~CONSYS_TOPAXI_PROT_MASK, cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
-	ret = readl_poll_timeout(cs->topckgen + CONSYS_TOPAXI_PROT_STA1_OFF,
-				 val, !(val & CONSYS_TOPAXI_PROT_MASK),
-				 10, 100000);
+	cs->stages |= CONSYS_STAGE_AXI;
+	ret = consys_axi_protect(cs, false);
 	if (ret) {
-		dev_err(cs->dev, "AXI bus protect stuck (sta1=0x%08x)\n", val);
-		goto err_pwr;
+		dev_err(cs->dev, "AXI bus protect stuck (sta1=0x%08x)\n",
+			readl(cs->topckgen + CONSYS_TOPAXI_PROT_STA1_OFF));
+		goto err_cleanup;
 	}
 
 	/* 26 MHz is running by now; allow memory power-down de-assert. */
@@ -173,74 +343,58 @@ static int consys_power_on(struct mt6797_consys *cs)
 		dev_err(cs->dev, "ConSys chip ID 0x%08x != 0x%04x, power-on issue\n",
 			chipid, CONSYS_CHIP_ID);
 		ret = -EIO;
-		goto err_pwr;
+		goto err_cleanup;
 	}
 	dev_info(cs->dev, "ConSys chip ID 0x%04x confirmed\n", chipid);
+	cs->stages |= CONSYS_STAGE_CHIP_ID;
 
 	/* Step 7: run MBIST at real speed, then release the MCU reset. */
 	val = readl(cs->mcu + CONSYS_MCU_CFG_ACR_OFF);
 	writel(val | CONSYS_MCU_CFG_ACR_MBIST, cs->mcu + CONSYS_MCU_CFG_ACR_OFF);
 
 	consys_rgu_sw_rst(cs, false);
+	cs->stages &= ~CONSYS_STAGE_RGU_RESET;
+	cs->stages |= CONSYS_STAGE_RGU_RELEASED;
 	msleep(20);
 
-	cs->powered = true;
+	cs->powered = (cs->stages & CONSYS_STAGE_POWERED) == CONSYS_STAGE_POWERED;
 	dev_info(cs->dev, "ConSys powered on\n");
 	return 0;
 
-err_pwr:
-	regulator_disable(cs->vcn28);
-err_vcn28:
-	regulator_disable(cs->vcn18);
+err_cleanup:
+	cs->last_error = ret;
+	if (consys_cleanup_locked(cs))
+		dev_err(cs->dev, "cleanup after power-on failure also failed\n");
 	return ret;
 }
 
-static void consys_power_off(struct mt6797_consys *cs)
+/* Called with cs->lock held. */
+static int consys_power_off_locked(struct mt6797_consys *cs)
 {
-	u32 val;
+	int ret;
 
-	if (!cs->powered)
-		return;
+	if (!cs->stages)
+		return 0;
 
-	/* Hold the MCU in reset, then reverse the MTCMOS sequence. */
-	consys_rgu_sw_rst(cs, true);
-
-	val = readl(cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
-	writel(val | CONSYS_TOPAXI_PROT_MASK, cs->topckgen + CONSYS_TOPAXI_PROT_EN_OFF);
-
-	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-	writel(val & ~CONSYS_SPM_PWR_RST_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-
-	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-	writel(val | CONSYS_SPM_PWR_ISO_S_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-
-	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-	writel(val | CONSYS_SPM_CLK_DIS_BIT, cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-	udelay(1);
-
-	val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-	writel(val & ~(CONSYS_SPM_PWR_ON_BIT | CONSYS_SPM_PWR_ON_S_BIT),
-	       cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
-
-	writel(CONSYS_SPM_PWRON_CONFG_EN_VAL & ~0x1,
-	       cs->spm + CONSYS_SPM_PWRON_CONFG_EN_OFF);
-
-	val = readl(cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
-	writel(val & ~CONSYS_CONN2AP_SLEEP_MASK_BIT,
-	       cs->topckgen + CONSYS_CONN2AP_SLEEP_MASK_OFF);
-
-	regulator_disable(cs->vcn28);
-	regulator_disable(cs->vcn18);
-	cs->powered = false;
+	ret = consys_cleanup_locked(cs);
+	cs->last_error = ret;
+	if (ret)
+		dev_err(cs->dev, "ConSys power-off cleanup failed: %d\n", ret);
 	dev_info(cs->dev, "ConSys powered off\n");
+	return ret;
 }
 
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
 	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	bool powered;
 
-	return sysfs_emit(buf, "%d\n", cs->powered);
+	mutex_lock(&cs->lock);
+	powered = cs->powered;
+	mutex_unlock(&cs->lock);
+
+	return sysfs_emit(buf, "%d\n", powered);
 }
 
 static ssize_t power_store(struct device *dev, struct device_attribute *attr,
@@ -254,10 +408,12 @@ static ssize_t power_store(struct device *dev, struct device_attribute *attr,
 	if (ret)
 		return ret;
 
+	mutex_lock(&cs->lock);
 	if (on)
-		ret = consys_power_on(cs);
+		ret = consys_power_on_locked(cs);
 	else
-		consys_power_off(cs);
+		ret = consys_power_off_locked(cs);
+	mutex_unlock(&cs->lock);
 
 	return ret ? ret : count;
 }
@@ -266,20 +422,55 @@ static ssize_t chipid_show(struct device *dev, struct device_attribute *attr,
 			   char *buf)
 {
 	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	u32 chipid;
 
-	if (!cs->powered)
+	mutex_lock(&cs->lock);
+	if (!cs->powered) {
+		mutex_unlock(&cs->lock);
 		return sysfs_emit(buf, "off\n");
+	}
+	chipid = readl(cs->mcu + CONSYS_MCU_CHIP_ID_OFF);
+	mutex_unlock(&cs->lock);
 
-	return sysfs_emit(buf, "0x%04x\n",
-			  readl(cs->mcu + CONSYS_MCU_CHIP_ID_OFF));
+	return sysfs_emit(buf, "0x%04x\n", chipid);
+}
+
+static ssize_t state_show(struct device *dev, struct device_attribute *attr,
+			  char *buf)
+{
+	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	u32 stages;
+
+	mutex_lock(&cs->lock);
+	stages = cs->stages;
+	mutex_unlock(&cs->lock);
+
+	return sysfs_emit(buf, "0x%08x\n", stages);
+}
+
+static ssize_t last_error_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	int error;
+
+	mutex_lock(&cs->lock);
+	error = cs->last_error;
+	mutex_unlock(&cs->lock);
+
+	return sysfs_emit(buf, "%d\n", error);
 }
 
 static DEVICE_ATTR_RW(power);
 static DEVICE_ATTR_RO(chipid);
+static DEVICE_ATTR_RO(state);
+static DEVICE_ATTR_RO(last_error);
 
 static struct attribute *consys_attrs[] = {
 	&dev_attr_power.attr,
 	&dev_attr_chipid.attr,
+	&dev_attr_state.attr,
+	&dev_attr_last_error.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(consys);
@@ -296,6 +487,7 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	cs->dev = &pdev->dev;
+	mutex_init(&cs->lock);
 	/*
 	 * Every window here is (partly) owned by another driver: the RGU by
 	 * the watchdog, TOPCKGEN by the clock driver.  Map them shared
@@ -347,7 +539,9 @@ static void mt6797_consys_remove(struct platform_device *pdev)
 	struct mt6797_consys *cs = platform_get_drvdata(pdev);
 
 	device_remove_groups(&pdev->dev, consys_groups);
-	consys_power_off(cs);
+	mutex_lock(&cs->lock);
+	consys_power_off_locked(cs);
+	mutex_unlock(&cs->lock);
 }
 
 static const struct of_device_id mt6797_consys_of_match[] = {
