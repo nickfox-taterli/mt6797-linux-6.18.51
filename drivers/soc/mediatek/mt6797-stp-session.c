@@ -7,6 +7,7 @@
 // VCN rails, select an STP mode, or probe the chip by itself.
 
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/jiffies.h>
 #include <linux/kfifo.h>
@@ -14,6 +15,7 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
 
@@ -41,6 +43,8 @@ struct mt6797_stp_session {
 	struct device *owner;
 	struct mt6797_stp_session_ops ops;
 	void *context;
+	struct mt6797_stp_host_ops host_ops;
+	void *host_context;
 	struct mt6797_btif_client_ops btif_ops;
 
 	struct mt6797_stp_decoder decoder;
@@ -51,6 +55,7 @@ struct mt6797_stp_session {
 	/* send_lock serializes synchronous callers; tx_io_lock serializes bytes. */
 	struct mutex send_lock;
 	struct mutex tx_io_lock;
+	struct mutex host_config_lock;
 	spinlock_t state_lock;
 	wait_queue_head_t ack_wait;
 	struct completion response_done;
@@ -65,6 +70,7 @@ struct mt6797_stp_session {
 	bool retry_requested;
 	bool active;
 	bool delimiter;
+	bool host_enabled;
 	int terminal_error;
 
 	bool response_waiting;
@@ -452,6 +458,7 @@ struct mt6797_stp_session *mt6797_stp_session_alloc(
 	spin_lock_init(&session->state_lock);
 	mutex_init(&session->send_lock);
 	mutex_init(&session->tx_io_lock);
+	mutex_init(&session->host_config_lock);
 	init_waitqueue_head(&session->ack_wait);
 	init_completion(&session->response_done);
 	INIT_WORK(&session->rx_work, mt6797_stp_rx_work);
@@ -464,15 +471,29 @@ void mt6797_stp_session_stop(struct mt6797_stp_session *session)
 {
 	unsigned long flags;
 	bool was_active;
+	bool host_enabled;
+	int ret;
 
 	if (!session)
 		return;
+	mutex_lock(&session->host_config_lock);
+	spin_lock_irqsave(&session->state_lock, flags);
+	host_enabled = session->host_enabled;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	if (host_enabled && session->host_ops.set_enabled) {
+		ret = session->host_ops.set_enabled(session->host_context, false);
+		if (ret)
+			dev_warn(session->owner,
+				 "failed to disable host STP before stop: %d\n", ret);
+	}
 	spin_lock_irqsave(&session->state_lock, flags);
 	was_active = session->active;
 	session->active = false;
+	session->host_enabled = false;
 	session->terminal_error = -ESHUTDOWN;
 	session->response_waiting = false;
 	spin_unlock_irqrestore(&session->state_lock, flags);
+	mutex_unlock(&session->host_config_lock);
 	wake_up_all(&session->ack_wait);
 	complete_all(&session->response_done);
 	if (was_active)
@@ -497,9 +518,11 @@ int mt6797_stp_session_start(struct mt6797_stp_session *session, bool delimiter)
 
 	if (!session)
 		return -EINVAL;
+	mutex_lock(&session->host_config_lock);
 	spin_lock_irqsave(&session->state_lock, flags);
 	if (session->active) {
 		spin_unlock_irqrestore(&session->state_lock, flags);
+		mutex_unlock(&session->host_config_lock);
 		return -EBUSY;
 	}
 	session->delimiter = delimiter;
@@ -511,6 +534,7 @@ int mt6797_stp_session_start(struct mt6797_stp_session *session, bool delimiter)
 	session->retries = 0;
 	session->outstanding = 0;
 	session->retry_requested = false;
+	session->host_enabled = false;
 	memset(session->slots, 0, sizeof(session->slots));
 	spin_lock(&session->rx_lock);
 	kfifo_reset(&session->rx_fifo);
@@ -518,6 +542,7 @@ int mt6797_stp_session_start(struct mt6797_stp_session *session, bool delimiter)
 	mt6797_stp_decoder_init(&session->decoder);
 	session->active = true;
 	spin_unlock_irqrestore(&session->state_lock, flags);
+	mutex_unlock(&session->host_config_lock);
 	ret = mt6797_btif_claim(session->owner, &session->btif_ops, session);
 	if (ret) {
 		spin_lock_irqsave(&session->state_lock, flags);
@@ -536,6 +561,29 @@ int mt6797_stp_session_wake(struct mt6797_stp_session *session)
 	return mt6797_btif_wake(session->owner);
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_wake);
+
+int mt6797_stp_session_set_host_ops(struct mt6797_stp_session *session,
+					const struct mt6797_stp_host_ops *ops,
+					void *context)
+{
+	unsigned long flags;
+
+	if (!session || !ops || !ops->set_mode || !ops->set_enabled)
+		return -EINVAL;
+	mutex_lock(&session->host_config_lock);
+	spin_lock_irqsave(&session->state_lock, flags);
+	if (session->active || session->host_enabled) {
+		spin_unlock_irqrestore(&session->state_lock, flags);
+		mutex_unlock(&session->host_config_lock);
+		return -EBUSY;
+	}
+	session->host_ops = *ops;
+	session->host_context = context;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	mutex_unlock(&session->host_config_lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_session_set_host_ops);
 
 int mt6797_stp_session_send(struct mt6797_stp_session *session, u8 task,
 				    const u8 *payload, u16 length,
@@ -625,6 +673,116 @@ out_unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_wmt);
+
+static int mt6797_stp_expect_wmt(struct mt6797_stp_session *session,
+					const u8 *params, u16 parameter_length,
+					const u8 *expected, u16 expected_length,
+					unsigned long timeout_jiffies)
+{
+	u8 response[MT6797_STP_WMT_HEADER_SIZE + 6];
+	u16 response_length = 0;
+	int ret;
+
+	if (expected_length > sizeof(response))
+		return -EINVAL;
+	ret = mt6797_stp_session_wmt(session, 0x04, params, parameter_length,
+					     response, &response_length,
+					     sizeof(response), timeout_jiffies);
+	if (ret)
+		return ret;
+	if (response_length != expected_length ||
+	    memcmp(response, expected, expected_length))
+		return -EPROTO;
+	return 0;
+}
+
+int mt6797_stp_session_configure_btif_full(
+					struct mt6797_stp_session *session,
+					unsigned long timeout_jiffies)
+{
+	static const u8 query_params[] = { 0x04 };
+	static const u8 default_response[] = {
+		0x00, 0x04, 0x11, 0x00, 0x00, 0x00,
+	};
+	static const u8 set_params[] = {
+		0x03, 0xdf, 0x0e, 0x68, 0x01,
+	};
+	static const u8 set_response[] = { 0x00, 0x03 };
+	static const u8 full_response[] = {
+		0x00, 0x04, 0xdf, 0x0e, 0x68, 0x01,
+	};
+	struct mt6797_stp_host_ops host_ops;
+	void *host_context;
+	unsigned long flags;
+	bool host_enabled = false;
+	int ret;
+	int disable_ret;
+
+	if (!session || !timeout_jiffies)
+		return -EINVAL;
+	mutex_lock(&session->host_config_lock);
+	spin_lock_irqsave(&session->state_lock, flags);
+	if (!session->active || session->terminal_error) {
+		ret = session->terminal_error ?: -ESHUTDOWN;
+		spin_unlock_irqrestore(&session->state_lock, flags);
+		goto out_unlock;
+	}
+	host_ops = session->host_ops;
+	host_context = session->host_context;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	if (!host_ops.set_mode || !host_ops.set_enabled) {
+		ret = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	ret = mt6797_stp_expect_wmt(session, query_params,
+					ARRAY_SIZE(query_params), default_response,
+					ARRAY_SIZE(default_response), timeout_jiffies);
+	if (ret)
+		goto out_unlock;
+	ret = mt6797_stp_expect_wmt(session, set_params, ARRAY_SIZE(set_params),
+					set_response, ARRAY_SIZE(set_response),
+					timeout_jiffies);
+	if (ret)
+		goto out_unlock;
+
+	ret = host_ops.set_mode(host_context, MT6797_STP_BTIF_FULL_MODE);
+	if (ret)
+		goto out_unlock;
+	ret = host_ops.set_enabled(host_context, true);
+	if (ret)
+		goto out_unlock;
+	host_enabled = true;
+
+	/* The vendor sequence requires at least 2 ms; retain its 10 ms margin. */
+	msleep(10);
+	ret = mt6797_stp_expect_wmt(session, query_params,
+					ARRAY_SIZE(query_params), full_response,
+					ARRAY_SIZE(full_response), timeout_jiffies);
+	if (!ret) {
+		spin_lock_irqsave(&session->state_lock, flags);
+		session->host_enabled = true;
+		spin_unlock_irqrestore(&session->state_lock, flags);
+		goto out_unlock;
+	}
+
+	/* Do not leave a platform-owned host parser enabled after a failed query. */
+	disable_ret = host_ops.set_enabled(host_context, false);
+	if (disable_ret)
+		dev_warn(session->owner,
+			 "failed to roll back host STP enable after init error: %d\n",
+			 disable_ret);
+
+out_unlock:
+	if (ret && host_enabled) {
+		spin_lock_irqsave(&session->state_lock, flags);
+		session->host_enabled = false;
+		spin_unlock_irqrestore(&session->state_lock, flags);
+	}
+	mutex_unlock(&session->host_config_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_session_configure_btif_full);
 
 static int __init mt6797_stp_session_init(void)
 {
