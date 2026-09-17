@@ -822,6 +822,64 @@ static struct platform_driver mt6797_stp_diag_driver = {
 	},
 };
 
+static DEFINE_MUTEX(mt6797_stp_diag_registration_lock);
+static bool mt6797_stp_diag_registered;
+static bool mt6797_stp_diag_deferred;
+static bool mt6797_stp_diag_enable;
+
+static int mt6797_stp_diag_register(void)
+{
+	int ret = 0;
+
+	mutex_lock(&mt6797_stp_diag_registration_lock);
+	if (!mt6797_stp_diag_registered) {
+		ret = platform_driver_register(&mt6797_stp_diag_driver);
+		if (!ret) {
+			mt6797_stp_diag_registered = true;
+			mt6797_stp_diag_enable = true;
+		}
+	}
+	mutex_unlock(&mt6797_stp_diag_registration_lock);
+	return ret;
+}
+
+static int mt6797_stp_diag_enable_set(const char *val,
+					      const struct kernel_param *kp)
+{
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(val, &enable);
+	if (ret)
+		return ret;
+	if (!enable)
+		return -EINVAL;
+	/*
+	 * The parameter is also present for the ordinary opt-in DT.  In that
+	 * case the late initcall already registered the driver, so accepting a
+	 * redundant write keeps the initramfs hook harmless on a normal image.
+	 * Only the explicitly deferred DT is allowed to register at this point.
+	 */
+	if (!mt6797_stp_diag_deferred) {
+		if (READ_ONCE(mt6797_stp_diag_registered)) {
+			*(bool *)kp->arg = true;
+			return 0;
+		}
+		return -EINVAL;
+	}
+
+	return mt6797_stp_diag_register();
+}
+
+static const struct kernel_param_ops mt6797_stp_diag_enable_ops = {
+	.set = mt6797_stp_diag_enable_set,
+	.get = param_get_bool,
+};
+module_param_cb(enable, &mt6797_stp_diag_enable_ops,
+		&mt6797_stp_diag_enable, 0644);
+MODULE_PARM_DESC(enable,
+		 "register the deferred STP diagnostic platform driver (0/1)");
+
 /*
  * The driver is an opt-in bring-up hook.  Avoid registering a built-in
  * platform driver on the ordinary headless DT, where no diagnostic device
@@ -831,22 +889,27 @@ static struct platform_driver mt6797_stp_diag_driver = {
  * When built in, register at late initcall time.  The diagnostic probe only
  * creates sysfs state and takes a reference to ConSys, but doing that during
  * the ordinary device/deferred-probe window unnecessarily races storage
- * bring-up on this board.  A module keeps the normal module-init semantics.
+ * bring-up on this board.  A DT node with mediatek,defer-registration delays
+ * the registration until userspace writes the enable parameter after rootfs
+ * is mounted.  A module keeps the normal module-init semantics unless the DT
+ * explicitly requests the same deferred path.
  */
 static int __init mt6797_stp_diag_init(void)
 {
 	struct device_node *node;
-	int ret;
 
 	node = of_find_compatible_node(NULL, NULL, "mediatek,mt6797-stp-diag");
 	if (!node)
 		return 0;
+	mt6797_stp_diag_deferred = of_property_read_bool(node,
+							"mediatek,defer-registration");
 	of_node_put(node);
+	if (mt6797_stp_diag_deferred) {
+		pr_info("MT6797 STP diagnostic registration deferred; write enable=1 after rootfs mount\n");
+		return 0;
+	}
 
-	ret = platform_driver_register(&mt6797_stp_diag_driver);
-	if (ret)
-		pr_err("failed to register STP diagnostic driver: %d\n", ret);
-	return ret;
+	return mt6797_stp_diag_register();
 }
 #if IS_BUILTIN(CONFIG_MTK_MT6797_STP_DIAG)
 late_initcall(mt6797_stp_diag_init);
@@ -856,7 +919,13 @@ module_init(mt6797_stp_diag_init);
 
 static void __exit mt6797_stp_diag_exit(void)
 {
-	platform_driver_unregister(&mt6797_stp_diag_driver);
+	mutex_lock(&mt6797_stp_diag_registration_lock);
+	if (mt6797_stp_diag_registered) {
+		platform_driver_unregister(&mt6797_stp_diag_driver);
+		mt6797_stp_diag_registered = false;
+		mt6797_stp_diag_enable = false;
+	}
+	mutex_unlock(&mt6797_stp_diag_registration_lock);
 }
 module_exit(mt6797_stp_diag_exit);
 
