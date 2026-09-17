@@ -118,4 +118,13 @@ config MTK_MT6797_STP
 	  MT6797 ConSys transport.  It does not power the chip or claim BTIF;
 	  WMT sequencing and retransmission are supplied by a separate client.
 
+config MTK_MT6797_STP_SESSION
+	tristate "MT6797 ConSys reliable STP/WMT session"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_MT6797_STP
+	help
+	Reliable full-mode STP sequence/ACK/retry and WMT event matching on top
+	of the MT6797 BTIF transport.  It claims BTIF only when explicitly
+	started by a higher-level ConSys owner and does not power the chip.
+
 endmenu
