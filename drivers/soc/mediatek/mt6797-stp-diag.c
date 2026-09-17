@@ -500,6 +500,7 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	u8 function = 0;
 	bool function_enabled = false;
 	bool function_powered = false;
+	bool function_power_changed = false;
 
 	ret = mt6797_consys_stp_acquire(diag->consys_dev, &host_ops,
 					&host_context);
@@ -531,16 +532,17 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 		ret = mt6797_stp_session_configure_btif_full(
 			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
 		if (!ret && function_enabled) {
-			ret = mt6797_consys_radio_power(host_context, function, true);
-			function_powered = !ret;
+			ret = mt6797_consys_radio_power(host_context, function, true,
+							&function_power_changed);
+			function_powered = !ret && function_power_changed;
 		}
 		if (!ret)
 			ret = mt6797_stp_diag_function(diag, session, function,
 						function_enabled);
 		if (!ret && !function_enabled)
-			ret = mt6797_consys_radio_power(host_context, function, false);
+			ret = mt6797_consys_radio_power(host_context, function, false, NULL);
 		if (ret && function_powered)
-			mt6797_consys_radio_power(host_context, function, false);
+			mt6797_consys_radio_power(host_context, function, false, NULL);
 	} else if (mode == MT6797_STP_DIAG_FULL ||
 		   mode == MT6797_STP_DIAG_VERSION ||
 		   mode == MT6797_STP_DIAG_PATCH) {

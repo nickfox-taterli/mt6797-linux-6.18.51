@@ -30,6 +30,7 @@ int mt6797_consys_stp_set_mode(void *context, u32 mode);
 int mt6797_consys_stp_set_enabled(void *context, bool enabled);
 
 /* Own the external MT6631 VCN33 rail for a live WMT function. */
-int mt6797_consys_radio_power(void *context, u8 function, bool enabled);
+int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
+				     bool *changed);
 
 #endif /* __LINUX_MT6797_CONSYS_H */

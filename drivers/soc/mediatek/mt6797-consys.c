@@ -500,7 +500,8 @@ int mt6797_consys_stp_release(void *context)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_release);
 
-int mt6797_consys_radio_power(void *context, u8 function, bool enabled)
+int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
+				      bool *changed)
 {
 	struct mt6797_consys *cs = context;
 	struct regulator *supply;
@@ -509,6 +510,8 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled)
 
 	if (!cs)
 		return -EINVAL;
+	if (changed)
+		*changed = false;
 	switch (function) {
 	case MT6797_CONSYS_FUNC_BT:
 		supply = cs->vcn33_bt;
@@ -533,8 +536,11 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled)
 		ret = regulator_enable(supply);
 	else
 		ret = regulator_disable(supply);
-	if (!ret && *state != enabled)
+	if (!ret && *state != enabled) {
 		*state = enabled;
+		if (changed)
+			*changed = true;
+	}
 	mutex_unlock(&cs->lock);
 
 	if (ret)
