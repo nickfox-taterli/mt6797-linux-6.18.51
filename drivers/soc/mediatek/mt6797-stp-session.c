@@ -70,6 +70,7 @@ struct mt6797_stp_session {
 	bool retry_requested;
 	bool active;
 	bool delimiter;
+	bool mandatory;
 	bool host_enabled;
 	int terminal_error;
 
@@ -251,6 +252,17 @@ static void mt6797_stp_wmt_event(struct mt6797_stp_session *session,
 	if (length < MT6797_STP_WMT_HEADER_SIZE)
 		return;
 	parameter_length = payload[2] | (payload[3] << 8);
+	/*
+	 * The vendor WMT register-read event advertises a four-byte status
+	 * header, but appends the addressed register and value (eight more
+	 * bytes).  wmt_core_rx() consumes that complete 16-byte event.  Keep
+	 * the same bounded exception here so ROM-version reads do not discard
+	 * the value or fail the generic length check.  No other opcode is
+	 * allowed to use this legacy framing.
+	 */
+	if (payload[1] == 0x08 && parameter_length == 4 &&
+	    length == MT6797_STP_WMT_HEADER_SIZE + 12)
+		parameter_length = 12;
 	spin_lock_irqsave(&session->state_lock, flags);
 	if (session->response_waiting && payload[0] == 2 &&
 		payload[1] == session->response_opcode) {
@@ -278,6 +290,17 @@ static int mt6797_stp_frame(struct mt6797_stp_session *session,
 	unsigned long flags;
 	u8 ack;
 	bool in_order;
+
+	if (session->mandatory) {
+		/* Mandatory BTIF framing has no sequence/ACK semantics. */
+		if (frame->packet_type == MT6797_STP_TASK_WMT)
+			mt6797_stp_wmt_event(session, frame->payload,
+					     frame->payload_length);
+		if (session->ops.rx_frame)
+			session->ops.rx_frame(session->context, frame->packet_type,
+					      frame->payload, frame->payload_length);
+		return 0;
+	}
 
 	mt6797_stp_process_ack(session, frame->acknowledgement, frame->nak);
 	if (!frame->payload_length && !frame->has_crc)
@@ -394,6 +417,25 @@ static int mt6797_stp_send_locked(struct mt6797_stp_session *session,
 	unsigned long remaining;
 	int ret;
 	unsigned int attempt;
+	u8 *mandatory_frame;
+	ssize_t mandatory_length;
+
+	if (session->mandatory) {
+		mandatory_frame = kmalloc(MT6797_STP_FRAME_SIZE, GFP_KERNEL);
+		if (!mandatory_frame)
+			return -ENOMEM;
+		mandatory_length = mt6797_stp_encode_mandatory_frame(
+			mandatory_frame, MT6797_STP_FRAME_SIZE, task, payload,
+			length, session->delimiter);
+		if (mandatory_length < 0) {
+			kfree(mandatory_frame);
+			return mandatory_length;
+		}
+		ret = mt6797_stp_write(session, mandatory_frame, mandatory_length,
+				       msecs_to_jiffies(MT6797_STP_ACK_TIMEOUT_MS));
+		kfree(mandatory_frame);
+		return ret;
+	}
 
 	ret = mt6797_stp_queue_frame(session, task, payload, length, &slot);
 	if (ret)
@@ -463,6 +505,8 @@ struct mt6797_stp_session *mt6797_stp_session_alloc(
 	init_completion(&session->response_done);
 	INIT_WORK(&session->rx_work, mt6797_stp_rx_work);
 	mt6797_stp_decoder_init(&session->decoder);
+	session->mandatory = true;
+	mt6797_stp_decoder_set_mandatory(&session->decoder, true);
 	return session;
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_alloc);
@@ -540,6 +584,8 @@ int mt6797_stp_session_start(struct mt6797_stp_session *session, bool delimiter)
 	kfifo_reset(&session->rx_fifo);
 	spin_unlock(&session->rx_lock);
 	mt6797_stp_decoder_init(&session->decoder);
+	session->mandatory = true;
+	mt6797_stp_decoder_set_mandatory(&session->decoder, true);
 	session->active = true;
 	spin_unlock_irqrestore(&session->state_lock, flags);
 	mutex_unlock(&session->host_config_lock);
@@ -584,6 +630,50 @@ int mt6797_stp_session_set_host_ops(struct mt6797_stp_session *session,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_set_host_ops);
+
+int mt6797_stp_session_prepare_btif_mandatory(
+					struct mt6797_stp_session *session)
+{
+	struct mt6797_stp_host_ops host_ops;
+	void *host_context;
+	unsigned long flags;
+	int ret;
+
+	if (!session)
+		return -EINVAL;
+	mutex_lock(&session->host_config_lock);
+	spin_lock_irqsave(&session->state_lock, flags);
+	if (!session->active || session->terminal_error) {
+		ret = session->terminal_error ?: -ESHUTDOWN;
+		spin_unlock_irqrestore(&session->state_lock, flags);
+		goto out_unlock;
+	}
+	host_ops = session->host_ops;
+	host_context = session->host_context;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	if (!host_ops.set_mode || !host_ops.set_enabled) {
+		ret = -EOPNOTSUPP;
+		goto out_unlock;
+	}
+
+	ret = host_ops.set_mode(host_context,
+				MT6797_STP_BTIF_MANDATORY_MODE);
+	if (ret)
+		goto out_unlock;
+	ret = host_ops.set_enabled(host_context, true);
+	if (ret)
+		goto out_unlock;
+	spin_lock_irqsave(&session->state_lock, flags);
+	session->mandatory = true;
+	session->host_enabled = true;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	mt6797_stp_decoder_set_mandatory(&session->decoder, true);
+
+out_unlock:
+	mutex_unlock(&session->host_config_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_session_prepare_btif_mandatory);
 
 int mt6797_stp_session_send(struct mt6797_stp_session *session, u8 task,
 				    const u8 *payload, u16 length,
@@ -735,6 +825,16 @@ int mt6797_stp_session_configure_btif_full(
 		goto out_unlock;
 	}
 
+	/* The vendor starts BTIF in mandatory mode before the first WMT query. */
+	ret = host_ops.set_mode(host_context,
+				MT6797_STP_BTIF_MANDATORY_MODE);
+	if (ret)
+		goto out_unlock;
+	ret = host_ops.set_enabled(host_context, true);
+	if (ret)
+		goto out_unlock;
+	host_enabled = true;
+
 	ret = mt6797_stp_expect_wmt(session, query_params,
 					ARRAY_SIZE(query_params), default_response,
 					ARRAY_SIZE(default_response), timeout_jiffies);
@@ -745,14 +845,13 @@ int mt6797_stp_session_configure_btif_full(
 					timeout_jiffies);
 	if (ret)
 		goto out_unlock;
-
 	ret = host_ops.set_mode(host_context, MT6797_STP_BTIF_FULL_MODE);
 	if (ret)
 		goto out_unlock;
-	ret = host_ops.set_enabled(host_context, true);
-	if (ret)
-		goto out_unlock;
-	host_enabled = true;
+	spin_lock_irqsave(&session->state_lock, flags);
+	session->mandatory = false;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	mt6797_stp_decoder_set_mandatory(&session->decoder, false);
 
 	/* The vendor sequence requires at least 2 ms; retain its 10 ms margin. */
 	msleep(10);
@@ -766,15 +865,14 @@ int mt6797_stp_session_configure_btif_full(
 		goto out_unlock;
 	}
 
-	/* Do not leave a platform-owned host parser enabled after a failed query. */
-	disable_ret = host_ops.set_enabled(host_context, false);
-	if (disable_ret)
-		dev_warn(session->owner,
-			 "failed to roll back host STP enable after init error: %d\n",
-			 disable_ret);
-
 out_unlock:
 	if (ret && host_enabled) {
+		/* Do not leave a platform-owned host parser enabled after any failure. */
+		disable_ret = host_ops.set_enabled(host_context, false);
+		if (disable_ret)
+			dev_warn(session->owner,
+				 "failed to roll back host STP enable after init error: %d\n",
+				 disable_ret);
 		spin_lock_irqsave(&session->state_lock, flags);
 		session->host_enabled = false;
 		spin_unlock_irqrestore(&session->state_lock, flags);

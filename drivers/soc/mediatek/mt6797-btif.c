@@ -63,6 +63,7 @@ struct mt6797_btif {
 	const struct mt6797_btif_client_ops *ops;
 	void *context;
 	bool running;
+	unsigned int debug_irq_count;
 
 	spinlock_t tx_lock;
 	struct kfifo tx_fifo;
@@ -95,6 +96,18 @@ static void btif_fifo_reset(struct mt6797_btif *btif)
 	writel(0, btif->base + BTIF_IIR_FIFOCTRL);
 }
 
+static void btif_debug_state(struct mt6797_btif *btif, const char *where)
+{
+	dev_info(btif->dev,
+		 "BTIF debug %s: ier=%08x iir=%08x lsr=%08x tri=%08x dma=%08x handshake=%08x wak=%08x clk=%lu\n",
+		 where, readl(btif->base + BTIF_IER),
+		 readl(btif->base + BTIF_IIR_FIFOCTRL),
+		 readl(btif->base + BTIF_LSR), readl(btif->base + BTIF_TRI_LVL),
+		 readl(btif->base + BTIF_DMA_EN),
+		 readl(btif->base + BTIF_HANDSHAKE),
+		 readl(btif->base + BTIF_WAK), clk_get_rate(btif->clk));
+}
+
 static void btif_hw_init(struct mt6797_btif *btif)
 {
 	u32 tri;
@@ -109,7 +122,9 @@ static void btif_hw_init(struct mt6797_btif *btif)
 	writel(tri, btif->base + BTIF_TRI_LVL);
 	btif_update_bits(btif, BTIF_DMA_EN, BTIF_DMA_AUTORST, BTIF_DMA_AUTORST);
 	btif_update_bits(btif, BTIF_DMA_EN, BIT(0) | BIT(1), 0);
-	btif_update_bits(btif, BTIF_IER, BTIF_IER_RXFEN | BTIF_IER_TXEEN, 0);
+	/* Vendor PIO init leaves RX interrupts enabled; TX is armed per write. */
+	btif_update_bits(btif, BTIF_IER, BTIF_IER_RXFEN | BTIF_IER_TXEEN,
+			 BTIF_IER_RXFEN);
 }
 
 static irqreturn_t mt6797_btif_irq(int irq, void *data)
@@ -127,6 +142,13 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 	ops = READ_ONCE(btif->ops);
 
 	iir = readl(btif->base + BTIF_IIR_FIFOCTRL);
+	if (btif->debug_irq_count < 32) {
+		btif->debug_irq_count++;
+		dev_info(btif->dev,
+			 "BTIF debug irq#%u: iir=%08x ier=%08x lsr=%08x\n",
+			 btif->debug_irq_count, iir,
+			 readl(btif->base + BTIF_IER), readl(btif->base + BTIF_LSR));
+	}
 	while ((iir & (BTIF_IIR_RX | BTIF_IIR_RX_TIMEOUT)) &&
 	       rx_len < ARRAY_SIZE(rx)) {
 		rx[rx_len++] = readb(btif->base + BTIF_RBR_THR);
@@ -155,6 +177,9 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 		wake_up_all(&btif->tx_wait);
 	}
 
+	if (rx_len && ops && ops->rx_bytes)
+		dev_info(btif->dev, "BTIF debug rx len=%u data=%*phN\n", rx_len,
+			 rx_len, rx);
 	if (rx_len && ops && ops->rx_bytes)
 		ops->rx_bytes(READ_ONCE(btif->context), rx, rx_len);
 	return (rx_len || (iir & (BTIF_IIR_TX_EMPTY | BTIF_IIR_RX |
@@ -185,6 +210,8 @@ int mt6797_btif_claim(struct device *client,
 	if (ret)
 		goto unlock_client;
 	btif_hw_init(btif);
+	btif->debug_irq_count = 0;
+	btif_debug_state(btif, "claim");
 	WRITE_ONCE(btif->ops, ops);
 	btif->owner = client;
 	WRITE_ONCE(btif->context, context);
@@ -258,6 +285,11 @@ ssize_t mt6797_btif_write(struct device *client, const u8 *data,
 					 BTIF_IER_TXEEN);
 		spin_unlock_irq(&btif->tx_lock);
 		written += count;
+		if (count)
+			dev_info(btif->dev,
+				 "BTIF debug write queued=%u/%zu data=%*phN ier=%08x lsr=%08x\n",
+				 count, length, (int)min_t(size_t, count, 32), data + written - count,
+				 readl(btif->base + BTIF_IER), readl(btif->base + BTIF_LSR));
 		if (written == length)
 			break;
 		if (!timeout_jiffies)

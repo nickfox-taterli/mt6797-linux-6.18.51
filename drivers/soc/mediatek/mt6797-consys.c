@@ -407,8 +407,6 @@ int mt6797_consys_stp_set_mode(void *context, u32 mode)
 		ret = -EHOSTDOWN;
 	else if (!cs->stp_claimed)
 		ret = -EPERM;
-	else if (cs->stp_enabled)
-		ret = -EBUSY;
 	else
 		cs->stp_mode = mode;
 	mutex_unlock(&cs->lock);

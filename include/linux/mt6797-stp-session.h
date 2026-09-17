@@ -20,6 +20,7 @@ struct mt6797_stp_host_ops {
 };
 
 #define MT6797_STP_BTIF_FULL_MODE	BIT(2)
+#define MT6797_STP_BTIF_MANDATORY_MODE	BIT(3)
 
 /* Task indices are the values used by the vendor MTKSTP stack. */
 #define MT6797_STP_TASK_BT	0
@@ -49,6 +50,10 @@ int mt6797_stp_session_wake(struct mt6797_stp_session *session);
 int mt6797_stp_session_set_host_ops(struct mt6797_stp_session *session,
 					const struct mt6797_stp_host_ops *ops,
 					void *context);
+
+/* Put an active session into the vendor's initial BTIF mandatory mode. */
+int mt6797_stp_session_prepare_btif_mandatory(
+					struct mt6797_stp_session *session);
 
 /*
  * Execute the vendor MT6797 BTIF full-mode preamble:

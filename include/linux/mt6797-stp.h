@@ -28,6 +28,7 @@ struct mt6797_stp_decoder {
 	u8 crc_position;
 	u8 header_position;
 	u8 state;
+	bool mandatory;
 	u32 bad_frames;
 };
 
@@ -36,12 +37,19 @@ typedef int (*mt6797_stp_frame_cb)(void *context,
 
 u16 mt6797_stp_crc16(const u8 *data, size_t length);
 ssize_t mt6797_stp_encode_frame(u8 *out, size_t out_size, u8 packet_type,
-					u8 sequence, u8 acknowledgement, bool nak,
-					const u8 *payload, u16 payload_length,
-					bool delimiter);
+				 u8 sequence, u8 acknowledgement, bool nak,
+				 const u8 *payload, u16 payload_length,
+				 bool delimiter);
+ssize_t mt6797_stp_encode_mandatory_frame(u8 *out, size_t out_size,
+						  u8 packet_type,
+						  const u8 *payload,
+						  u16 payload_length,
+						  bool delimiter);
 ssize_t mt6797_stp_encode_wmt(u8 *out, size_t out_size, u8 opcode,
 				      const u8 *params, u16 parameter_length);
 void mt6797_stp_decoder_init(struct mt6797_stp_decoder *decoder);
+void mt6797_stp_decoder_set_mandatory(struct mt6797_stp_decoder *decoder,
+					       bool mandatory);
 int mt6797_stp_decoder_feed(struct mt6797_stp_decoder *decoder,
 				    const u8 *data, size_t length,
 				    mt6797_stp_frame_cb callback, void *context);

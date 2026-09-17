@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Opt-in X20-96 wireless bring-up image.
+ *
+ * Keep HS400 timing and its validated tuning, but use the conservative
+ * single-segment synchronous Basic-DMA path while the STP/WMT stack is being
+ * brought up.  This is deliberately an experiment bundle; the canonical
+ * headless DT remains descriptor-DMA based.
+ */
+/dts-v1/;
+
+#include "mt6797-x20-96-wireless-stp.dts"
+
+&mmc0 {
+	/delete-property/ mediatek,descriptor-dma;
+	/delete-property/ mediatek,descriptor-max-req-size;
+	mediatek,disable-hsq;
+	mediatek,disable-async-dma;
+	mediatek,force-basic-dma;
+};

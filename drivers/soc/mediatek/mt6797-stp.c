@@ -46,7 +46,7 @@ ssize_t mt6797_stp_encode_frame(u8 *out, size_t out_size, u8 packet_type,
 					const u8 *payload, u16 payload_length,
 					bool delimiter)
 {
-	size_t needed = MT6797_STP_HEADER_SIZE +
+	size_t needed = MT6797_STP_HEADER_SIZE + payload_length +
 			(payload_length ? MT6797_STP_CRC_SIZE : 0) +
 			(delimiter ? 2 : 0);
 	u8 *header;
@@ -76,6 +76,41 @@ ssize_t mt6797_stp_encode_frame(u8 *out, size_t out_size, u8 packet_type,
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_encode_frame);
 
+ssize_t mt6797_stp_encode_mandatory_frame(u8 *out, size_t out_size,
+						  u8 packet_type,
+						  const u8 *payload,
+						  u16 payload_length,
+						  bool delimiter)
+{
+	size_t needed = MT6797_STP_HEADER_SIZE + payload_length +
+			(payload_length ? MT6797_STP_CRC_SIZE : 0) +
+			(delimiter ? 2 : 0);
+	u8 *header;
+
+	if (!out || (!payload && payload_length) || packet_type > STP_MAX_TASK_TYPE ||
+		payload_length > MT6797_STP_MAX_PAYLOAD || out_size < needed)
+		return -EINVAL;
+	if (delimiter) {
+		out[0] = STP_DELIMITER_BYTE;
+		out[1] = STP_DELIMITER_BYTE;
+	}
+	header = out + (delimiter ? 2 : 0);
+	header[0] = 0x80;
+	header[1] = (packet_type << 4) |
+		((payload_length >> 8) & STP_LENGTH_HIGH_MASK);
+	header[2] = payload_length & 0xff;
+	/* Mandatory mode deliberately does not use header/CRC checksums. */
+	header[3] = 0;
+	if (payload_length)
+		memcpy(header + MT6797_STP_HEADER_SIZE, payload, payload_length);
+	if (payload_length) {
+		header[MT6797_STP_HEADER_SIZE + payload_length] = 0;
+		header[MT6797_STP_HEADER_SIZE + payload_length + 1] = 0;
+	}
+	return needed;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_encode_mandatory_frame);
+
 ssize_t mt6797_stp_encode_wmt(u8 *out, size_t out_size, u8 opcode,
 				      const u8 *params, u16 parameter_length)
 {
@@ -98,6 +133,15 @@ void mt6797_stp_decoder_init(struct mt6797_stp_decoder *decoder)
 	decoder->state = STP_DECODE_HEADER;
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_decoder_init);
+
+void mt6797_stp_decoder_set_mandatory(struct mt6797_stp_decoder *decoder,
+					       bool mandatory)
+{
+	if (!decoder)
+		return;
+	decoder->mandatory = mandatory;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_decoder_set_mandatory);
 
 static void mt6797_stp_decoder_reset(struct mt6797_stp_decoder *decoder)
 {
@@ -150,8 +194,9 @@ int mt6797_stp_decoder_feed(struct mt6797_stp_decoder *decoder,
 			decoder->header[decoder->header_position++] = byte;
 			if (decoder->header_position < MT6797_STP_HEADER_SIZE)
 				continue;
-			if ((decoder->header[0] + decoder->header[1] +
-				 decoder->header[2]) != decoder->header[3] ||
+			if ((!decoder->mandatory &&
+			     (decoder->header[0] + decoder->header[1] +
+			      decoder->header[2]) != decoder->header[3]) ||
 			    ((decoder->header[1] >> 4) & 7) > STP_MAX_TASK_TYPE) {
 				decoder->bad_frames++;
 				mt6797_stp_decoder_reset(decoder);
@@ -191,10 +236,10 @@ int mt6797_stp_decoder_feed(struct mt6797_stp_decoder *decoder,
 		if (decoder->crc_position == MT6797_STP_CRC_SIZE) {
 			u16 actual = decoder->crc[0] | (decoder->crc[1] << 8);
 			u16 expected = mt6797_stp_crc16(decoder->payload,
-							 decoder->payload_length);
+								 decoder->payload_length);
 			int ret = 0;
 
-			if (actual != expected) {
+			if (!decoder->mandatory && actual != expected) {
 				decoder->bad_frames++;
 			} else {
 				ret = mt6797_stp_emit(decoder, callback, context, true);
