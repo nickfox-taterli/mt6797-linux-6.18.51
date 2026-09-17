@@ -98,6 +98,8 @@ struct mt6797_consys {
 	bool powered;
 	bool stp_claimed;
 	bool stp_enabled;
+	bool bt_radio_on;
+	bool wifi_radio_on;
 };
 
 static int consys_wait_ack(struct mt6797_consys *cs, u32 off, u32 mask)
@@ -164,6 +166,20 @@ static int consys_cleanup_locked(struct mt6797_consys *cs)
 	int ret = 0;
 	int tmp;
 	u32 val;
+
+	/* WMT function rails are children of the ConSys power owner. */
+	if (cs->wifi_radio_on) {
+		tmp = regulator_disable(cs->vcn33_wifi);
+		if (tmp && !ret)
+			ret = tmp;
+		cs->wifi_radio_on = false;
+	}
+	if (cs->bt_radio_on) {
+		tmp = regulator_disable(cs->vcn33_bt);
+		if (tmp && !ret)
+			ret = tmp;
+		cs->bt_radio_on = false;
+	}
 
 	if (cs->stages & CONSYS_STAGE_RGU_RELEASED) {
 		consys_rgu_sw_rst(cs, true);
@@ -483,6 +499,53 @@ int mt6797_consys_stp_release(void *context)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_release);
+
+int mt6797_consys_radio_power(void *context, u8 function, bool enabled)
+{
+	struct mt6797_consys *cs = context;
+	struct regulator *supply;
+	bool *state;
+	int ret = 0;
+
+	if (!cs)
+		return -EINVAL;
+	switch (function) {
+	case MT6797_CONSYS_FUNC_BT:
+		supply = cs->vcn33_bt;
+		state = &cs->bt_radio_on;
+		break;
+	case MT6797_CONSYS_FUNC_WIFI:
+		supply = cs->vcn33_wifi;
+		state = &cs->wifi_radio_on;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	mutex_lock(&cs->lock);
+	if (!cs->powered)
+		ret = -EHOSTDOWN;
+	else if (!cs->stp_claimed)
+		ret = -EPERM;
+	else if (*state == enabled)
+		ret = 0;
+	else if (enabled)
+		ret = regulator_enable(supply);
+	else
+		ret = regulator_disable(supply);
+	if (!ret && *state != enabled)
+		*state = enabled;
+	mutex_unlock(&cs->lock);
+
+	if (ret)
+		dev_err(cs->dev, "VCN33 function %u %s failed: %d\n",
+			function, enabled ? "on" : "off", ret);
+	else
+		dev_info(cs->dev, "VCN33 function %u %s\n",
+			 function, enabled ? "on" : "off");
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_radio_power);
 
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)

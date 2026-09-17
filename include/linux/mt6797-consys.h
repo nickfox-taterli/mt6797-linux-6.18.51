@@ -9,6 +9,10 @@
 
 #define MT6797_CONSYS_STP_BTIF_FULL_MODE	BIT(2)
 
+/* WMT function type values from the MT6797 vendor protocol. */
+#define MT6797_CONSYS_FUNC_BT		0
+#define MT6797_CONSYS_FUNC_WIFI		3
+
 struct mt6797_stp_host_ops;
 
 /*
@@ -24,5 +28,8 @@ int mt6797_consys_stp_release(void *context);
 /* The context is the MT6797 ConSys platform driver's private state. */
 int mt6797_consys_stp_set_mode(void *context, u32 mode);
 int mt6797_consys_stp_set_enabled(void *context, bool enabled);
+
+/* Own the external MT6631 VCN33 rail for a live WMT function. */
+int mt6797_consys_radio_power(void *context, u8 function, bool enabled);
 
 #endif /* __LINUX_MT6797_CONSYS_H */

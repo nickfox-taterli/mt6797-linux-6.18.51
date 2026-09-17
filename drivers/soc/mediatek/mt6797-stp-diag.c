@@ -37,12 +37,17 @@
 #define MT6797_STP_PATCH_HW_VERSION	0x8a00
 #define MT6797_STP_PATCH_FW_1		"mediatek/ROMv3_patch_1_1_hdr.bin"
 #define MT6797_STP_PATCH_FW_2		"mediatek/ROMv3_patch_1_0_hdr.bin"
+#define MT6797_WMT_OPCODE_FUNC_CTRL	0x06
 
 enum mt6797_stp_diag_mode {
 	MT6797_STP_DIAG_QUERY,
 	MT6797_STP_DIAG_FULL,
 	MT6797_STP_DIAG_VERSION,
 	MT6797_STP_DIAG_PATCH,
+	MT6797_STP_DIAG_BT_ON,
+	MT6797_STP_DIAG_BT_OFF,
+	MT6797_STP_DIAG_WIFI_ON,
+	MT6797_STP_DIAG_WIFI_OFF,
 };
 
 struct mt6797_stp_diag {
@@ -261,6 +266,30 @@ static int mt6797_stp_diag_reset(struct mt6797_stp_session *session)
 	return 0;
 }
 
+static int mt6797_stp_diag_function(struct mt6797_stp_diag *diag,
+				    struct mt6797_stp_session *session,
+				    u8 function, bool enabled)
+{
+	const u8 params[] = { function, enabled ? 1 : 0 };
+	u8 response[MT6797_STP_DIAG_RESPONSE_MAX];
+	u16 response_length = 0;
+	int ret;
+
+	/* WMT_FUNC_CTRL event carries exactly one status byte. */
+	ret = mt6797_stp_session_wmt(session, MT6797_WMT_OPCODE_FUNC_CTRL,
+				     params, ARRAY_SIZE(params), response,
+				     &response_length, sizeof(response),
+				     msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+	diag->response_length = response_length;
+	if (ret)
+		return ret;
+	if (response_length != 1 || response[0])
+		return -EPROTO;
+	dev_info(diag->dev, "WMT function %u %s acknowledged\n", function,
+		 enabled ? "on" : "off");
+	return 0;
+}
+
 static int mt6797_stp_diag_patch_header(const struct firmware *fw,
 					      u32 expected_hw, u32 expected_fw,
 					      u8 expected_sequence)
@@ -468,6 +497,9 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	void *host_context = NULL;
 	int ret;
 	int release_ret;
+	u8 function = 0;
+	bool function_enabled = false;
+	bool function_powered = false;
 
 	ret = mt6797_consys_stp_acquire(diag->consys_dev, &host_ops,
 					&host_context);
@@ -489,8 +521,29 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	if (ret)
 		goto out_stop;
 
-	if (mode == MT6797_STP_DIAG_FULL || mode == MT6797_STP_DIAG_VERSION ||
-	    mode == MT6797_STP_DIAG_PATCH) {
+	if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
+	    mode == MT6797_STP_DIAG_WIFI_ON || mode == MT6797_STP_DIAG_WIFI_OFF) {
+		function = (mode == MT6797_STP_DIAG_BT_ON ||
+			    mode == MT6797_STP_DIAG_BT_OFF) ?
+			   MT6797_CONSYS_FUNC_BT : MT6797_CONSYS_FUNC_WIFI;
+		function_enabled = mode == MT6797_STP_DIAG_BT_ON ||
+				 mode == MT6797_STP_DIAG_WIFI_ON;
+		ret = mt6797_stp_session_configure_btif_full(
+			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+		if (!ret && function_enabled) {
+			ret = mt6797_consys_radio_power(host_context, function, true);
+			function_powered = !ret;
+		}
+		if (!ret)
+			ret = mt6797_stp_diag_function(diag, session, function,
+						function_enabled);
+		if (!ret && !function_enabled)
+			ret = mt6797_consys_radio_power(host_context, function, false);
+		if (ret && function_powered)
+			mt6797_consys_radio_power(host_context, function, false);
+	} else if (mode == MT6797_STP_DIAG_FULL ||
+		   mode == MT6797_STP_DIAG_VERSION ||
+		   mode == MT6797_STP_DIAG_PATCH) {
 		ret = mt6797_stp_session_configure_btif_full(
 			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
 		if (!ret && mode == MT6797_STP_DIAG_FULL)
@@ -533,7 +586,7 @@ static ssize_t command_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
 	return sysfs_emit(buf,
-			  "write 'query', 'full', 'version', or 'patch' to execute one bounded test\n");
+			  "write 'query', 'full', 'version', 'patch', 'bt-on', 'bt-off', 'wifi-on', or 'wifi-off' to execute one bounded test\n");
 }
 
 static ssize_t command_store(struct device *dev, struct device_attribute *attr,
@@ -556,6 +609,18 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 	} else if (sysfs_streq(buf, "patch")) {
 		mode = MT6797_STP_DIAG_PATCH;
 		name = "patch";
+	} else if (sysfs_streq(buf, "bt-on")) {
+		mode = MT6797_STP_DIAG_BT_ON;
+		name = "bt-on";
+	} else if (sysfs_streq(buf, "bt-off")) {
+		mode = MT6797_STP_DIAG_BT_OFF;
+		name = "bt-off";
+	} else if (sysfs_streq(buf, "wifi-on")) {
+		mode = MT6797_STP_DIAG_WIFI_ON;
+		name = "wifi-on";
+	} else if (sysfs_streq(buf, "wifi-off")) {
+		mode = MT6797_STP_DIAG_WIFI_OFF;
+		name = "wifi-off";
 	} else {
 		return -EINVAL;
 	}
