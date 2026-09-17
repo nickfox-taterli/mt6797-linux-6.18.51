@@ -109,4 +109,13 @@ config MTK_MT6797_BTIF
 	  serial console or a 16550 UART; an STP/WMT client must claim it before
 	  the clock, FIFO and IRQ are enabled.
 
+config MTK_MT6797_STP
+	tristate "MT6797 ConSys STP wire codec"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_MT6797_BTIF
+	help
+	  Allocation-free STP header/CRC16 codec and streaming decoder for the
+	  MT6797 ConSys transport.  It does not power the chip or claim BTIF;
+	  WMT sequencing and retransmission are supplied by a separate client.
+
 endmenu

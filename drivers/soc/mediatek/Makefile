@@ -11,3 +11,4 @@ obj-$(CONFIG_MTK_SVS) += mtk-svs.o
 obj-$(CONFIG_MTK_SOCINFO) += mtk-socinfo.o
 obj-$(CONFIG_MTK_MT6797_CONSYS) += mt6797-consys.o
 obj-$(CONFIG_MTK_MT6797_BTIF) += mt6797-btif.o
+obj-$(CONFIG_MTK_MT6797_STP) += mt6797-stp.o
