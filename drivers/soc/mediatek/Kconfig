@@ -138,4 +138,15 @@ config MTK_MT6797_STP_DIAG
 	  host parser while the transaction runs, and never exposes BTIF as a tty
 	  or HCI device.
 
+config MTK_MT6797_WLAN_HIF
+	tristate "MT6797 WLAN AHB sdioLike PIO HIF"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	depends on HAS_IOMEM
+	help
+	  Map the MT6797 WLAN AHB sdioLike command port and provide an explicit
+	  owner-gated PIO/IRQ contract.  Probe never reads the HIF window; a future
+	  WMT WLAN owner must turn the function on before claiming it.  AP-DMA,
+	  EMI remap, firmware download and cfg80211 are separate steps.
+
 endmenu
