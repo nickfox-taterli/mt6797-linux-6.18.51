@@ -159,6 +159,108 @@ static int mt6797_stp_diag_read_version(struct mt6797_stp_diag *diag,
 	return 0;
 }
 
+static int mt6797_stp_diag_reg_write(struct mt6797_stp_session *session,
+					     const u8 params[16])
+{
+	static const u8 expected[] = { 0x00, 0x00, 0x00, 0x01 };
+	u8 response[MT6797_STP_DIAG_RESPONSE_MAX];
+	u16 response_length = 0;
+	int ret;
+
+	ret = mt6797_stp_session_wmt(session, 0x08, params, 16,
+				     response, &response_length, sizeof(response),
+				     msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+	if (ret)
+		return ret;
+	if (response_length != sizeof(expected) ||
+	    memcmp(response, expected, sizeof(expected)))
+		return -EPROTO;
+	return 0;
+}
+
+static int mt6797_stp_diag_mcu_clock(struct mt6797_stp_diag *diag,
+					 struct mt6797_stp_session *session, bool enable)
+{
+	static const u8 enable_params[][16] = {
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x10, 0x11, 0x02, 0x81,
+			0x00, 0x00, 0x00, 0x10,
+			0x00, 0x00, 0x00, 0x10,
+		},
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x0c, 0x01, 0x00, 0x80,
+			0x40, 0x00, 0x00, 0x00,
+			0xc0, 0x00, 0x00, 0x00,
+		},
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x18, 0x11, 0x02, 0x80,
+			0x07, 0x00, 0x00, 0x00,
+			0x3f, 0x00, 0x00, 0x00,
+		},
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x00, 0x11, 0x02, 0x81,
+			0x04, 0x00, 0x00, 0x00,
+			0x07, 0x00, 0x00, 0x00,
+		},
+	};
+	static const u8 disable_params[][16] = {
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x00, 0x11, 0x02, 0x81,
+			0x00, 0x00, 0x00, 0x00,
+			0x07, 0x00, 0x00, 0x00,
+		},
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x0c, 0x01, 0x00, 0x80,
+			0x00, 0x00, 0x00, 0x00,
+			0xc0, 0x00, 0x00, 0x00,
+		},
+		{
+			0x01, 0x01, 0x00, 0x01,
+			0x10, 0x11, 0x02, 0x81,
+			0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x10,
+		},
+	};
+	const u8 (*params)[16] = enable ? enable_params : disable_params;
+	size_t count = enable ? ARRAY_SIZE(enable_params) : ARRAY_SIZE(disable_params);
+	size_t index;
+	int ret;
+
+	for (index = 0; index < count; index++) {
+		ret = mt6797_stp_diag_reg_write(session, params[index]);
+		if (ret)
+			return ret;
+	}
+	dev_info(diag->dev, "ROMv3 MCU clock %s\n", enable ? "boost enabled" :
+		 "boost disabled");
+	return 0;
+}
+
+static int mt6797_stp_diag_reset(struct mt6797_stp_session *session)
+{
+	static const u8 params[] = { 0x04 };
+	static const u8 expected[] = { 0x00 };
+	u8 response[MT6797_STP_DIAG_RESPONSE_MAX];
+	u16 response_length = 0;
+	int ret;
+
+	ret = mt6797_stp_session_wmt(session, 0x07, params, sizeof(params),
+				     response, &response_length, sizeof(response),
+				     msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+	if (ret)
+		return ret;
+	if (response_length != sizeof(expected) ||
+	    memcmp(response, expected, sizeof(expected)))
+		return -EPROTO;
+	return 0;
+}
+
 static int mt6797_stp_diag_patch_header(const struct firmware *fw,
 					      u32 expected_hw, u32 expected_fw,
 					      u8 expected_sequence)
@@ -309,7 +411,9 @@ static int mt6797_stp_diag_patch(struct mt6797_stp_diag *diag,
 	const struct firmware *fw[ARRAY_SIZE(names)] = { };
 	unsigned int index;
 	unsigned int loaded = 0;
+	bool clock_boosted = false;
 	int ret;
+	int cleanup_ret;
 
 	if (hw_version != MT6797_STP_PATCH_HW_VERSION ||
 		((fw_version ^ MT6797_STP_PATCH_HW_VERSION) & 0x00ff))
@@ -320,15 +424,33 @@ static int mt6797_stp_diag_patch(struct mt6797_stp_diag *diag,
 			goto out_release;
 		loaded++;
 	}
+	ret = mt6797_stp_diag_mcu_clock(diag, session, true);
+	if (ret)
+		goto out_release;
+	clock_boosted = true;
 	for (index = 0; index < ARRAY_SIZE(fw); index++) {
 		ret = mt6797_stp_diag_patch_one(diag, session, fw[index], fw_version,
 							index + 1);
 		if (ret)
-			goto out_release;
+			goto out_clock;
+		/* Vendor init_table_3 resets the target after every patch image. */
+		ret = mt6797_stp_diag_reset(session);
+		if (ret)
+			goto out_clock;
 	}
+	ret = mt6797_stp_diag_mcu_clock(diag, session, false);
+	clock_boosted = false;
+	if (ret)
+		goto out_release;
 	dev_info(diag->dev, "ROMv3 patch set transferred in sequence order\n");
 	ret = 0;
 
+out_clock:
+	if (clock_boosted) {
+		cleanup_ret = mt6797_stp_diag_mcu_clock(diag, session, false);
+		if (!ret && cleanup_ret)
+			ret = cleanup_ret;
+	}
 out_release:
 	while (loaded)
 		release_firmware(fw[--loaded]);
