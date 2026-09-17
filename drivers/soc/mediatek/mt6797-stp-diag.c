@@ -24,6 +24,7 @@
 
 #include <linux/mt6797-consys.h>
 #include <linux/mt6797-stp-session.h>
+#include <linux/mt6797-wlan-hif.h>
 
 #define MT6797_STP_DIAG_TIMEOUT_MS	1000
 #define MT6797_STP_DIAG_RESPONSE_MAX	32
@@ -38,6 +39,7 @@
 #define MT6797_STP_PATCH_FW_1		"mediatek/ROMv3_patch_1_1_hdr.bin"
 #define MT6797_STP_PATCH_FW_2		"mediatek/ROMv3_patch_1_0_hdr.bin"
 #define MT6797_WMT_OPCODE_FUNC_CTRL	0x06
+#define MT6797_WLAN_WCIR_CHIP_ID	0x0279
 
 enum mt6797_stp_diag_mode {
 	MT6797_STP_DIAG_QUERY,
@@ -48,6 +50,7 @@ enum mt6797_stp_diag_mode {
 	MT6797_STP_DIAG_BT_OFF,
 	MT6797_STP_DIAG_WIFI_ON,
 	MT6797_STP_DIAG_WIFI_OFF,
+	MT6797_STP_DIAG_WIFI_HIF,
 };
 
 struct mt6797_stp_diag {
@@ -501,6 +504,8 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	bool function_enabled = false;
 	bool function_powered = false;
 	bool function_power_changed = false;
+	bool function_on_ack = false;
+	bool hif_claimed = false;
 
 	ret = mt6797_consys_stp_acquire(diag->consys_dev, &host_ops,
 					&host_context);
@@ -523,12 +528,14 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 		goto out_stop;
 
 	if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
-	    mode == MT6797_STP_DIAG_WIFI_ON || mode == MT6797_STP_DIAG_WIFI_OFF) {
+	    mode == MT6797_STP_DIAG_WIFI_ON || mode == MT6797_STP_DIAG_WIFI_OFF ||
+	    mode == MT6797_STP_DIAG_WIFI_HIF) {
 		function = (mode == MT6797_STP_DIAG_BT_ON ||
 			    mode == MT6797_STP_DIAG_BT_OFF) ?
 			   MT6797_CONSYS_FUNC_BT : MT6797_CONSYS_FUNC_WIFI;
 		function_enabled = mode == MT6797_STP_DIAG_BT_ON ||
-				 mode == MT6797_STP_DIAG_WIFI_ON;
+				 mode == MT6797_STP_DIAG_WIFI_ON ||
+				 mode == MT6797_STP_DIAG_WIFI_HIF;
 		ret = mt6797_stp_session_configure_btif_full(
 			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
 		if (!ret && function_enabled) {
@@ -539,6 +546,52 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 		if (!ret)
 			ret = mt6797_stp_diag_function(diag, session, function,
 						function_enabled);
+		function_on_ack = !ret && function_enabled;
+		if (!ret && mode == MT6797_STP_DIAG_WIFI_HIF) {
+			u32 wcir;
+
+			/* Function-on is the ownership hand-off.  The HIF driver does
+			 * not power the radio or infer this state itself. */
+			ret = mt6797_wlan_hif_claim(diag->dev);
+			if (!ret)
+				hif_claimed = true;
+			if (!ret)
+				ret = mt6797_wlan_hif_wcir_read(diag->dev, &wcir);
+			if (!ret) {
+				put_unaligned_le32(wcir, diag->response);
+				diag->response_length = sizeof(wcir);
+				if ((wcir & 0xffff) != MT6797_WLAN_WCIR_CHIP_ID) {
+					dev_err(diag->dev,
+						"WLAN WCIR chip ID 0x%08x != 0x%04x\n",
+						wcir, MT6797_WLAN_WCIR_CHIP_ID);
+					ret = -EPROTO;
+				} else {
+					dev_info(diag->dev,
+						 "WLAN HIF WCIR chip ID 0x%04x confirmed\n",
+						 wcir & 0xffff);
+				}
+			}
+		}
+		if (hif_claimed) {
+			release_ret = mt6797_wlan_hif_release(diag->dev);
+			hif_claimed = false;
+			if (!ret && release_ret)
+				ret = release_ret;
+		}
+		if (mode == MT6797_STP_DIAG_WIFI_HIF && function_on_ack) {
+			int off_ret;
+
+			off_ret = mt6797_stp_diag_function(diag, session, function,
+							false);
+			if (!ret && off_ret)
+				ret = off_ret;
+			if (function_powered) {
+				off_ret = mt6797_consys_radio_power(host_context, function,
+								false, NULL);
+				if (!ret && off_ret)
+					ret = off_ret;
+			}
+		}
 		if (!ret && !function_enabled)
 			ret = mt6797_consys_radio_power(host_context, function, false, NULL);
 		if (ret && function_powered)
@@ -588,7 +641,7 @@ static ssize_t command_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
 	return sysfs_emit(buf,
-			  "write 'query', 'full', 'version', 'patch', 'bt-on', 'bt-off', 'wifi-on', or 'wifi-off' to execute one bounded test\n");
+			  "write 'query', 'full', 'version', 'patch', 'bt-on', 'bt-off', 'wifi-on', 'wifi-off', or 'wifi-hif' to execute one bounded test\n");
 }
 
 static ssize_t command_store(struct device *dev, struct device_attribute *attr,
@@ -623,6 +676,9 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 	} else if (sysfs_streq(buf, "wifi-off")) {
 		mode = MT6797_STP_DIAG_WIFI_OFF;
 		name = "wifi-off";
+	} else if (sysfs_streq(buf, "wifi-hif")) {
+		mode = MT6797_STP_DIAG_WIFI_HIF;
+		name = "wifi-hif";
 	} else {
 		return -EINVAL;
 	}
