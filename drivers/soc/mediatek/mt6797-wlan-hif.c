@@ -355,6 +355,8 @@ static void mt6797_wlan_hif_remove(struct platform_device *pdev)
 
 static const struct of_device_id mt6797_wlan_hif_of_match[] = {
 	{ .compatible = "mediatek,mt6797-wlan-hif" },
+	/* Temporary board bring-up alias for the generic-resource A/B node. */
+	{ .compatible = "x20,diagnostic-hif" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_wlan_hif_of_match);

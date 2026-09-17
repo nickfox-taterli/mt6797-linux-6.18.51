@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* A/B image: bind the WLAN HIF driver through the generic diagnostic alias. */
+/dts-v1/;
+
+#include "mt6797-x20-96-wireless-stp.dts"
+
+&wifi_hif {
+	compatible = "x20,diagnostic-hif";
+	status = "okay";
+};
