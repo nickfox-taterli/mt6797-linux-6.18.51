@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* eMMC-only HS400 isolation probe: keep the 192 MHz clock, bypass DMA. */
+/dts-v1/;
+
+#include "mt6797-x20-96-headless.dts"
+
+&mmc0 {
+	/delete-property/ mediatek,descriptor-dma;
+	/delete-property/ mediatek,descriptor-max-req-size;
+	mediatek,disable-hsq;
+	mediatek,disable-async-dma;
+	mediatek,force-pio;
+	max-frequency = <200000000>;
+};
