@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* W2 probe: keep HS400 but lower the eMMC request clock to 150 MHz. */
+/dts-v1/;
+
+#include "mt6797-x20-96-wireless-stp-hif-deferred.dts"
+
+&mmc0 {
+	max-frequency = <150000000>;
+};
