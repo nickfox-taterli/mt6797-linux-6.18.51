@@ -11,12 +11,18 @@
 	 * shared with ConSys diagnostics/GPS.  This is experimental metadata only:
 	 * the EMI MPU/remap owner is not enabled by this node yet.
 	 */
-	consys_emi: consys-emi-memory {
-		compatible = "mediatek,consys-reserve-memory";
-		no-map;
-		size = <0 0x200000>;
-		alignment = <0 0x200000>;
-		alloc-ranges = <0 0x40000000 0 0x80000000>;
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		consys_emi: consys-emi-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
 	};
 
 	stp_diag: stp-diag {
