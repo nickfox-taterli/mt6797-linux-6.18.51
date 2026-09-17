@@ -827,6 +827,11 @@ static struct platform_driver mt6797_stp_diag_driver = {
  * platform driver on the ordinary headless DT, where no diagnostic device
  * exists.  Besides avoiding needless initcall activity, this keeps the
  * diagnostic object completely dormant until a board DT explicitly opts in.
+ *
+ * When built in, register at late initcall time.  The diagnostic probe only
+ * creates sysfs state and takes a reference to ConSys, but doing that during
+ * the ordinary device/deferred-probe window unnecessarily races storage
+ * bring-up on this board.  A module keeps the normal module-init semantics.
  */
 static int __init mt6797_stp_diag_init(void)
 {
@@ -843,7 +848,11 @@ static int __init mt6797_stp_diag_init(void)
 		pr_err("failed to register STP diagnostic driver: %d\n", ret);
 	return ret;
 }
+#if IS_BUILTIN(CONFIG_MTK_MT6797_STP_DIAG)
+late_initcall(mt6797_stp_diag_init);
+#else
 module_init(mt6797_stp_diag_init);
+#endif
 
 static void __exit mt6797_stp_diag_exit(void)
 {
