@@ -15,6 +15,7 @@
 
 #include <linux/bitops.h>
 #include <linux/delay.h>
+#include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kstrtox.h>
@@ -24,6 +25,8 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sysfs.h>
+
+#include <linux/mt6797-consys.h>
 
 #define CONSYS_CHIP_ID			0x0279
 
@@ -89,8 +92,10 @@ struct mt6797_consys {
 	struct regulator *vcn33_wifi;
 	struct mutex lock;
 	u32 stages;
+	u32 stp_mode;
 	int last_error;
 	bool powered;
+	bool stp_enabled;
 };
 
 static int consys_wait_ack(struct mt6797_consys *cs, u32 off, u32 mask)
@@ -242,6 +247,8 @@ static int consys_cleanup_locked(struct mt6797_consys *cs)
 	}
 
 	cs->powered = false;
+	cs->stp_enabled = false;
+	cs->stp_mode = 0;
 	return ret;
 }
 
@@ -384,6 +391,44 @@ static int consys_power_off_locked(struct mt6797_consys *cs)
 	return ret;
 }
 
+int mt6797_consys_stp_set_mode(void *context, u32 mode)
+{
+	struct mt6797_consys *cs = context;
+	int ret = 0;
+
+	if (!cs || (mode & ~GENMASK(4, 0)))
+		return -EINVAL;
+	mutex_lock(&cs->lock);
+	if (!cs->powered)
+		ret = -EHOSTDOWN;
+	else if (cs->stp_enabled)
+		ret = -EBUSY;
+	else
+		cs->stp_mode = mode;
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_mode);
+
+int mt6797_consys_stp_set_enabled(void *context, bool enabled)
+{
+	struct mt6797_consys *cs = context;
+	int ret = 0;
+
+	if (!cs)
+		return -EINVAL;
+	mutex_lock(&cs->lock);
+	if (enabled && !cs->powered)
+		ret = -EHOSTDOWN;
+	else if (enabled && !cs->stp_mode)
+		ret = -EINVAL;
+	else
+		cs->stp_enabled = enabled;
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_enabled);
+
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
@@ -448,6 +493,30 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 	return sysfs_emit(buf, "0x%08x\n", stages);
 }
 
+static ssize_t stp_mode_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	u32 mode;
+
+	mutex_lock(&cs->lock);
+	mode = cs->stp_mode;
+	mutex_unlock(&cs->lock);
+	return sysfs_emit(buf, "0x%08x\n", mode);
+}
+
+static ssize_t stp_enabled_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	bool enabled;
+
+	mutex_lock(&cs->lock);
+	enabled = cs->stp_enabled;
+	mutex_unlock(&cs->lock);
+	return sysfs_emit(buf, "%d\n", enabled);
+}
+
 static ssize_t last_error_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
@@ -464,12 +533,16 @@ static ssize_t last_error_show(struct device *dev,
 static DEVICE_ATTR_RW(power);
 static DEVICE_ATTR_RO(chipid);
 static DEVICE_ATTR_RO(state);
+static DEVICE_ATTR_RO(stp_mode);
+static DEVICE_ATTR_RO(stp_enabled);
 static DEVICE_ATTR_RO(last_error);
 
 static struct attribute *consys_attrs[] = {
 	&dev_attr_power.attr,
 	&dev_attr_chipid.attr,
 	&dev_attr_state.attr,
+	&dev_attr_stp_mode.attr,
+	&dev_attr_stp_enabled.attr,
 	&dev_attr_last_error.attr,
 	NULL,
 };
