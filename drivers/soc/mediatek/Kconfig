@@ -132,6 +132,7 @@ config MTK_MT6797_STP_DIAG
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on MTK_MT6797_CONSYS
 	depends on MTK_MT6797_STP_SESSION
+	depends on MTK_MT6797_WLAN_HIF
 	help
 	  Root-controlled diagnostic client for one bounded MT6797 STP/WMT
 	  transaction.  It requires ConSys to be powered explicitly, reserves the
