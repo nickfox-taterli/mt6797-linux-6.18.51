@@ -9,6 +9,7 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-basic-hs400.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-basic-hs400.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb
