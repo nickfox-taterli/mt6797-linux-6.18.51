@@ -22,6 +22,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/sysfs.h>
@@ -100,6 +101,8 @@ struct mt6797_consys {
 	bool stp_enabled;
 	bool bt_radio_on;
 	bool wifi_radio_on;
+	phys_addr_t emi_base;
+	phys_addr_t emi_size;
 };
 
 static int consys_wait_ack(struct mt6797_consys *cs, u32 off, u32 mask)
@@ -553,6 +556,29 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_radio_power);
 
+int mt6797_consys_get_emi(void *context, phys_addr_t *base,
+				  phys_addr_t *size)
+{
+	struct mt6797_consys *cs = context;
+	int ret = 0;
+
+	if (!cs || !base || !size)
+		return -EINVAL;
+
+	mutex_lock(&cs->lock);
+	if (!cs->stp_claimed)
+		ret = -EPERM;
+	else if (!cs->emi_size)
+		ret = -ENODEV;
+	else {
+		*base = cs->emi_base;
+		*size = cs->emi_size;
+	}
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_get_emi);
+
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
@@ -654,12 +680,30 @@ static ssize_t last_error_show(struct device *dev,
 	return sysfs_emit(buf, "%d\n", error);
 }
 
+static ssize_t emi_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct mt6797_consys *cs = dev_get_drvdata(dev);
+	phys_addr_t base, size;
+
+	mutex_lock(&cs->lock);
+	base = cs->emi_base;
+	size = cs->emi_size;
+	mutex_unlock(&cs->lock);
+
+	if (!size)
+		return sysfs_emit(buf, "none\n");
+	return sysfs_emit(buf, "base=0x%pa size=0x%pa wifi=0x%x\n",
+			  &base, &size, MT6797_CONSYS_WIFI_EMI_SIZE);
+}
+
 static DEVICE_ATTR_RW(power);
 static DEVICE_ATTR_RO(chipid);
 static DEVICE_ATTR_RO(state);
 static DEVICE_ATTR_RO(stp_mode);
 static DEVICE_ATTR_RO(stp_enabled);
 static DEVICE_ATTR_RO(last_error);
+static DEVICE_ATTR_RO(emi);
 
 static struct attribute *consys_attrs[] = {
 	&dev_attr_power.attr,
@@ -668,6 +712,7 @@ static struct attribute *consys_attrs[] = {
 	&dev_attr_stp_mode.attr,
 	&dev_attr_stp_enabled.attr,
 	&dev_attr_last_error.attr,
+	&dev_attr_emi.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(consys);
@@ -676,6 +721,7 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 {
 	struct mt6797_consys *cs;
 	struct resource *r;
+	struct resource emi;
 	int ret;
 	int i;
 
@@ -703,6 +749,32 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	cs->rgu = cs->base[1];
 	cs->topckgen = cs->base[2];
 	cs->spm = cs->base[3];
+
+	/*
+	 * The vendor MT6797 layout reserves a 2 MiB, 2 MiB-aligned region for
+	 * ConSys.  Wi-Fi uses its first 512 KiB; later offsets belong to ConSys
+	 * diagnostics/GPS.  Parse the DT reservation now, but leave MPU/remap
+	 * programming to the future EMI owner.
+	 */
+	ret = of_reserved_mem_region_to_resource(pdev->dev.of_node, 0, &emi);
+	if (!ret) {
+		if (!IS_ALIGNED(emi.start, MT6797_CONSYS_EMI_REGION_SIZE) ||
+		    resource_size(&emi) < MT6797_CONSYS_EMI_REGION_SIZE)
+			return dev_err_probe(&pdev->dev, -EINVAL,
+					     "invalid ConSys EMI reservation %pa/%pa\n",
+					     &emi.start, &emi.end);
+		cs->emi_base = emi.start;
+		cs->emi_size = resource_size(&emi);
+		dev_info(&pdev->dev,
+			 "ConSys EMI reservation base=%pa size=%pa (Wi-Fi=%x)\n",
+			 &cs->emi_base, &cs->emi_size, MT6797_CONSYS_WIFI_EMI_SIZE);
+	} else if (ret != -ENOENT && ret != -ENODEV) {
+		return dev_err_probe(&pdev->dev, ret,
+				     "failed to resolve ConSys EMI reservation\n");
+	} else {
+		dev_warn(&pdev->dev,
+			 "no ConSys EMI reservation; WLAN firmware cannot start\n");
+	}
 
 	cs->vcn18 = devm_regulator_get_exclusive(&pdev->dev, "vcn18");
 	if (IS_ERR(cs->vcn18))

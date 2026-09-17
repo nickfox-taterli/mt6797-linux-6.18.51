@@ -7,6 +7,9 @@
 #include <linux/device.h>
 #include <linux/types.h>
 
+#define MT6797_CONSYS_EMI_REGION_SIZE	0x200000
+#define MT6797_CONSYS_WIFI_EMI_SIZE	0x080000
+
 #define MT6797_CONSYS_STP_BTIF_FULL_MODE	BIT(2)
 
 /* WMT function type values from the MT6797 vendor protocol. */
@@ -32,5 +35,9 @@ int mt6797_consys_stp_set_enabled(void *context, bool enabled);
 /* Own the external MT6631 VCN33 rail for a live WMT function. */
 int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 				     bool *changed);
+
+/* Read the reserved ConSys EMI region while the caller owns the STP context. */
+int mt6797_consys_get_emi(void *context, phys_addr_t *base,
+				  phys_addr_t *size);
 
 #endif /* __LINUX_MT6797_CONSYS_H */

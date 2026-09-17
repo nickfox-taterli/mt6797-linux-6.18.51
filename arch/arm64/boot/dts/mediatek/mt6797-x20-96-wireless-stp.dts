@@ -5,6 +5,20 @@
 #include "mt6797-x20-96-headless.dts"
 
 / {
+	/*
+	 * Vendor MT6797 reserves 2 MiB aligned to 2 MiB for ConSys.  The Wi-Fi
+	 * divided firmware uses the first 512 KiB; the remaining offsets are
+	 * shared with ConSys diagnostics/GPS.  This is experimental metadata only:
+	 * the EMI MPU/remap owner is not enabled by this node yet.
+	 */
+	consys_emi: consys-emi-memory {
+		compatible = "mediatek,consys-reserve-memory";
+		no-map;
+		size = <0 0x200000>;
+		alignment = <0 0x200000>;
+		alloc-ranges = <0 0x40000000 0 0x80000000>;
+	};
+
 	stp_diag: stp-diag {
 		compatible = "mediatek,mt6797-stp-diag";
 		consys = <&consys>;
@@ -14,4 +28,8 @@
 
 &btif {
 	status = "okay";
+};
+
+&consys {
+	memory-region = <&consys_emi>;
 };
