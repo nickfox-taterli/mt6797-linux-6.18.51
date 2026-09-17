@@ -12,7 +12,6 @@
 //
 //       power  - 1 to run the full power-on sequence, 0 to power off
 //       chipid - read of CONN_MCU_CFG + 0x08 (0x0279 when the MCU is alive)
-//       wl_dump- 8 words read back from the WLAN MAC window at 0x180f0000
 
 #include <linux/bitops.h>
 #include <linux/delay.h>
@@ -54,10 +53,6 @@
 #define CONSYS_SPM_PWR_ACK_S_OFF	0x0184
 #define CONSYS_SPM_PWR_ACK_BIT		BIT(1)
 
-/* WLAN MAC window, read back only as bring-up evidence. */
-#define CONSYS_WLAN_MAC_BASE		0x180f0000
-#define CONSYS_WLAN_DUMP_WORDS		8
-
 struct mt6797_consys {
 	struct device *dev;
 	void __iomem *base[4];
@@ -65,7 +60,6 @@ struct mt6797_consys {
 	void __iomem *rgu;
 	void __iomem *topckgen;
 	void __iomem *spm;
-	void __iomem *wlan;
 	struct regulator *vcn18;
 	struct regulator *vcn28;
 	struct regulator *vcn33_bt;
@@ -280,32 +274,12 @@ static ssize_t chipid_show(struct device *dev, struct device_attribute *attr,
 			  readl(cs->mcu + CONSYS_MCU_CHIP_ID_OFF));
 }
 
-static ssize_t wl_dump_show(struct device *dev, struct device_attribute *attr,
-			    char *buf)
-{
-	struct mt6797_consys *cs = dev_get_drvdata(dev);
-	ssize_t len = 0;
-	int i;
-
-	if (!cs->powered)
-		return sysfs_emit(buf, "off\n");
-
-	for (i = 0; i < CONSYS_WLAN_DUMP_WORDS; i++)
-		len += sysfs_emit_at(buf, len, "%08x%s",
-				     readl(cs->wlan + i * 4),
-				     (i % 4 == 3) ? "\n" : " ");
-
-	return len;
-}
-
 static DEVICE_ATTR_RW(power);
 static DEVICE_ATTR_RO(chipid);
-static DEVICE_ATTR_RO(wl_dump);
 
 static struct attribute *consys_attrs[] = {
 	&dev_attr_power.attr,
 	&dev_attr_chipid.attr,
-	&dev_attr_wl_dump.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(consys);
@@ -340,14 +314,6 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	cs->rgu = cs->base[1];
 	cs->topckgen = cs->base[2];
 	cs->spm = cs->base[3];
-
-	/*
-	 * The WLAN MAC window has no DT node of its own; map it directly for
-	 * bring-up evidence.  Failures here are not fatal for power control.
-	 */
-	cs->wlan = devm_ioremap(&pdev->dev, CONSYS_WLAN_MAC_BASE, 0x100);
-	if (!cs->wlan)
-		dev_warn(cs->dev, "WLAN MAC window map failed; wl_dump unavailable\n");
 
 	cs->vcn18 = devm_regulator_get_exclusive(&pdev->dev, "vcn18");
 	if (IS_ERR(cs->vcn18))
