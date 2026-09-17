@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Opt-in X20-96 DTB for the bounded MT6797 BTIF/STP/WMT experiment. */
+/dts-v1/;
+
+#include "mt6797-x20-96-headless.dts"
+
+/ {
+	stp_diag: stp-diag {
+		compatible = "mediatek,mt6797-stp-diag";
+		consys = <&consys>;
+		status = "okay";
+	};
+};
+
+&btif {
+	status = "okay";
+};

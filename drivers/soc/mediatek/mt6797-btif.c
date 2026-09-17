@@ -136,6 +136,7 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 	if (iir & BTIF_IIR_TX_EMPTY) {
 		u8 tx[BTIF_TX_FIFO_SIZE];
 		unsigned int count;
+		unsigned int index;
 		u32 lsr = readl(btif->base + BTIF_LSR);
 		unsigned int room = lsr & BTIF_LSR_TEMT ? BTIF_TX_FIFO_SIZE :
 			(lsr & BTIF_LSR_THRE ? BTIF_TX_FIFO_SIZE - BTIF_TRI_TX_THRESHOLD : 0);
@@ -149,9 +150,8 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 			btif_update_bits(btif, BTIF_IER, BTIF_IER_TXEEN, 0);
 		spin_unlock_irqrestore(&btif->tx_lock, flags);
 
-		while (count--)
-			writeb(tx[sizeof(tx) - count - 1],
-			       btif->base + BTIF_RBR_THR);
+		for (index = 0; index < count; index++)
+			writeb(tx[index], btif->base + BTIF_RBR_THR);
 		wake_up_all(&btif->tx_wait);
 	}
 

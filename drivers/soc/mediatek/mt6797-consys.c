@@ -27,6 +27,7 @@
 #include <linux/sysfs.h>
 
 #include <linux/mt6797-consys.h>
+#include <linux/mt6797-stp-session.h>
 
 #define CONSYS_CHIP_ID			0x0279
 
@@ -95,6 +96,7 @@ struct mt6797_consys {
 	u32 stp_mode;
 	int last_error;
 	bool powered;
+	bool stp_claimed;
 	bool stp_enabled;
 };
 
@@ -380,6 +382,8 @@ static int consys_power_off_locked(struct mt6797_consys *cs)
 {
 	int ret;
 
+	if (cs->stp_claimed)
+		return -EBUSY;
 	if (!cs->stages)
 		return 0;
 
@@ -401,6 +405,8 @@ int mt6797_consys_stp_set_mode(void *context, u32 mode)
 	mutex_lock(&cs->lock);
 	if (!cs->powered)
 		ret = -EHOSTDOWN;
+	else if (!cs->stp_claimed)
+		ret = -EPERM;
 	else if (cs->stp_enabled)
 		ret = -EBUSY;
 	else
@@ -420,6 +426,8 @@ int mt6797_consys_stp_set_enabled(void *context, bool enabled)
 	mutex_lock(&cs->lock);
 	if (enabled && !cs->powered)
 		ret = -EHOSTDOWN;
+	else if (!cs->stp_claimed)
+		ret = -EPERM;
 	else if (enabled && !cs->stp_mode)
 		ret = -EINVAL;
 	else
@@ -428,6 +436,55 @@ int mt6797_consys_stp_set_enabled(void *context, bool enabled)
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_enabled);
+
+int mt6797_consys_stp_acquire(struct device *consys_dev,
+				      struct mt6797_stp_host_ops *ops,
+				      void **context)
+{
+	struct mt6797_consys *cs;
+	int ret = 0;
+
+	if (!consys_dev || !ops || !context)
+		return -EINVAL;
+	cs = dev_get_drvdata(consys_dev);
+	if (!cs)
+		return -EPROBE_DEFER;
+	mutex_lock(&cs->lock);
+	if (!cs->powered)
+		ret = -EHOSTDOWN;
+	else if (cs->stp_claimed)
+		ret = -EBUSY;
+	else {
+		cs->stp_claimed = true;
+		ops->set_mode = mt6797_consys_stp_set_mode;
+		ops->set_enabled = mt6797_consys_stp_set_enabled;
+		*context = cs;
+	}
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_acquire);
+
+int mt6797_consys_stp_release(void *context)
+{
+	struct mt6797_consys *cs = context;
+	int ret = 0;
+
+	if (!cs)
+		return -EINVAL;
+	mutex_lock(&cs->lock);
+	if (!cs->stp_claimed)
+		ret = -EINVAL;
+	else if (cs->stp_enabled)
+		ret = -EBUSY;
+	else {
+		cs->stp_claimed = false;
+		cs->stp_mode = 0;
+	}
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_release);
 
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)

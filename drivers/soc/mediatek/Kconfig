@@ -123,8 +123,19 @@ config MTK_MT6797_STP_SESSION
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on MTK_MT6797_STP
 	help
-	Reliable full-mode STP sequence/ACK/retry and WMT event matching on top
-	of the MT6797 BTIF transport.  It claims BTIF only when explicitly
-	started by a higher-level ConSys owner and does not power the chip.
+	  Reliable full-mode STP sequence/ACK/retry and WMT event matching on top
+	  of the MT6797 BTIF transport.  It claims BTIF only when explicitly
+	  started by a higher-level ConSys owner and does not power the chip.
+
+config MTK_MT6797_STP_DIAG
+	tristate "MT6797 bounded STP/WMT diagnostic client"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_MT6797_CONSYS
+	depends on MTK_MT6797_STP_SESSION
+	help
+	  Root-controlled diagnostic client for one bounded MT6797 STP/WMT
+	  transaction.  It requires ConSys to be powered explicitly, reserves the
+	  host parser while the transaction runs, and never exposes BTIF as a tty
+	  or HCI device.
 
 endmenu
