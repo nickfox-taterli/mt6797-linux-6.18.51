@@ -10,3 +10,4 @@ obj-$(CONFIG_MTK_MMSYS) += mtk-mutex.o
 obj-$(CONFIG_MTK_SVS) += mtk-svs.o
 obj-$(CONFIG_MTK_SOCINFO) += mtk-socinfo.o
 obj-$(CONFIG_MTK_MT6797_CONSYS) += mt6797-consys.o
+obj-$(CONFIG_MTK_MT6797_BTIF) += mt6797-btif.o

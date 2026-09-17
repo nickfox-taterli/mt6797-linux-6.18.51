@@ -99,4 +99,14 @@ config MTK_MT6797_CONSYS
 	  MT6631 radio.  Exposes a sysfs power switch and chip-ID readback for
 	  board bring-up; protocol stacks are separate drivers.
 
+config MTK_MT6797_BTIF
+	tristate "MT6797 ConSys BTIF PIO transport"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on MTK_MT6797_CONSYS
+	depends on COMMON_CLK
+	help
+	  PIO byte transport for the MT6797 ConSys BTIF block.  This is not a
+	  serial console or a 16550 UART; an STP/WMT client must claim it before
+	  the clock, FIFO and IRQ are enabled.
+
 endmenu
