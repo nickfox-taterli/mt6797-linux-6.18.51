@@ -352,16 +352,14 @@ static int mt6797_stp_diag_patch_address(struct mt6797_stp_diag *diag,
 		response[2] || response[3] != 1)
 		return -EPROTO;
 
-	/* The vendor command writes the 24-bit image address into bytes 12..15. */
-	/* MT6797 selects the partial-patch RAM window at 0x0b2c. */
+	/* WMT_PATCH_P_ADDRESS_CMD includes a four-byte WMT header. Its
+	 * bytes 12..15 are params[8..11] (value), not params[12..15] (mask).
+	 * Keep the vendor's full mask and prepend zero to the header address.
+	 */
 	params[4] = 0x2c;
 	params[5] = 0x0b;
 	params[8] = 0x00;
-	params[9] = 0x3f;
-	params[10] = 0x00;
-	params[11] = 0x01;
-	params[12] = 0x00;
-	memcpy(params + 13, fw->data + 25, 3);
+	memcpy(params + 9, fw->data + 25, 3);
 	ret = mt6797_stp_session_wmt(session, 0x08, params, sizeof(params),
 				     response, &response_length, sizeof(response),
 				     msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
