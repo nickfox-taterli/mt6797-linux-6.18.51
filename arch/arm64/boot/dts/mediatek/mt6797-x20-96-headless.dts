@@ -32,6 +32,11 @@
 		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000 root=PARTUUID=8273e1ab-846f-4468-b999-ee2ea8e50a16 rootwait loglevel=8 printk.time=1";
 	};
 
+	fastboot-reboot {
+		compatible = "mediatek,mt6797-fastboot";
+		mediatek,pwrap = <&pwrap>;
+	};
+
 	reg_vmmc: regulator-vmmc {
 		compatible = "regulator-fixed";
 		regulator-name = "vmmc-3v3";

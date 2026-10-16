@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
@@ -114,9 +115,18 @@ static int mt6797_fastboot_restart(struct notifier_block *nb,
 	return NOTIFY_DONE;
 }
 
+static void mt6797_fastboot_unregister(void *data)
+{
+	struct mt6797_fastboot *fastboot = data;
+
+	unregister_restart_handler(&fastboot->restart_handler);
+}
+
 static int mt6797_fastboot_probe(struct platform_device *pdev)
 {
 	struct mt6797_fastboot *fastboot;
+	struct platform_device *pwrap;
+	struct device_node *np;
 	int ret;
 
 	fastboot = devm_kzalloc(&pdev->dev, sizeof(*fastboot), GFP_KERNEL);
@@ -124,7 +134,22 @@ static int mt6797_fastboot_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	fastboot->dev = &pdev->dev;
-	fastboot->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+	/* The PMIC node is already owned by its regulator driver. */
+	np = of_parse_phandle(pdev->dev.of_node, "mediatek,pwrap", 0);
+	if (!np)
+		return -EINVAL;
+	pwrap = of_find_device_by_node(np);
+	of_node_put(np);
+	if (!pwrap)
+		return -EPROBE_DEFER;
+	fastboot->regmap = dev_get_regmap(&pwrap->dev, NULL);
+	if (fastboot->regmap &&
+	    !device_link_add(&pdev->dev, &pwrap->dev,
+			     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		put_device(&pwrap->dev);
+		return -ENOMEM;
+	}
+	put_device(&pwrap->dev);
 	if (!fastboot->regmap)
 		return -EPROBE_DEFER;
 
@@ -134,13 +159,15 @@ static int mt6797_fastboot_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	platform_set_drvdata(pdev, fastboot);
-	return 0;
+	ret = devm_add_action_or_reset(&pdev->dev,
+				     mt6797_fastboot_unregister, fastboot);
+	if (!ret)
+		dev_info(&pdev->dev, "RTC Fastboot reboot marker registered\n");
+	return ret;
 }
 
 static const struct of_device_id mt6797_fastboot_of_match[] = {
-	{ .compatible = "mediatek,mt6351" },
-	{ .compatible = "mediatek,mt6351-pmic" },
+	{ .compatible = "mediatek,mt6797-fastboot" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, mt6797_fastboot_of_match);
