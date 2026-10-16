@@ -1392,7 +1392,8 @@ static int msdc_pio_transfer(struct msdc_host *host, struct mmc_data *data)
 	bool read = data->flags & MMC_DATA_READ;
 	size_t total_len = (size_t)data->blocks * data->blksz;
 	size_t pos = 0;
-	unsigned long timeout = jiffies + DAT_TIMEOUT;
+	/* CMD completion can call us in hard IRQ context on the tick CPU. */
+	ktime_t timeout = ktime_add_ms(ktime_get(), jiffies_to_msecs(DAT_TIMEOUT));
 	bool xfer_done = false;
 	u32 ints, fifo, chunk, i, value;
 	size_t copied;
@@ -1466,7 +1467,7 @@ static int msdc_pio_transfer(struct msdc_host *host, struct mmc_data *data)
 				MSDC_FIFOCS_TXCNT) >> 16)))
 			break;
 
-		if (time_after(jiffies, timeout)) {
+		if (ktime_after(ktime_get(), timeout)) {
 			ret = -ETIMEDOUT;
 			break;
 		}
