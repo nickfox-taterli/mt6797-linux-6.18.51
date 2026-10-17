@@ -18,8 +18,10 @@ Module unload works after a failed probe. The UART rescue Preloader must run the
 without it ConSys cannot read its protected EMI firmware. With Preloader
 fa68e7a, ROM reads match both EMI section headers and firmware starts;
 wlan0/p2p0 are present. A standard iw scan returned 21 BSS entries, including
-the laboratory SSIDs on 2432 and 5200 MHz. Association and data traffic are
-still unverified. Module load returning zero does
+the laboratory SSIDs on 2432 and 5200 MHz. Laboratory 2.4-GHz WPA2/CCMP with
+PMF, DHCP, build-host SSH, Q6A bidirectional ping and hash-verified SFTP in both
+directions now pass. The board subsequently reset unexpectedly; sustained
+traffic, 5-GHz association and recovery remain unverified. Module load returning zero does
 not imply the platform device bound successfully.
 
 An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
