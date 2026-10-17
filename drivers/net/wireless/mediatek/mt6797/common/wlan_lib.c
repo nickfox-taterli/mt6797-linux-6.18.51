@@ -1398,6 +1398,9 @@ VOID wlanAdapterDestroy(IN P_ADAPTER_T prAdapter)
 static bool wlan_firmware_trace;
 module_param_named(firmware_trace, wlan_firmware_trace, bool, 0600);
 MODULE_PARM_DESC(firmware_trace, "Log bounded firmware startup stages");
+static bool wlan_download_check;
+module_param_named(download_check, wlan_download_check, bool, 0444);
+MODULE_PARM_DESC(download_check, "Query ROM download errors before Wi-Fi Start");
 
 static bool mt6797_wlan_firmware_valid(const u8 *data, size_t length)
 {
@@ -1607,15 +1610,17 @@ wlanAdapterStart(IN P_ADAPTER_T prAdapter,
 				eFailReason = RAM_CODE_DOWNLOAD_FAIL;
 				break;
 			}
-#if !CFG_ENABLE_FW_DOWNLOAD_ACK
 			/* Send INIT_CMD_ID_QUERY_PENDING_ERROR command and wait for response */
-			if (wlanImageQueryStatus(prAdapter) != WLAN_STATUS_SUCCESS) {
-				DBGLOG(INIT, ERROR, "Firmware download failed!\n");
-				u4Status = WLAN_STATUS_FAILURE;
-				eFailReason = RAM_CODE_DOWNLOAD_FAIL;
-				break;
+			if (wlan_download_check || !CFG_ENABLE_FW_DOWNLOAD_ACK) {
+				u4Status = wlanImageQueryStatus(prAdapter);
+				pr_info("mt6797-wlan: pending download error query result=%08x\n", u4Status);
+				if (u4Status != WLAN_STATUS_SUCCESS) {
+					DBGLOG(INIT, ERROR, "Firmware download failed!\n");
+					u4Status = WLAN_STATUS_FAILURE;
+					eFailReason = RAM_CODE_DOWNLOAD_FAIL;
+					break;
+				}
 			}
-#endif
 		} else {
 			DBGLOG(INIT, ERROR, "No Firmware found!\n");
 			u4Status = WLAN_STATUS_FAILURE;
@@ -3701,7 +3706,6 @@ wlanFwDwnloadHandler(IN P_ADAPTER_T prAdapter,
 	}
 }
 
-#if !CFG_ENABLE_FW_DOWNLOAD_ACK
 /*----------------------------------------------------------------------------*/
 /*!
 * @brief This function is called to confirm previously firmware download is done without error
@@ -3776,7 +3780,8 @@ WLAN_STATUS wlanImageQueryStatus(IN P_ADAPTER_T prAdapter)
 
 	/* 6. Wait for INIT_EVENT_ID_PENDING_ERROR */
 	do {
-		if (kalIsCardRemoved(prAdapter->prGlueInfo) == TRUE || fgIsBusAccessFailed == TRUE) {
+		if (u4Status != WLAN_STATUS_SUCCESS ||
+		    kalIsCardRemoved(prAdapter->prGlueInfo) == TRUE || fgIsBusAccessFailed == TRUE) {
 			u4Status = WLAN_STATUS_FAILURE;
 		} else if (nicRxWaitResponse(prAdapter,
 					     0,
@@ -3784,10 +3789,12 @@ WLAN_STATUS wlanImageQueryStatus(IN P_ADAPTER_T prAdapter)
 					     sizeof(INIT_HIF_RX_HEADER_T) +
 					     sizeof(INIT_EVENT_PENDING_ERROR), &u4RxPktLength) != WLAN_STATUS_SUCCESS) {
 			u4Status = WLAN_STATUS_FAILURE;
+		} else if (u4RxPktLength < sizeof(INIT_HIF_RX_HEADER_T) + 1) {
+			u4Status = WLAN_STATUS_FAILURE;
 		} else {
 			prInitHifRxHeader = (P_INIT_HIF_RX_HEADER_T) aucBuffer;
 			if (wlan_firmware_trace)
-				print_hex_dump(KERN_INFO, "mt6797-wlan: download ACK ",
+				print_hex_dump(KERN_INFO, "mt6797-wlan: pending download error ",
 					       DUMP_PREFIX_NONE, 16, 1, aucBuffer,
 					       min_t(size_t, u4RxPktLength, sizeof(aucBuffer)), false);
 
@@ -3814,7 +3821,7 @@ WLAN_STATUS wlanImageQueryStatus(IN P_ADAPTER_T prAdapter)
 	return u4Status;
 }
 
-#else
+#if CFG_ENABLE_FW_DOWNLOAD_ACK
 /*----------------------------------------------------------------------------*/
 /*!
 * @brief This function is called to confirm the status of

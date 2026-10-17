@@ -1156,9 +1156,8 @@ VOID
 wlanFwDwnloadHandler(IN P_ADAPTER_T prAdapter,
 		     IN UINT_32 u4FwImgLength, IN PVOID pvFwImageMapFile, OUT WLAN_STATUS *u4Status);
 
-#if !CFG_ENABLE_FW_DOWNLOAD_ACK
 WLAN_STATUS wlanImageQueryStatus(IN P_ADAPTER_T prAdapter);
-#else
+#if CFG_ENABLE_FW_DOWNLOAD_ACK
 WLAN_STATUS wlanImageSectionDownloadStatus(IN P_ADAPTER_T prAdapter, IN UINT_8 ucCmdSeqNum);
 #endif
 

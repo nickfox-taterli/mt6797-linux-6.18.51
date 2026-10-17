@@ -23,8 +23,10 @@ An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
 programming, using a coherent bounce buffer, bounded completion/reset and
 failure propagation. PIO remains the default; `180f0000.wifi/transfer_mode`
 can select DMA only between WLAN sessions. Real-function fault tests and
-ARM64 compilation pass; board validation is pending. This is not evidence
-of successful firmware payload delivery or wireless traffic.
+ARM64 compilation pass. Board DMA completed 13 FIFO transfers with valid
+configuration ACKs, but firmware-ready still timed out, as with PIO in the
+same kernel. Failure teardown returned the channel and ConSys power. This
+is not evidence of firmware execution or wireless traffic.
 
 Remaining work includes firmware startup, data queues/interrupts, AP-DMA validation,
 dynamic virtual interfaces, standard userspace role tests, factory calibration
