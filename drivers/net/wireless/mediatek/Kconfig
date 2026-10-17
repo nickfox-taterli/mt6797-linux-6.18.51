@@ -11,6 +11,17 @@ config WLAN_VENDOR_MEDIATEK
 	  your specific card in the following questions.
 
 if WLAN_VENDOR_MEDIATEK
+
+config MTK_MT6797_WLAN
+	tristate "MT6797/MT6631 AHB WLAN"
+	depends on OF && CFG80211 && MTK_MT6797_WMT && MTK_MT6797_WLAN_HIF
+	select WIRELESS_EXT
+	select WEXT_PRIV
+	select NVMEM
+	help
+	  MT6797 WLAN using the BSP gen3 protocol core with mainline Linux and
+	  shared ConSys lifecycle interfaces. Supports the existing STA/AP/P2P
+	  protocol paths; board firmware and calibration data are required.
 source "drivers/net/wireless/mediatek/mt7601u/Kconfig"
 source "drivers/net/wireless/mediatek/mt76/Kconfig"
 endif # WLAN_VENDOR_MEDIATEK

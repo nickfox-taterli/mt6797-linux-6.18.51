@@ -34,6 +34,13 @@
 		status = "okay";
 	};
 
+	wlan {
+		compatible = "mediatek,mt6797-wlan";
+		mediatek,wmt = <&wmt>;
+		mediatek,nvram-firmware = "mediatek/mt6797-x20-wifi-nvram.bin";
+		status = "okay";
+	};
+
 	stp_diag: stp-diag {
 		compatible = "mediatek,mt6797-stp-diag";
 		consys = <&consys>;
