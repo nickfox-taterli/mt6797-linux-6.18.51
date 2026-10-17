@@ -551,6 +551,8 @@ int mt6797_wmt_bootstrap(struct device *dev, struct mt6797_stp_session *session,
 	ret = mt6797_wmt_read_version(dev, session, &hw_version, &fw_version);
 	if (ret)
 		return ret;
+	calibration->hw_version = hw_version;
+	calibration->fw_version = fw_version;
 	ret = mt6797_wmt_download_patches(dev, session, host_context, hw_version, fw_version);
 	if (ret)
 		return ret;

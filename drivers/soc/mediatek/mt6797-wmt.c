@@ -326,6 +326,44 @@ int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 }
 EXPORT_SYMBOL_GPL(mt6797_wmt_wifi_emi_write);
 
+int mt6797_wmt_client_version(struct mt6797_wmt_client *client, u32 *hw, u32 *fw)
+{
+	struct mt6797_wmt *wmt;
+	int ret = 0;
+
+	if (!client || !hw || !fw)
+		return -EINVAL;
+	wmt = client->wmt;
+	mutex_lock(&wmt->lock);
+	if (wmt->removed || !client->active)
+		ret = -ESHUTDOWN;
+	else {
+		*hw = wmt->calibration.hw_version;
+		*fw = wmt->calibration.fw_version;
+	}
+	mutex_unlock(&wmt->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_client_version);
+
+int mt6797_wmt_client_cpupcr(struct mt6797_wmt_client *client, u32 *value)
+{
+	struct mt6797_wmt *wmt;
+	int ret;
+
+	if (!client || !value)
+		return -EINVAL;
+	wmt = client->wmt;
+	mutex_lock(&wmt->lock);
+	if (wmt->removed || !client->active)
+		ret = -ESHUTDOWN;
+	else
+		ret = mt6797_consys_read_cpupcr(wmt->host, value);
+	mutex_unlock(&wmt->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_client_cpupcr);
+
 static struct device *mt6797_wmt_provider(struct device *dev, const char *name)
 {
 	struct platform_device *pdev;

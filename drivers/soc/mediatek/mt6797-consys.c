@@ -629,6 +629,23 @@ int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_get_emi);
 
+int mt6797_consys_read_cpupcr(void *context, u32 *value)
+{
+	struct mt6797_consys *cs = context;
+	int ret = 0;
+
+	if (!cs || !value)
+		return -EINVAL;
+	mutex_lock(&cs->lock);
+	if (!cs->stp_claimed || !cs->powered)
+		ret = -EHOSTDOWN;
+	else
+		*value = readl(cs->mcu + 0x160);
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_read_cpupcr);
+
 static int consys_emi_smc_set_locked(struct mt6797_consys *cs,
 					     phys_addr_t start, phys_addr_t end,
 					     unsigned int region, u32 permission)

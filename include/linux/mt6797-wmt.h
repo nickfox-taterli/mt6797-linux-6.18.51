@@ -22,10 +22,14 @@ int mt6797_wmt_client_send(struct mt6797_wmt_client *client,
 			   const void *data, size_t length);
 int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 			    const void *data, size_t length);
+int mt6797_wmt_client_version(struct mt6797_wmt_client *client, u32 *hw, u32 *fw);
+int mt6797_wmt_client_cpupcr(struct mt6797_wmt_client *client, u32 *value);
 
 #define MT6797_WMT_CALIBRATION_MAX 2044
 
 struct mt6797_wmt_calibration {
+	u32 hw_version;
+	u32 fw_version;
 	u16 length;
 	u8 data[MT6797_WMT_CALIBRATION_MAX];
 };

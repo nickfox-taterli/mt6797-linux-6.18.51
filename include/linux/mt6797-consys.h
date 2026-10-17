@@ -45,6 +45,7 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 /* Read the reserved ConSys EMI region while the caller owns the STP context. */
 int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 				  phys_addr_t *size);
+int mt6797_consys_read_cpupcr(void *context, u32 *value);
 
 /* Reserve/release the shared EMI transaction used by firmware download. */
 int mt6797_consys_emi_patch_begin(void *context);
