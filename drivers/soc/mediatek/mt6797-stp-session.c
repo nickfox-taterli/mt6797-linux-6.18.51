@@ -705,6 +705,7 @@ int mt6797_stp_session_wmt(struct mt6797_stp_session *session, u8 opcode,
 	    parameter_length > MT6797_STP_MAX_PAYLOAD - MT6797_STP_WMT_HEADER_SIZE ||
 	    !response_length || (!response && response_size) || !timeout_jiffies)
 		return -EINVAL;
+	mutex_lock(&session->send_lock);
 	session->wmt_pdu[0] = 1;
 	session->wmt_pdu[1] = opcode;
 	session->wmt_pdu[2] = parameter_length & 0xff;
@@ -713,7 +714,6 @@ int mt6797_stp_session_wmt(struct mt6797_stp_session *session, u8 opcode,
 		memcpy(session->wmt_pdu + MT6797_STP_WMT_HEADER_SIZE, params,
 		       parameter_length);
 
-	mutex_lock(&session->send_lock);
 	spin_lock_irqsave(&session->state_lock, flags);
 	if (!session->active || session->terminal_error) {
 		ret = session->terminal_error ?: -ESHUTDOWN;
