@@ -2256,6 +2256,7 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 	struct mmc_command *stop;
 	unsigned long flags;
 	bool done;
+	bool dma_error = false;
 	unsigned int check_data = events &
 	    (MSDC_INT_XFER_COMPL | MSDC_INT_DATCRCERR | MSDC_INT_DATTMO
 	     | MSDC_INT_DMA_BDCSERR | MSDC_INT_DMA_GPDCSERR
@@ -2281,18 +2282,25 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 
 		ret = readl_poll_timeout_atomic(host->base + MSDC_DMA_CTRL, val,
 						!(val & MSDC_DMA_CTRL_STOP), 1, 20000);
-		if (ret)
-			dev_dbg(host->dev, "DMA stop timed out\n");
+		if (ret) {
+			dev_err(host->dev, "DMA stop timed out\n");
+			dma_error = true;
+		}
 
 		ret = readl_poll_timeout_atomic(host->base + MSDC_DMA_CFG, val,
 						!(val & MSDC_DMA_CFG_STS), 1, 20000);
-		if (ret)
-			dev_dbg(host->dev, "DMA inactive timed out\n");
+		if (ret) {
+			dev_err(host->dev, "DMA inactive timed out\n");
+			dma_error = true;
+		}
 
 		sdr_clr_bits(host->base + MSDC_INTEN, data_ints_mask);
 		dev_dbg(host->dev, "DMA stop\n");
 
-		if ((events & MSDC_INT_XFER_COMPL) && (!stop || !stop->error)) {
+		if ((events & MSDC_INT_XFER_COMPL) && !dma_error &&
+		    !(events & (MSDC_INT_DATCRCERR | MSDC_INT_DATTMO |
+				MSDC_INT_DMA_BDCSERR | MSDC_INT_DMA_GPDCSERR |
+				MSDC_INT_DMA_PROTECT)) && (!stop || !stop->error)) {
 			data->bytes_xfered = data->blocks * data->blksz;
 		} else {
 			dev_dbg(host->dev, "interrupt events: %x\n", events);
@@ -2300,10 +2308,12 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 			host->error |= REQ_DAT_ERR;
 			data->bytes_xfered = 0;
 
-			if (events & MSDC_INT_DATTMO)
+			if (dma_error || (events & MSDC_INT_DATTMO))
 				data->error = -ETIMEDOUT;
 			else if (events & MSDC_INT_DATCRCERR)
 				data->error = -EILSEQ;
+			else
+				data->error = -EIO;
 
 			if (host->dev_comp->vendor_timing_init &&
 			    (events & (MSDC_INT_DATCRCERR | MSDC_INT_DATTMO)))
