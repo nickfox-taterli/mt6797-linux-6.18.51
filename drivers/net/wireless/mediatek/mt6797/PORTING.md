@@ -19,7 +19,14 @@ Module unload works after a failed probe. Wi-Fi Start is sent, but WCIR stays
 wlan0, scan, association or data traffic yet. Module load returning zero does
 not imply the platform device bound successfully.
 
-Remaining work includes firmware startup, data queues/interrupts, AP-DMA,
+An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
+programming, using a coherent bounce buffer, bounded completion/reset and
+failure propagation. PIO remains the default; `180f0000.wifi/transfer_mode`
+can select DMA only between WLAN sessions. Real-function fault tests and
+ARM64 compilation pass; board validation is pending. This is not evidence
+of successful firmware payload delivery or wireless traffic.
+
+Remaining work includes firmware startup, data queues/interrupts, AP-DMA validation,
 dynamic virtual interfaces, standard userspace role tests, factory calibration
 provenance, shared fault recovery and power management. AP/P2P static paths
 are retained but unverified. Unsafe raw diagnostic mappings remain unavailable

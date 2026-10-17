@@ -265,7 +265,9 @@
 	 */
 	wifi_hif: wifi@180f0000 {
 		compatible = "mediatek,mt6797-wlan-hif";
-		reg = <0 0x180f0000 0 0x1100>;
+		reg = <0 0x180f0000 0 0x1100>,
+		      <0 0x11000080 0 0x80>;
+		reg-names = "hif", "dma";
 		interrupts = <GIC_SPI 283 IRQ_TYPE_LEVEL_LOW>;
 		clocks = <&infrasys CLK_INFRA_AP_DMA>;
 		clock-names = "wifi-dma";

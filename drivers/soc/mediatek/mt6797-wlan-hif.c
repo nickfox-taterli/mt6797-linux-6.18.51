@@ -6,10 +6,12 @@
 // accessed merely because a platform device exists: the ConSys/WMT WLAN
 // function has to be on before the HIF is claimed.  This first slice maps the
 // resource, records the DT IRQ, and provides an owner-gated CMD53 PIO API.
-// AP-DMA, remap programming, firmware download, and cfg80211 are intentionally
-// outside this file.
+// AP-DMA uses the dedicated BSP HIF channel; register accesses remain PIO.
 
 #include <linux/errno.h>
+#include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/interrupt.h>
@@ -35,10 +37,31 @@
 #define CMD53_RW_SHIFT			31
 #define CMD53_COUNT			4
 
+#define HIF_DMA_SIZE			(512 * 512)
+#define HIF_DMA_FLAG			0x00
+#define HIF_DMA_INT_EN			0x04
+#define HIF_DMA_EN			0x08
+#define HIF_DMA_RST			0x0c
+#define HIF_DMA_CON			0x18
+#define HIF_DMA_SRC			0x1c
+#define HIF_DMA_DST			0x20
+#define HIF_DMA_LEN			0x24
+#define HIF_DMA_SRC2			0x54
+#define HIF_DMA_DST2			0x58
+
 struct mt6797_wlan_hif {
 	struct device *dev;
 	void __iomem *base;
 	resource_size_t size;
+	resource_size_t data_phys;
+	void __iomem *dma_base;
+	struct clk *dma_clk;
+	void *dma_buffer;
+	dma_addr_t dma_address;
+	bool dma_enabled;
+	bool dma_clocked;
+	bool dma_fault;
+	u64 dma_transfers;
 	int irq;
 	struct mutex lock;
 	struct device *owner;
@@ -52,6 +75,87 @@ struct mt6797_wlan_hif {
 
 static struct mt6797_wlan_hif *mt6797_wlan_hif_singleton;
 static DEFINE_MUTEX(mt6797_wlan_hif_singleton_lock);
+
+/* Caller holds hif->lock and the channel clock.  Never reuse a timed-out
+ * channel or free its buffer until reset has made the engine inactive.
+ */
+static int mt6797_wlan_hif_dma_reset(struct mt6797_wlan_hif *hif)
+{
+	u32 value;
+	int ret;
+
+	writel(0, hif->dma_base + HIF_DMA_INT_EN);
+	writel(BIT(0), hif->dma_base + HIF_DMA_RST);
+	ret = readl_poll_timeout(hif->dma_base + HIF_DMA_EN, value,
+				 !(value & BIT(0)), 10, 10000);
+	if (ret) {
+		writel(BIT(1), hif->dma_base + HIF_DMA_RST);
+		udelay(1000);
+	}
+	writel(0, hif->dma_base + HIF_DMA_RST);
+	ret = readl_poll_timeout(hif->dma_base + HIF_DMA_EN, value,
+				 !(value & BIT(0)), 10, 10000);
+	/* This channel clears its interrupt by writing zero, as in the BSP. */
+	writel(0, hif->dma_base + HIF_DMA_FLAG);
+	return ret;
+}
+
+static int mt6797_wlan_hif_dma_transfer(struct mt6797_wlan_hif *hif,
+				      bool write, void *buffer,
+				      size_t length, size_t count)
+{
+	u32 value, con;
+	int ret, reset_ret;
+
+	if (hif->dma_fault || !hif->dma_clocked)
+		return -EIO;
+	if (write) {
+		memcpy(hif->dma_buffer, buffer, length);
+		memset(hif->dma_buffer + length, 0, count - length);
+	}
+	/* MT6797 HIF channel: incrementing bus, 4/4 burst, TX=0 / RX=1.
+	 * SRC2/DST2 bit 0 is set on both ends by the MT6797 BSP, including the
+	 * peripheral end.  Preserve that channel-specific programming here rather
+	 * than infer ordinary upper address bits from its register names.
+	 */
+	con = readl(hif->dma_base + HIF_DMA_CON);
+	con &= ~(GENMASK(17, 16) | BIT(1) | BIT(0));
+	con |= BIT(31) | (3 << 16) | !write;
+	writel(con, hif->dma_base + HIF_DMA_CON);
+	writel(write ? lower_32_bits(hif->dma_address) : hif->data_phys,
+	       hif->dma_base + HIF_DMA_SRC);
+	writel(write ? hif->data_phys : lower_32_bits(hif->dma_address),
+	       hif->dma_base + HIF_DMA_DST);
+	writel(count, hif->dma_base + HIF_DMA_LEN);
+	writel(BIT(0), hif->dma_base + HIF_DMA_SRC2);
+	writel(BIT(0), hif->dma_base + HIF_DMA_DST2);
+	writel(0, hif->dma_base + HIF_DMA_FLAG);
+	dma_wmb();
+	writel(BIT(0), hif->dma_base + HIF_DMA_INT_EN);
+	writel(BIT(0), hif->dma_base + HIF_DMA_EN);
+	ret = readl_poll_timeout(hif->dma_base + HIF_DMA_FLAG, value,
+				 value & BIT(0), 10, 100000);
+	if (!ret)
+		ret = readl_poll_timeout(hif->dma_base + HIF_DMA_EN, value,
+					 !(value & BIT(0)), 10, 10000);
+	writel(0, hif->dma_base + HIF_DMA_INT_EN);
+	writel(0, hif->dma_base + HIF_DMA_FLAG);
+	if (ret) {
+		/* Fail the owning WLAN session, even if reset recovered the engine.
+		 * Replaying a partly delivered CMD53 would corrupt the firmware stream.
+		 */
+		hif->dma_fault = true;
+		reset_ret = mt6797_wlan_hif_dma_reset(hif);
+		dev_err(hif->dev, "HIF DMA %s timeout, reset=%d\n",
+			write ? "TX" : "RX", reset_ret);
+		return ret;
+	}
+	dma_rmb();
+	if (!write)
+		memcpy(buffer, hif->dma_buffer, length);
+	hif->dma_transfers++;
+	return 0;
+}
 
 /* Return with the HIF lock held.  The singleton lock prevents remove from
  * freeing the devm mapping while an API call is using it. */
@@ -107,15 +211,35 @@ int mt6797_wlan_hif_claim(struct device *client)
 		mutex_lock(&hif->lock);
 		if (hif->claimed)
 			ret = hif->owner == client ? -EALREADY : -EBUSY;
-		else if (!device_link_add(client, hif->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
-			ret = -ENOMEM;
 		else {
-			hif->owner = client;
-			hif->claimed = true;
-			dev_info(hif->dev,
-				 "WLAN HIF claimed by %s; PIO access is now permitted\n",
-				 dev_name(client));
+			if (hif->dma_enabled) {
+				if (!hif->dma_clocked) {
+					ret = clk_prepare_enable(hif->dma_clk);
+					if (ret)
+						goto unlock;
+					hif->dma_clocked = true;
+				}
+				ret = mt6797_wlan_hif_dma_reset(hif);
+				if (ret) {
+					hif->dma_fault = true;
+					goto unlock;
+				}
+				hif->dma_fault = false;
+			}
+			if (!device_link_add(client, hif->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+				ret = -ENOMEM;
+				if (hif->dma_clocked) {
+					clk_disable_unprepare(hif->dma_clk);
+					hif->dma_clocked = false;
+				}
+			} else {
+				hif->owner = client;
+				hif->claimed = true;
+				dev_info(hif->dev, "WLAN HIF claimed by %s; ports use %s\n",
+					 dev_name(client), hif->dma_enabled ? "AP-DMA" : "PIO");
+			}
 		}
+unlock:
 		mutex_unlock(&hif->lock);
 	}
 	mutex_unlock(&mt6797_wlan_hif_singleton_lock);
@@ -141,6 +265,11 @@ int mt6797_wlan_hif_release(struct device *client)
 		else if (hif->irq_requested)
 			ret = -EBUSY;
 		else {
+			if (hif->dma_clocked && !mt6797_wlan_hif_dma_reset(hif)) {
+				clk_disable_unprepare(hif->dma_clk);
+				hif->dma_clocked = false;
+				hif->dma_fault = false;
+			}
 			hif->owner = NULL;
 			hif->claimed = false;
 			dev_info(hif->dev, "WLAN HIF released\n");
@@ -278,7 +407,17 @@ int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
 	ret = mt6797_wlan_hif_lock_client(client, &hif);
 	if (ret)
 		return ret;
+	if (hif->dma_fault) {
+		ret = -EIO;
+		goto out;
+	}
 	writel(command, hif->base + MT6797_WLAN_HIF_CMD_SETUP);
+	/* Match the BSP: only WLAN packet FIFO ports use AP-DMA. */
+	if (hif->dma_enabled && ((write && port == 0x34) ||
+				       (!write && (port == 0x50 || port == 0x54)))) {
+		ret = mt6797_wlan_hif_dma_transfer(hif, write, buffer, length, count);
+		goto out;
+	}
 	for (position = 0; position < count; position += sizeof(value)) {
 		valid = position < length ? min(sizeof(value), length - position) : 0;
 		if (write) {
@@ -293,10 +432,56 @@ int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
 				memcpy((u8 *)buffer + position, tail, valid);
 		}
 	}
+out:
 	mutex_unlock(&hif->lock);
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_wlan_hif_transfer);
+
+static ssize_t transfer_mode_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct mt6797_wlan_hif *hif = dev_get_drvdata(dev);
+	ssize_t length;
+
+	mutex_lock(&hif->lock);
+	length = sysfs_emit(buf, "%s transfers=%llu fault=%u\n",
+			hif->dma_enabled ? "dma" : "pio", hif->dma_transfers,
+			hif->dma_fault);
+	mutex_unlock(&hif->lock);
+	return length;
+}
+
+static ssize_t transfer_mode_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct mt6797_wlan_hif *hif = dev_get_drvdata(dev);
+	bool enabled;
+	int ret = 0;
+
+	if (sysfs_streq(buf, "dma"))
+		enabled = true;
+	else if (sysfs_streq(buf, "pio"))
+		enabled = false;
+	else
+		return -EINVAL;
+	mutex_lock(&hif->lock);
+	if (hif->claimed || hif->dma_clocked)
+		ret = -EBUSY;
+	else if (enabled && !hif->dma_buffer)
+		ret = -EOPNOTSUPP;
+	else
+		hif->dma_enabled = enabled;
+	mutex_unlock(&hif->lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(transfer_mode);
+
+static struct attribute *mt6797_wlan_hif_attrs[] = {
+	&dev_attr_transfer_mode.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_wlan_hif);
 
 int mt6797_wlan_hif_mask_irq(struct device *client, bool masked)
 {
@@ -468,12 +653,32 @@ static int mt6797_wlan_hif_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	hif->dev = &pdev->dev;
 	hif->size = resource_size(resource);
+	hif->data_phys = resource->start + MT6797_WLAN_HIF_CMD53_DATA;
 	hif->base = devm_ioremap_resource(&pdev->dev, resource);
 	if (IS_ERR(hif->base))
 		return PTR_ERR(hif->base);
 	hif->irq = platform_get_irq(pdev, 0);
 	if (hif->irq < 0)
 		return hif->irq;
+	resource = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+	if (resource) {
+		if (resource_size(resource) < 0x80 || hif->data_phys > U32_MAX)
+			return -EINVAL;
+		hif->dma_base = devm_ioremap_resource(&pdev->dev, resource);
+		if (IS_ERR(hif->dma_base))
+			return PTR_ERR(hif->dma_base);
+		hif->dma_clk = devm_clk_get(&pdev->dev, "wifi-dma");
+		if (IS_ERR(hif->dma_clk))
+			return PTR_ERR(hif->dma_clk);
+		ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
+		if (ret)
+			return ret;
+		/* Keep one buffer for the channel lifetime, including fault teardown. */
+		hif->dma_buffer = dma_alloc_coherent(&pdev->dev, HIF_DMA_SIZE,
+						    &hif->dma_address, GFP_KERNEL);
+		if (!hif->dma_buffer)
+			return -ENOMEM;
+	}
 	mutex_init(&hif->lock);
 
 	mutex_lock(&mt6797_wlan_hif_singleton_lock);
@@ -485,12 +690,17 @@ static int mt6797_wlan_hif_probe(struct platform_device *pdev)
 		ret = 0;
 	}
 	mutex_unlock(&mt6797_wlan_hif_singleton_lock);
-	if (ret)
+	if (ret) {
+		if (hif->dma_buffer)
+			dma_free_coherent(hif->dev, HIF_DMA_SIZE, hif->dma_buffer,
+					  hif->dma_address);
 		return dev_err_probe(&pdev->dev, ret, "only one WLAN HIF is supported\n");
+	}
 
 	dev_info(&pdev->dev,
-		 "WLAN HIF mapped (%pa+0x%llx), irq=%d; dormant until WMT function-on\n",
-		 &resource->start, (unsigned long long)hif->size, hif->irq);
+		 "WLAN HIF mapped (data=%pa, size=0x%llx), irq=%d; dormant until WMT function-on\n",
+		 &hif->data_phys,
+		 (unsigned long long)hif->size, hif->irq);
 	return 0;
 }
 
@@ -502,20 +712,30 @@ static void mt6797_wlan_hif_remove(struct platform_device *pdev)
 		return;
 	mutex_lock(&mt6797_wlan_hif_singleton_lock);
 	mutex_lock(&hif->lock);
-	if (hif->irq_requested) {
-		if (hif->irq_enabled)
-			disable_irq(hif->irq);
-		free_irq(hif->irq, hif->irq_data);
-		hif->irq_requested = false;
-	}
+	if (mt6797_wlan_hif_singleton == hif)
+		mt6797_wlan_hif_singleton = NULL;
 	if (hif->claimed)
 		dev_warn(hif->dev, "removing WLAN HIF while owner is still claimed\n");
 	hif->owner = NULL;
 	hif->claimed = false;
 	mutex_unlock(&hif->lock);
-	if (mt6797_wlan_hif_singleton == hif)
-		mt6797_wlan_hif_singleton = NULL;
 	mutex_unlock(&mt6797_wlan_hif_singleton_lock);
+	/* No new client can acquire this provider.  Drain the thread without
+	 * either API lock, since it may itself be completing a HIF access.
+	 */
+	if (hif->irq_requested)
+		free_irq(hif->irq, hif->irq_data);
+	if (hif->dma_clocked && !mt6797_wlan_hif_dma_reset(hif)) {
+		clk_disable_unprepare(hif->dma_clk);
+		hif->dma_clocked = false;
+	}
+	if (hif->dma_buffer) {
+		if (hif->dma_clocked)
+			dev_err(hif->dev, "DMA reset failed; retaining active channel buffer\n");
+		else
+			dma_free_coherent(hif->dev, HIF_DMA_SIZE, hif->dma_buffer,
+					  hif->dma_address);
+	}
 }
 
 static const struct of_device_id mt6797_wlan_hif_of_match[] = {
@@ -532,6 +752,7 @@ static struct platform_driver mt6797_wlan_hif_driver = {
 	.driver = {
 		.name = "mt6797-wlan-hif",
 		.of_match_table = mt6797_wlan_hif_of_match,
+		.dev_groups = mt6797_wlan_hif_groups,
 	},
 };
 module_platform_driver(mt6797_wlan_hif_driver);
