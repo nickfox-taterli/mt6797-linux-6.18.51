@@ -1401,6 +1401,9 @@ MODULE_PARM_DESC(firmware_trace, "Log bounded firmware startup stages");
 static bool wlan_download_check;
 module_param_named(download_check, wlan_download_check, bool, 0444);
 MODULE_PARM_DESC(download_check, "Query ROM download errors before Wi-Fi Start");
+static bool wlan_rom_emi_check;
+module_param_named(rom_emi_check, wlan_rom_emi_check, bool, 0444);
+MODULE_PARM_DESC(rom_emi_check, "Compare firmware EMI words through the Wi-Fi ROM");
 
 static bool mt6797_wlan_firmware_valid(const u8 *data, size_t length)
 {
@@ -1980,6 +1983,67 @@ wlanImageSectionDownloadStage(IN P_ADAPTER_T prAdapter,
 
 #if CFG_ENABLE_FW_DOWNLOAD
 #if CFG_ENABLE_FW_DIVIDED_DOWNLOAD
+/* Read only the firmware's known shared-memory window through the ROM ABI.
+ * This is not an arbitrary diagnostic MMIO mapping. */
+static WLAN_STATUS
+mt6797_wlan_rom_emi_read(P_ADAPTER_T adapter, u32 address, u32 *value)
+{
+	P_CMD_INFO_T command;
+	P_INIT_HIF_TX_HEADER_T tx;
+	P_INIT_CMD_ACCESS_REG access;
+	INIT_HIF_RX_HEADER_T *rx;
+	INIT_EVENT_ACCESS_REG *event;
+	u8 response[64], sequence;
+	u32 received;
+	WLAN_STATUS status;
+
+	if (!value || address < 0xf0000000 || address > 0xf007fffc || (address & 3))
+		return WLAN_STATUS_FAILURE;
+	command = cmdBufAllocateCmdInfo(adapter, sizeof(*tx) + sizeof(*access));
+	if (!command)
+		return WLAN_STATUS_FAILURE;
+	command->u2InfoBufLen = sizeof(*tx) + sizeof(*access);
+	kalMemZero(command->pucInfoBuffer, command->u2InfoBufLen);
+	tx = (void *)command->pucInfoBuffer;
+	tx->u2TxByteCount = command->u2InfoBufLen;
+	tx->u2PQ_ID = INIT_CMD_PQ_ID;
+	tx->rInitWifiCmd.ucCID = INIT_CMD_ID_ACCESS_REG;
+	tx->rInitWifiCmd.ucPktTypeID = INIT_CMD_PACKET_TYPE_ID;
+	sequence = nicIncreaseCmdSeqNum(adapter);
+	tx->rInitWifiCmd.ucSeqNum = sequence;
+	access = (void *)tx->rInitWifiCmd.aucBuffer;
+	access->u4Address = address;
+	status = nicTxAcquireResource(adapter, TC0_INDEX,
+				     nicTxGetPageCount(command->u2InfoBufLen, TRUE));
+	if (status == WLAN_STATUS_RESOURCES &&
+	    nicTxPollingResource(adapter, TC0_INDEX) == WLAN_STATUS_SUCCESS)
+		status = nicTxAcquireResource(adapter, TC0_INDEX,
+				 nicTxGetPageCount(command->u2InfoBufLen, TRUE));
+	if (status != WLAN_STATUS_SUCCESS)
+		goto out;
+	status = nicTxInitCmd(adapter, command);
+	if (status != WLAN_STATUS_SUCCESS)
+		goto out;
+	status = nicRxWaitResponse(adapter, 0, response, sizeof(response), &received);
+	if (status != WLAN_STATUS_SUCCESS)
+		goto out;
+	status = WLAN_STATUS_FAILURE;
+	if (received < sizeof(*rx) + sizeof(*event) || received > sizeof(response))
+		goto out;
+	rx = (void *)response;
+	event = (void *)rx->rInitWifiEvent.aucBuffer;
+	if (rx->rInitWifiEvent.u2PacketType != 0xe000 ||
+	    rx->rInitWifiEvent.u2RxByteCount != received ||
+	    rx->rInitWifiEvent.ucEID != INIT_EVENT_ID_ACCESS_REG ||
+	    rx->rInitWifiEvent.ucSeqNum != sequence || event->u4Address != address)
+		goto out;
+	*value = event->u4Data;
+	status = WLAN_STATUS_SUCCESS;
+out:
+	cmdBufFreeCmdInfo(adapter, command);
+	return status;
+}
+
 static WLAN_STATUS
 wlanImageDividDownload(IN P_ADAPTER_T prAdapter, IN P_FIRMWARE_DIVIDED_DOWNLOAD_T prFwHead,
 			IN PVOID pvFwImageMapFile, IN UINT_32 u4FwImageFileLength, IN UINT_32 u4FwLoadAddr)
@@ -2010,6 +2074,21 @@ wlanImageDividDownload(IN P_ADAPTER_T prAdapter, IN P_FIRMWARE_DIVIDED_DOWNLOAD_
 				(PUINT_8)pvFwImageMapFile + prFwHead->arSection[i].u4Offset,
 				prFwHead->arSection[i].u4Length))
 				return WLAN_STATUS_FAILURE;
+			if (wlan_rom_emi_check) {
+				u32 value = 0, expected;
+
+				if (prFwHead->arSection[i].u4Length < sizeof(expected))
+					return WLAN_STATUS_FAILURE;
+				expected = get_unaligned_le32((u8 *)pvFwImageMapFile +
+						     prFwHead->arSection[i].u4Offset);
+
+				u4Status = mt6797_wlan_rom_emi_read(prAdapter,
+					prFwHead->arSection[i].u4DestAddr, &value);
+				pr_info("mt6797-wlan: ROM EMI %08x expected=%08x read=%08x result=%08x\n",
+					prFwHead->arSection[i].u4DestAddr, expected, value, u4Status);
+				if (u4Status != WLAN_STATUS_SUCCESS || value != expected)
+					return WLAN_STATUS_FAILURE;
+			}
 		}
 #endif
 		if (wlan_firmware_trace)
