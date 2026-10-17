@@ -28,6 +28,12 @@ int mt6797_consys_stp_acquire(struct device *consys_dev,
 				      void **context);
 int mt6797_consys_stp_release(void *context);
 
+/* Functional clients own power through this reservation; release powers off.
+ * Diagnostic acquire above retains its explicit manual power contract.
+ */
+int mt6797_consys_stp_open(struct device *consys_dev,
+			 struct mt6797_stp_host_ops *ops, void **context);
+
 /* The context is the MT6797 ConSys platform driver's private state. */
 int mt6797_consys_stp_set_mode(void *context, u32 mode);
 int mt6797_consys_stp_set_enabled(void *context, bool enabled);

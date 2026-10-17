@@ -111,6 +111,7 @@ struct mt6797_consys {
 	int last_error;
 	bool powered;
 	bool stp_claimed;
+	bool stp_power_owned;
 	bool stp_enabled;
 	bool bt_radio_on;
 	bool wifi_radio_on;
@@ -485,9 +486,9 @@ int mt6797_consys_stp_set_enabled(void *context, bool enabled)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_enabled);
 
-int mt6797_consys_stp_acquire(struct device *consys_dev,
-				      struct mt6797_stp_host_ops *ops,
-				      void **context)
+static int consys_stp_acquire(struct device *consys_dev,
+			      struct mt6797_stp_host_ops *ops,
+			      void **context, bool manage_power)
 {
 	struct mt6797_consys *cs;
 	int ret = 0;
@@ -498,12 +499,13 @@ int mt6797_consys_stp_acquire(struct device *consys_dev,
 	if (!cs)
 		return -EPROBE_DEFER;
 	mutex_lock(&cs->lock);
-	if (!cs->powered)
-		ret = -EHOSTDOWN;
-	else if (cs->stp_claimed)
+	if (cs->stp_claimed)
 		ret = -EBUSY;
-	else {
+	else if (!cs->powered)
+		ret = manage_power ? consys_power_on_locked(cs) : -EHOSTDOWN;
+	if (!ret) {
 		cs->stp_claimed = true;
+		cs->stp_power_owned = manage_power;
 		ops->set_mode = mt6797_consys_stp_set_mode;
 		ops->set_enabled = mt6797_consys_stp_set_enabled;
 		*context = cs;
@@ -511,7 +513,20 @@ int mt6797_consys_stp_acquire(struct device *consys_dev,
 	mutex_unlock(&cs->lock);
 	return ret;
 }
+
+int mt6797_consys_stp_acquire(struct device *consys_dev,
+			      struct mt6797_stp_host_ops *ops, void **context)
+{
+	return consys_stp_acquire(consys_dev, ops, context, false);
+}
 EXPORT_SYMBOL_GPL(mt6797_consys_stp_acquire);
+
+int mt6797_consys_stp_open(struct device *consys_dev,
+			  struct mt6797_stp_host_ops *ops, void **context)
+{
+	return consys_stp_acquire(consys_dev, ops, context, true);
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_stp_open);
 
 int mt6797_consys_stp_release(void *context)
 {
@@ -528,6 +543,10 @@ int mt6797_consys_stp_release(void *context)
 	else {
 		cs->stp_claimed = false;
 		cs->stp_mode = 0;
+		if (cs->stp_power_owned) {
+			cs->stp_power_owned = false;
+			ret = consys_power_off_locked(cs);
+		}
 	}
 	mutex_unlock(&cs->lock);
 	return ret;
