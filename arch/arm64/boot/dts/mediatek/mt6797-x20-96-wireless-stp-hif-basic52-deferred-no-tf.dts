@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Isolated wireless bring-up: historical Basic-DMA 52 MHz/no-TF control. */
+/dts-v1/;
+
+#include "mt6797-x20-96-wireless-stp-hif-basic-hs400-deferred.dts"
+
+&mmc0 {
+	max-frequency = <52000000>;
+};
+
+&mmc1 {
+	status = "disabled";
+};

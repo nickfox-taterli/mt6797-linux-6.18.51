@@ -17,6 +17,7 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-deferred.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-deferred-hs400-150m.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-basic-hs400.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-basic-hs400-deferred.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-hif-basic52-deferred-no-tf.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-wireless-stp-basic-hs400.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-rfb1.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt7622-bananapi-bpi-r64.dtb

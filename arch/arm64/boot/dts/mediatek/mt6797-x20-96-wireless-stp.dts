@@ -8,8 +8,8 @@
 	/*
 	 * Vendor MT6797 reserves 2 MiB aligned to 2 MiB for ConSys.  The Wi-Fi
 	 * divided firmware uses the first 512 KiB; the remaining offsets are
-	 * shared with ConSys diagnostics/GPS.  This is experimental metadata only:
-	 * the EMI MPU/remap owner is not enabled by this node yet.
+	 * shared with ConSys diagnostics/GPS. The ConSys power owner programs its
+	 * remap/MPU before MCU reset release, using the matching BL31 service.
 	 */
 	reserved-memory {
 		#address-cells = <2>;
