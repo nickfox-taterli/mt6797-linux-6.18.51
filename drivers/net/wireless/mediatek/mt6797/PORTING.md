@@ -17,7 +17,9 @@ two IDLM download acknowledgements, bounded EMI writes and failure teardown.
 Module unload works after a failed probe. The UART rescue Preloader must run the normal master-domain initialization:
 without it ConSys cannot read its protected EMI firmware. With Preloader
 fa68e7a, ROM reads match both EMI section headers and firmware starts;
-wlan0/p2p0 are present. Scan, association and data traffic are still unverified. Module load returning zero does
+wlan0/p2p0 are present. A standard iw scan returned 21 BSS entries, including
+the laboratory SSIDs on 2432 and 5200 MHz. Association and data traffic are
+still unverified. Module load returning zero does
 not imply the platform device bound successfully.
 
 An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
@@ -28,6 +30,12 @@ ARM64 compilation pass. Board DMA completed 13 FIFO transfers with valid
 configuration ACKs, but firmware-ready still timed out, as with PIO in the
 same kernel. Failure teardown returned the channel and ConSys power. This
 is not evidence of firmware execution or wireless traffic.
+
+The first netdev open exposed legacy direct dev_addr writes. STA, static P2P,
+and retained BOW/role creation now use eth_hw_addr_set to maintain the kernel's
+address list and shadow. ARM64 modules link; replacement and wlan0 open passed
+without a new dev_addr warning. Warnings while unloading the preceding module
+describe its old address state, not the replacement.
 
 Remaining work includes repeatable firmware startup, data queues/interrupts, AP-DMA validation,
 dynamic virtual interfaces, standard userspace role tests, factory calibration

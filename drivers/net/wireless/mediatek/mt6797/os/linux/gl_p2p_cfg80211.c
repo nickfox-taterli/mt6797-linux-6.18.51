@@ -335,7 +335,7 @@ mtk_p2p_cfg80211_add_iface(struct wiphy *wiphy,
 		*((P_GLUE_INFO_T *) netdev_priv(prNewNetDevice)) = prGlueInfo;
 
 		ether_addr_copy(prNewNetDevice->perm_addr, prGlueInfo->prAdapter->rWifiVar.aucInterfaceAddress);
-		prNewNetDevice->dev_addr = prNewNetDevice->perm_addr;
+		eth_hw_addr_set(prNewNetDevice, prNewNetDevice->perm_addr);
 
 		prNewNetDevice->netdev_ops = &p2p_netdev_ops;
 
