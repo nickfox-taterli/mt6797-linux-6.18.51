@@ -17,7 +17,7 @@
 #define STP_DELIMITER_BYTE	0x55
 #define STP_SYNC_MASK		0xc0
 #define STP_SYNC_VALUE		0x80
-#define STP_MAX_TASK_TYPE	8
+#define STP_MAX_TASK_TYPE	7
 #define STP_LENGTH_HIGH_MASK	0x0f
 
 enum mt6797_stp_decode_state {
@@ -195,8 +195,8 @@ int mt6797_stp_decoder_feed(struct mt6797_stp_decoder *decoder,
 			if (decoder->header_position < MT6797_STP_HEADER_SIZE)
 				continue;
 			if ((!decoder->mandatory &&
-			     (decoder->header[0] + decoder->header[1] +
-			      decoder->header[2]) != decoder->header[3]) ||
+			     (u8)(decoder->header[0] + decoder->header[1] +
+				  decoder->header[2]) != decoder->header[3]) ||
 			    ((decoder->header[1] >> 4) & 7) > STP_MAX_TASK_TYPE) {
 				decoder->bad_frames++;
 				mt6797_stp_decoder_reset(decoder);
