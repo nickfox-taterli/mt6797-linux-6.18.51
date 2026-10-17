@@ -41,6 +41,12 @@
 		status = "okay";
 	};
 
+	bluetooth {
+		compatible = "mediatek,mt6797-bluetooth";
+		mediatek,wmt = <&wmt>;
+		status = "okay";
+	};
+
 	stp_diag: stp-diag {
 		compatible = "mediatek,mt6797-stp-diag";
 		consys = <&consys>;

@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/net/bluetooth/mediatek,mt6797-bluetooth.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 integrated Bluetooth over BTIF and STP
+
+maintainers:
+  - TaterLi <admin@taterli.com>
+
+description: |
+  The integrated MT6797/MT6631 controller exchanges H4 bytes over the BT task
+  of the shared BTIF/STP/WMT transport. Its WMT provider owns firmware, clocks,
+  reset and shared connectivity rails; the Bluetooth consumer owns the BT
+  radio function and standard HCI. It is not a serial UART or an SDIO device.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-bluetooth
+
+  mediatek,wmt:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Shared MT6797 WMT provider.
+
+required:
+  - compatible
+  - mediatek,wmt
+
+additionalProperties: false
+
+examples:
+  - |
+    bluetooth {
+        compatible = "mediatek,mt6797-bluetooth";
+        mediatek,wmt = <&wmt>;
+    };

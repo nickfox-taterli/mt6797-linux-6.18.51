@@ -3,6 +3,14 @@
 menu "Bluetooth device drivers"
 	depends on BT
 
+config BT_MT6797
+	tristate "MediaTek MT6797 Bluetooth over BTIF/STP/WMT"
+	depends on OF && MTK_MT6797_WMT
+	help
+	  Standard Bluetooth HCI for the integrated MT6797/MT6631 connectivity
+	  block. Uses the shared WMT firmware, BTIF transport and reliable STP
+	  BT task while preserving independent WLAN ownership.
+
 config BT_INTEL
 	tristate
 	select REGMAP

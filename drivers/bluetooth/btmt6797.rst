@@ -1,0 +1,32 @@
+MT6797 shared-STP Bluetooth
+==========================
+
+The platform HCI consumer uses the BT task of the shared WMT provider. WMT
+owns BTIF, STP, the ROMv3 patch pair, RF calibration and connectivity power.
+Opening Bluetooth enables its function/VCN33 reference; closing it must not
+shut down an active Wi-Fi client. TX runs outside the receive callback to
+avoid waiting for an STP ACK on the STP receive worker. H4 parsing preserves
+fragment boundaries and accepts coalesced events, ACL and SCO packets.
+
+The BSP ``sla/vendor/amt/libs/mt6797_64/libbluetooth_mtk`` preload script
+(``bt_init_preload_script_consys``) reads the address, sets it with 0xfc1a,
+sets radio (0xfc79, 6 bytes), TX offsets (0xfc93, 3 bytes), sleep (0xfc7a,
+7 bytes), resets HCI and disables firmware syslog (0xfcbe, 1 byte). The
+driver checks status and response lengths rather than just transport ACKs.
+The 64-byte ``mediatek/mt6797/BT.bin`` has the BSP NVRAM layout, not a ROM
+patch header. The official fallback is not board factory calibration.
+Unique record/controller addresses are retained; zero, all-ones and the
+BSP placeholder 00:00:46:02:79:01 require standard MGMT public-address
+configuration. No address is written back to storage. Function-off loses
+setup, so HCI_QUIRK_NON_PERSISTENT_SETUP replays it on each open.
+
+Checkpoint 2026-10-17: complete ARM64 modules and selected X20 DT build;
+actual H4 parser tests under ASAN/UBSAN; board BSP vendor setup/standard
+Reset, version/address, command/feature/buffer queries with no H4 errors.
+This is not yet a working BlueZ adapter: the June-2016 ROMv3 patch reports
+BLE 4.2 features while rejecting event-mask bits above 0x1f, and omits BLE
+baseline commands from its supported-command bitmap despite accepting
+several of them. The standard stack fails at LE Set Event Mask. An explicit
+firmware comparison is required before choosing a compatibility fix.
+No scan, advertising, pairing, ACL/GATT traffic, coexistence recovery or
+power-management acceptance is claimed at this checkpoint.
