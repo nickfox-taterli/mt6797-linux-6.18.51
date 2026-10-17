@@ -467,13 +467,7 @@ SYM_FUNC_START(__enable_mmu)
 	msr	ttbr0_el1, x2			// load TTBR0
 	load_ttbr1 x1, x1, x3
 
-#ifdef CONFIG_ARCH_MEDIATEK
-	/* MT6797 vendor __turn_mmu_on only writes SCTLR and synchronizes. */
-	msr	sctlr_el1, x0
-	isb
-#else
 	set_sctlr_el1	x0
-#endif
 
 	ret
 SYM_FUNC_END(__enable_mmu)
