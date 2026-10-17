@@ -14,6 +14,7 @@
 //       chipid - read of CONN_MCU_CFG + 0x08 (0x0279 when the MCU is alive)
 
 #include <linux/bitops.h>
+#include <linux/arm-smccc.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
 #include <linux/io.h>
@@ -46,6 +47,8 @@
 #define CONSYS_TOPAXI_PROT_MASK		(BIT(18) | BIT(19))
 #define CONSYS_CONN2AP_SLEEP_MASK_OFF	0x1350
 #define CONSYS_CONN2AP_SLEEP_MASK_BIT	BIT(8)
+#define CONSYS_EMI_MAPPING_OFF		0x1340
+#define CONSYS_EMI_MAPPING_ENABLE	0x1000
 /* SPM_BASE */
 #define CONSYS_SPM_PWRON_CONFG_EN_OFF	0x0000
 #define CONSYS_SPM_PWRON_CONFG_EN_VAL	0x0b160001
@@ -79,7 +82,17 @@
 #define CONSYS_STAGE_RGU_RELEASED	BIT(12)
 
 #define CONSYS_STAGE_POWERED		(CONSYS_STAGE_CHIP_ID | \
-					 CONSYS_STAGE_RGU_RELEASED)
+						 CONSYS_STAGE_RGU_RELEASED)
+
+#define MT6797_SIP_KERNEL_EMIMPU_SET	0xc2000209ULL
+#define MT6797_EMI_REGION_SHIFT		27U
+#define MT6797_EMI_REGION18		18U
+#define MT6797_EMI_REGION19		19U
+#define MT6797_EMI_REGION18_OPEN	0x00000000U
+#define MT6797_EMI_REGION18_RESTORE	0x00b6da2dU
+#define MT6797_EMI_REGION19_HOST	0x00b6da28U
+#define MT6797_EMI_WINDOW_SIZE		0x00080000U
+#define MT6797_EMI_MAPPED_SIZE		0x00100000U
 
 struct mt6797_consys {
 	struct device *dev;
@@ -103,7 +116,14 @@ struct mt6797_consys {
 	bool wifi_radio_on;
 	phys_addr_t emi_base;
 	phys_addr_t emi_size;
+	void __iomem *emi_io;
+	u32 emi_mapping_saved;
+	bool emi_mapping_active;
+	bool emi_patch_active;
 };
+
+static int consys_emi_prepare_locked(struct mt6797_consys *cs);
+static int consys_emi_restore_locked(struct mt6797_consys *cs);
 
 static int consys_wait_ack(struct mt6797_consys *cs, u32 off, u32 mask)
 {
@@ -197,6 +217,10 @@ static int consys_cleanup_locked(struct mt6797_consys *cs)
 		}
 		cs->stages &= ~CONSYS_STAGE_AXI;
 	}
+	/* The MCU must be reset before its DRAM mapping can be removed. */
+	tmp = consys_emi_restore_locked(cs);
+	if (tmp && !ret)
+		ret = tmp;
 
 	if (cs->stages & CONSYS_STAGE_SPM_RESET) {
 		val = readl(cs->spm + CONSYS_SPM_CONN_PWR_CTRL_OFF);
@@ -281,7 +305,7 @@ static int consys_power_on_locked(struct mt6797_consys *cs)
 
 	if (cs->powered)
 		return 0;
-	if (cs->stages) {
+	if (cs->stages || cs->emi_mapping_active || cs->emi_patch_active) {
 		dev_warn(cs->dev, "recovering incomplete state before power-on (0x%x)\n",
 			 cs->stages);
 		ret = consys_cleanup_locked(cs);
@@ -375,6 +399,13 @@ static int consys_power_on_locked(struct mt6797_consys *cs)
 	}
 	dev_info(cs->dev, "ConSys chip ID 0x%04x confirmed\n", chipid);
 	cs->stages |= CONSYS_STAGE_CHIP_ID;
+
+	/* Reserve and clear shared DRAM while the ConSys MCU is still reset. */
+	ret = consys_emi_prepare_locked(cs);
+	if (ret) {
+		dev_err(cs->dev, "ConSys EMI setup failed (matching BL31 required): %d\n", ret);
+		goto err_cleanup;
+	}
 
 	/* Step 7: run MBIST at real speed, then release the MCU reset. */
 	val = readl(cs->mcu + CONSYS_MCU_CFG_ACR_OFF);
@@ -568,7 +599,7 @@ int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 	mutex_lock(&cs->lock);
 	if (!cs->stp_claimed)
 		ret = -EPERM;
-	else if (!cs->emi_size)
+	else if (!cs->emi_size || !cs->emi_mapping_active || !cs->powered)
 		ret = -ENODEV;
 	else {
 		*base = cs->emi_base;
@@ -578,6 +609,186 @@ int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_get_emi);
+
+static int consys_emi_smc_set_locked(struct mt6797_consys *cs,
+					     phys_addr_t start, phys_addr_t end,
+					     unsigned int region, u32 permission)
+{
+	struct arm_smccc_res res;
+	u32 packed;
+	s64 result;
+
+	if (!cs->emi_size || !cs->emi_io)
+		return -ENODEV;
+	packed = (region << MT6797_EMI_REGION_SHIFT) | permission;
+	arm_smccc_smc(MT6797_SIP_KERNEL_EMIMPU_SET,
+			      (u64)start, (u64)end, packed, 0, 0, 0, 0, &res);
+	result = (s64)res.a0;
+	if (!result)
+		return 0;
+	if (result == -1 || result == -2)
+		return -EOPNOTSUPP;
+	if (result == -3)
+		return -ERANGE;
+	if (result == -4)
+		return -EACCES;
+	return -EIO;
+}
+
+/* Called with cs->lock held. */
+static int consys_emi_prepare_locked(struct mt6797_consys *cs)
+{
+	phys_addr_t base = cs->emi_base;
+	u32 map_bits;
+	u32 old_map;
+	u32 readback;
+	int ret;
+
+	if (!cs->emi_size)
+		return 0;
+	if (!cs->emi_io)
+		return -ENODEV;
+	if (!IS_ALIGNED(base, MT6797_CONSYS_EMI_REGION_SIZE) ||
+	    cs->emi_size < MT6797_CONSYS_EMI_REGION_SIZE ||
+	    base > U32_MAX)
+		return -ERANGE;
+
+	/* Replace the address field rather than OR-ing a previous mapping into it. */
+	map_bits = ((u32)base & 0xfff00000U) >> 20;
+	map_bits |= CONSYS_EMI_MAPPING_ENABLE;
+	old_map = readl(cs->topckgen + CONSYS_EMI_MAPPING_OFF);
+	cs->emi_mapping_saved = old_map;
+	cs->emi_mapping_active = true;
+	map_bits |= old_map & ~GENMASK(12, 0);
+	writel(map_bits, cs->topckgen + CONSYS_EMI_MAPPING_OFF);
+	readback = readl(cs->topckgen + CONSYS_EMI_MAPPING_OFF);
+	if (readback != map_bits) {
+		ret = -EIO;
+		goto err_map;
+	}
+
+	/*
+	 * Region 19 is the AP/ConSys host window; region 18 is opened only for
+	 * the bounded firmware transaction.
+	 */
+	ret = consys_emi_smc_set_locked(cs, base + MT6797_EMI_WINDOW_SIZE,
+					base + MT6797_EMI_MAPPED_SIZE - 1,
+					MT6797_EMI_REGION19, MT6797_EMI_REGION19_HOST);
+	if (ret)
+		goto err_map;
+	ret = consys_emi_smc_set_locked(cs, base, base + MT6797_EMI_WINDOW_SIZE - 1,
+					MT6797_EMI_REGION18, MT6797_EMI_REGION18_OPEN);
+	if (ret)
+		goto err_map;
+	cs->emi_patch_active = true;
+
+	/* This only runs before MCU reset release, never between patch images. */
+	memset_io(cs->emi_io, 0, MT6797_EMI_MAPPED_SIZE);
+	/* Complete the clear before readback and removal of AP write access. */
+	wmb();
+	if (readl(cs->emi_io) ||
+	    readl(cs->emi_io + MT6797_EMI_MAPPED_SIZE - sizeof(u32))) {
+		ret = -EIO;
+		goto err_region;
+	}
+	ret = consys_emi_smc_set_locked(cs, base, base + MT6797_EMI_WINDOW_SIZE - 1,
+					MT6797_EMI_REGION18, MT6797_EMI_REGION18_RESTORE);
+	if (ret)
+		goto err_region;
+	cs->emi_patch_active = false;
+	dev_info(cs->dev, "ConSys EMI owner active: remap=0x%08x base=%pa\n",
+		 readback, &base);
+	return 0;
+
+err_region:
+	if (!consys_emi_smc_set_locked(cs, base, base + MT6797_EMI_WINDOW_SIZE - 1,
+					 MT6797_EMI_REGION18, MT6797_EMI_REGION18_RESTORE))
+		cs->emi_patch_active = false;
+err_map:
+	writel(cs->emi_mapping_saved, cs->topckgen + CONSYS_EMI_MAPPING_OFF);
+	cs->emi_mapping_active = readl(cs->topckgen + CONSYS_EMI_MAPPING_OFF) !=
+				 cs->emi_mapping_saved;
+	return ret;
+}
+
+/* Called with cs->lock held. */
+static int consys_emi_restore_locked(struct mt6797_consys *cs)
+{
+	int ret;
+
+	if (!cs->emi_patch_active && !cs->emi_mapping_active)
+		return 0;
+	ret = consys_emi_smc_set_locked(cs, cs->emi_base,
+					cs->emi_base + MT6797_EMI_WINDOW_SIZE - 1,
+					MT6797_EMI_REGION18, MT6797_EMI_REGION18_RESTORE);
+	if (ret)
+		dev_warn(cs->dev, "failed to restore ConSys EMI region 18: %d\n", ret);
+	if (cs->emi_mapping_active) {
+		writel(cs->emi_mapping_saved,
+		       cs->topckgen + CONSYS_EMI_MAPPING_OFF);
+		cs->emi_mapping_active = readl(cs->topckgen + CONSYS_EMI_MAPPING_OFF) !=
+					 cs->emi_mapping_saved;
+		if (cs->emi_mapping_active) {
+			dev_warn(cs->dev, "failed to restore ConSys EMI remap\n");
+			if (!ret)
+				ret = -EIO;
+		}
+	}
+	if (!ret)
+		cs->emi_patch_active = false;
+	return ret;
+}
+
+int mt6797_consys_emi_patch_begin(void *context)
+{
+	struct mt6797_consys *cs = context;
+	int ret;
+
+	if (!cs)
+		return -EINVAL;
+
+	mutex_lock(&cs->lock);
+	if (!cs->stp_claimed)
+		ret = -EPERM;
+	else if (!cs->powered)
+		ret = -EHOSTDOWN;
+	else if (cs->emi_patch_active)
+		ret = -EBUSY;
+	else if (!cs->emi_size || !cs->emi_mapping_active)
+		ret = -ENODEV;
+	else
+		ret = consys_emi_smc_set_locked(cs, cs->emi_base,
+					cs->emi_base + MT6797_EMI_WINDOW_SIZE - 1,
+					MT6797_EMI_REGION18, MT6797_EMI_REGION18_OPEN);
+	if (!ret)
+		cs->emi_patch_active = true;
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_emi_patch_begin);
+
+int mt6797_consys_emi_patch_end(void *context)
+{
+	struct mt6797_consys *cs = context;
+	int ret;
+
+	if (!cs)
+		return -EINVAL;
+	mutex_lock(&cs->lock);
+	if (!cs->stp_claimed || !cs->emi_patch_active) {
+		ret = -EPERM;
+	} else {
+		ret = consys_emi_smc_set_locked(cs, cs->emi_base,
+					cs->emi_base + MT6797_EMI_WINDOW_SIZE - 1,
+					MT6797_EMI_REGION18, MT6797_EMI_REGION18_RESTORE);
+		if (!ret)
+			cs->emi_patch_active = false;
+	}
+	/* Firmware keeps using the remap until power-off asserts MCU reset. */
+	mutex_unlock(&cs->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_emi_patch_end);
 
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
@@ -753,8 +964,8 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 	/*
 	 * The vendor MT6797 layout reserves a 2 MiB, 2 MiB-aligned region for
 	 * ConSys.  Wi-Fi uses its first 512 KiB; later offsets belong to ConSys
-	 * diagnostics/GPS.  Parse the DT reservation now, but leave MPU/remap
-	 * programming to the future EMI owner.
+	 * diagnostics/GPS. Remap/MPU setup and clearing happen at power-on before
+	 * MCU reset release; firmware retains that mapping until power-off.
 	 */
 	ret = of_reserved_mem_region_to_resource(pdev->dev.of_node, 0, &emi);
 	if (!ret) {
@@ -765,6 +976,11 @@ static int mt6797_consys_probe(struct platform_device *pdev)
 					     &emi.start, &emi.end);
 		cs->emi_base = emi.start;
 		cs->emi_size = resource_size(&emi);
+		cs->emi_io = devm_ioremap(&pdev->dev, cs->emi_base,
+					  MT6797_CONSYS_EMI_REGION_SIZE);
+		if (!cs->emi_io)
+			return dev_err_probe(&pdev->dev, -ENOMEM,
+					     "failed to map ConSys EMI reservation\n");
 		dev_info(&pdev->dev,
 			 "ConSys EMI reservation base=%pa size=%pa (Wi-Fi=%x)\n",
 			 &cs->emi_base, &cs->emi_size, MT6797_CONSYS_WIFI_EMI_SIZE);

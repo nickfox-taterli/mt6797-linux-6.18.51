@@ -40,4 +40,8 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 				  phys_addr_t *size);
 
+/* Reserve/release the shared EMI transaction used by firmware download. */
+int mt6797_consys_emi_patch_begin(void *context);
+int mt6797_consys_emi_patch_end(void *context);
+
 #endif /* __LINUX_MT6797_CONSYS_H */

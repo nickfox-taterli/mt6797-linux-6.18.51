@@ -27,6 +27,7 @@
 #include <linux/mt6797-wlan-hif.h>
 
 #define MT6797_STP_DIAG_TIMEOUT_MS	1000
+#define MT6797_STP_PATCH_TIMEOUT_MS	5000
 #define MT6797_STP_DIAG_RESPONSE_MAX	32
 #define MT6797_WMT_GEN_HVR		0x80000000
 #define MT6797_WMT_GEN_FVR		0x80000004
@@ -46,6 +47,7 @@ enum mt6797_stp_diag_mode {
 	MT6797_STP_DIAG_FULL,
 	MT6797_STP_DIAG_VERSION,
 	MT6797_STP_DIAG_PATCH,
+	MT6797_STP_DIAG_EMI_TEST,
 	MT6797_STP_DIAG_BT_ON,
 	MT6797_STP_DIAG_BT_OFF,
 	MT6797_STP_DIAG_WIFI_ON,
@@ -186,6 +188,25 @@ static int mt6797_stp_diag_reg_write(struct mt6797_stp_session *session,
 	return 0;
 }
 
+static int mt6797_stp_diag_power_on_dlm(struct mt6797_stp_session *session)
+{
+	/* Vendor wmt_power_on_dlm_table, without the four-byte WMT header. */
+	static const u8 params[][16] = {
+		{ 1, 1, 0, 1, 0x60, 0, 0x10, 0x80, 0, 0, 0, 0, 0, 0x0f, 0, 0 },
+		{ 1, 1, 0, 1, 0x60, 0, 0x10, 0x80, 0, 0, 0, 0, 0xf0, 0, 0, 0 },
+		{ 1, 1, 0, 1, 0x60, 0, 0x10, 0x80, 0, 0, 0, 0, 0x08, 0, 0, 0 },
+	};
+	unsigned int index;
+	int ret;
+
+	for (index = 0; index < ARRAY_SIZE(params); index++) {
+		ret = mt6797_stp_diag_reg_write(session, params[index]);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
 static int mt6797_stp_diag_mcu_clock(struct mt6797_stp_diag *diag,
 					 struct mt6797_stp_session *session, bool enable)
 {
@@ -260,7 +281,7 @@ static int mt6797_stp_diag_reset(struct mt6797_stp_session *session)
 
 	ret = mt6797_stp_session_wmt(session, 0x07, params, sizeof(params),
 				     response, &response_length, sizeof(response),
-				     msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+				     msecs_to_jiffies(MT6797_STP_PATCH_TIMEOUT_MS));
 	if (ret)
 		return ret;
 	if (response_length != sizeof(expected) ||
@@ -432,6 +453,7 @@ static int mt6797_stp_diag_patch_one(struct mt6797_stp_diag *diag,
 
 static int mt6797_stp_diag_patch(struct mt6797_stp_diag *diag,
 					 struct mt6797_stp_session *session,
+					 void *host_context,
 					 u32 hw_version, u32 fw_version)
 {
 	static const char * const names[] = {
@@ -442,6 +464,7 @@ static int mt6797_stp_diag_patch(struct mt6797_stp_diag *diag,
 	unsigned int index;
 	unsigned int loaded = 0;
 	bool clock_boosted = false;
+	bool emi_owned = false;
 	int ret;
 	int cleanup_ret;
 
@@ -453,7 +476,18 @@ static int mt6797_stp_diag_patch(struct mt6797_stp_diag *diag,
 		if (ret)
 			goto out_release;
 		loaded++;
+		ret = mt6797_stp_diag_patch_header(fw[index], hw_version,
+						 fw_version, index + 1);
+		if (ret)
+			goto out_release;
 	}
+	ret = mt6797_consys_emi_patch_begin(host_context);
+	if (ret)
+		goto out_release;
+	emi_owned = true;
+	ret = mt6797_stp_diag_power_on_dlm(session);
+	if (ret)
+		goto out_release;
 	ret = mt6797_stp_diag_mcu_clock(diag, session, true);
 	if (ret)
 		goto out_release;
@@ -482,6 +516,11 @@ out_clock:
 			ret = cleanup_ret;
 	}
 out_release:
+	if (emi_owned) {
+		cleanup_ret = mt6797_consys_emi_patch_end(host_context);
+		if (!ret)
+			ret = cleanup_ret;
+	}
 	while (loaded)
 		release_firmware(fw[--loaded]);
 	return ret;
@@ -509,6 +548,12 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 					&host_context);
 	if (ret)
 		return ret;
+	if (mode == MT6797_STP_DIAG_EMI_TEST) {
+		ret = mt6797_consys_emi_patch_begin(host_context);
+		if (!ret)
+			ret = mt6797_consys_emi_patch_end(host_context);
+		goto out_release;
+	}
 
 	session = mt6797_stp_session_alloc(diag->dev, &session_ops, diag);
 	if (!session) {
@@ -614,7 +659,7 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 				diag->response_length = 8;
 			}
 			if (!ret && mode == MT6797_STP_DIAG_PATCH)
-				ret = mt6797_stp_diag_patch(diag, session, hw_version,
+				ret = mt6797_stp_diag_patch(diag, session, host_context, hw_version,
 							    fw_version);
 		}
 	} else {
@@ -639,7 +684,7 @@ static ssize_t command_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
 	return sysfs_emit(buf,
-			  "write 'query', 'full', 'version', 'patch', 'bt-on', 'bt-off', 'wifi-on', 'wifi-off', or 'wifi-hif' to execute one bounded test\n");
+			  "write 'query', 'full', 'version', 'patch', 'emi-test', 'bt-on', 'bt-off', 'wifi-on', 'wifi-off', or 'wifi-hif' to execute one bounded test\n");
 }
 
 static ssize_t command_store(struct device *dev, struct device_attribute *attr,
@@ -662,6 +707,9 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 	} else if (sysfs_streq(buf, "patch")) {
 		mode = MT6797_STP_DIAG_PATCH;
 		name = "patch";
+	} else if (sysfs_streq(buf, "emi-test")) {
+		mode = MT6797_STP_DIAG_EMI_TEST;
+		name = "emi-test";
 	} else if (sysfs_streq(buf, "bt-on")) {
 		mode = MT6797_STP_DIAG_BT_ON;
 		name = "bt-on";
