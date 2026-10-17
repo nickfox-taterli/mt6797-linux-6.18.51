@@ -16,6 +16,7 @@
 #include <net/bluetooth/hci_core.h>
 
 #include "btmt6797-h4.h"
+#include "btmt6797-compat.h"
 
 #define MT6797_BT_TX_QUEUE_MAX 64
 #define MT6797_BT_NVRAM "mediatek/mt6797/BT.bin"
@@ -42,6 +43,7 @@ struct mt6797_bt {
 	struct mt6797_h4 rx;
 	bool running;
 	bool failed;
+	bool legacy_ble;
 };
 
 static int mt6797_bt_receive_frame(void *context, u8 type,
@@ -55,6 +57,9 @@ static int mt6797_bt_receive_frame(void *context, u8 type,
 		return -ENOMEM;
 	hci_skb_pkt_type(skb) = type;
 	skb_put_data(skb, data, length);
+	if (READ_ONCE(bt->legacy_ble) && type == HCI_EVENT_PKT &&
+	    !hci_dev_test_flag(bt->hdev, HCI_USER_CHANNEL))
+		mt6797_bt_fixup_capabilities(skb->data, skb->len);
 	return hci_recv_frame(bt->hdev, skb);
 }
 
@@ -160,6 +165,7 @@ static int mt6797_bt_open(struct hci_dev *hdev)
 	spin_lock_irqsave(&bt->rx_lock, flags);
 	mt6797_h4_reset(&bt->rx);
 	WRITE_ONCE(bt->failed, false);
+	WRITE_ONCE(bt->legacy_ble, false);
 	WRITE_ONCE(bt->running, true);
 	spin_unlock_irqrestore(&bt->rx_lock, flags);
 	ret = mt6797_wmt_client_open(bt->client);
@@ -226,7 +232,9 @@ static bool mt6797_bt_valid_address(const bdaddr_t *address)
 
 static int mt6797_bt_setup(struct hci_dev *hdev)
 {
+	struct mt6797_bt *bt = hci_get_drvdata(hdev);
 	const struct mt6797_bt_nvram *nvram;
+	struct hci_rp_read_local_version *version;
 	struct hci_rp_read_bd_addr *rp;
 	const struct firmware *fw;
 	struct sk_buff *skb;
@@ -287,8 +295,33 @@ static int mt6797_bt_setup(struct hci_dev *hdev)
 	if (ret)
 		goto release;
 	ret = mt6797_bt_command(hdev, 0xfcbe, sizeof(log_enable), &log_enable);
-	if (!ret)
+	if (ret)
+		goto release;
+	skb = __hci_cmd_sync(hdev, HCI_OP_READ_LOCAL_VERSION, 0, NULL, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		ret = PTR_ERR(skb);
+		goto release;
+	}
+	if (skb->len != sizeof(*version)) {
+		ret = -EPROTO;
+	} else {
+		version = (void *)skb->data;
+		ret = -bt_to_errno(version->status);
+		WRITE_ONCE(bt->legacy_ble, !ret && version->hci_ver == 8 &&
+			   le16_to_cpu(version->manufacturer) == 70 &&
+			   ((!version->hci_rev && !version->lmp_subver) ||
+			    (le16_to_cpu(version->hci_rev) == 0x1317 &&
+			     le16_to_cpu(version->lmp_subver) == 0x0630)));
+	}
+	kfree_skb(skb);
+	if (!ret) {
 		bt_dev_info(hdev, "BSP MT6797 radio/power/sleep setup complete");
+		if (READ_ONCE(bt->legacy_ble)) {
+			/* Advertised MWS query returns Unknown Connection Identifier. */
+			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_MWS_TRANSPORT_CONFIG);
+			bt_dev_warn(hdev, "2016 firmware BLE event compatibility: controller DLE/privacy/ECC unavailable");
+		}
+	}
 release:
 	release_firmware(fw);
 	return ret;

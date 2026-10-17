@@ -23,10 +23,24 @@ setup, so HCI_QUIRK_NON_PERSISTENT_SETUP replays it on each open.
 Checkpoint 2026-10-17: complete ARM64 modules and selected X20 DT build;
 actual H4 parser tests under ASAN/UBSAN; board BSP vendor setup/standard
 Reset, version/address, command/feature/buffer queries with no H4 errors.
-This is not yet a working BlueZ adapter: the June-2016 ROMv3 patch reports
+The June-2016 ROMv3 patch reports
 BLE 4.2 features while rejecting event-mask bits above 0x1f, and omits BLE
 baseline commands from its supported-command bitmap despite accepting
-several of them. The standard stack fails at LE Set Event Mask. An explicit
-firmware comparison is required before choosing a compatibility fix.
-No scan, advertising, pairing, ACL/GATT traffic, coexistence recovery or
-power-management acceptance is claimed at this checkpoint.
+several of them. The January-2016 BSP patch pair reproduces the same raw
+capability inconsistency. Both reject Read Maximum Data Length (0x202f).
+The adapter now corrects baseline LE command bits and withholds controller
+DLE/privacy/extended-scan and ECC-offload capabilities whose required events
+cannot be enabled. This is restricted to the two measured version tuples;
+HCI USER-channel diagnostics retain the raw firmware replies. Software
+privacy/ECC remain available in the standard host, subject to actual tests.
+The falsely advertised MWS query also needs the existing kernel quirk.
+
+With these compatibility rules, standard MGMT public-address configuration,
+SSP/LE/bondable settings and power-on pass. AES/CMAC modules must be loaded
+before opening the adapter for SMP. The test public address is explicitly a
+temporary lab identity, not a recovered factory address. Fast function
+off/on while WLAN is active still times out and stalls shared firmware;
+BTIF wake alone was a negative control. No scan, advertising, pairing,
+ACL/GATT traffic, coexistence recovery or PM acceptance is claimed yet.
+Full BSP 4.2 optional capabilities remain an explicit gap, not a completed
+feature after the compatibility correction.
