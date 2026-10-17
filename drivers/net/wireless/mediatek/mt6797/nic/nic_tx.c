@@ -2907,7 +2907,8 @@ WLAN_STATUS nicTxInitCmd(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prCmdInfo)
 			  (UINT_32) u2OverallBufferLength,
 			  (PUINT_8) pucOutputBuf, (UINT_32) prAdapter->u4CoalescingBufCachedSize);
 
-	return WLAN_STATUS_SUCCESS;
+	return fgIsBusAccessFailed || HAL_TEST_FLAG(prAdapter, ADAPTER_FLAG_HW_ERR) ?
+		WLAN_STATUS_FAILURE : WLAN_STATUS_SUCCESS;
 }
 
 /*----------------------------------------------------------------------------*/

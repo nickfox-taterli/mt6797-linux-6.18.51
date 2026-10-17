@@ -3538,7 +3538,8 @@ wlanImageSectionConfig(IN P_ADAPTER_T prAdapter, IN UINT_32 u4DestAddr, IN UINT_
 
 #if CFG_ENABLE_FW_DOWNLOAD_ACK
 	/* 7. Wait for INIT_EVENT_ID_CMD_RESULT */
-	u4Status = wlanImageSectionDownloadStatus(prAdapter, ucCmdSeqNum);
+	if (u4Status == WLAN_STATUS_SUCCESS)
+		u4Status = wlanImageSectionDownloadStatus(prAdapter, ucCmdSeqNum);
 #endif
 
 	/* 8. Free CMD Info Packet. */
