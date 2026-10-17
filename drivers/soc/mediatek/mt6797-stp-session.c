@@ -6,6 +6,7 @@
 // higher-level ConSys owner explicitly starts a session.  It does not power
 // VCN rails, select an STP mode, or probe the chip by itself.
 
+#include <linux/atomic.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -81,6 +82,47 @@ struct mt6797_stp_session {
 	u16 response_length;
 	int response_status;
 };
+
+static atomic_t mt6797_stp_trace_frames = ATOMIC_INIT(0);
+
+static int mt6797_stp_trace_set(const char *value, const struct kernel_param *kp)
+{
+	unsigned int frames;
+	int ret;
+
+	ret = kstrtouint(value, 0, &frames);
+	if (ret)
+		return ret;
+	if (frames > 256)
+		return -ERANGE;
+	atomic_set(&mt6797_stp_trace_frames, frames);
+	return 0;
+}
+
+static int mt6797_stp_trace_get(char *buffer, const struct kernel_param *kp)
+{
+	return sysfs_emit(buffer, "%d\n", atomic_read(&mt6797_stp_trace_frames));
+}
+
+static const struct kernel_param_ops mt6797_stp_trace_ops = {
+	.set = mt6797_stp_trace_set,
+	.get = mt6797_stp_trace_get,
+};
+module_param_cb(trace_frames, &mt6797_stp_trace_ops, NULL, 0600);
+MODULE_PARM_DESC(trace_frames, "Capture 0..256 STP frame metadata records, without payload bytes");
+
+static void mt6797_stp_trace(struct mt6797_stp_session *session, const char *way,
+			     u8 task, u8 seq, u8 ack, bool nak, u16 length)
+{
+	if (atomic_dec_if_positive(&mt6797_stp_trace_frames) < 0)
+		return;
+	dev_info(session->owner,
+		 "STP %s task=%u seq=%u ack=%u nak=%u len=%u want=%u next=%u acked=%u pending=%u err=%d\n",
+		 way, task, seq, ack, nak, length,
+		 READ_ONCE(session->rx_expected), READ_ONCE(session->tx_next),
+		 READ_ONCE(session->tx_acked), READ_ONCE(session->outstanding),
+		 READ_ONCE(session->terminal_error));
+}
 
 static bool mt6797_stp_session_active(struct mt6797_stp_session *session)
 {
@@ -291,6 +333,9 @@ static int mt6797_stp_frame(struct mt6797_stp_session *session,
 	u8 ack;
 	bool in_order;
 
+	mt6797_stp_trace(session, "RX", frame->packet_type, frame->sequence,
+			 frame->acknowledgement, frame->nak, frame->payload_length);
+
 	if (session->mandatory) {
 		/* Mandatory BTIF framing has no sequence/ACK semantics. */
 		if (frame->packet_type == MT6797_STP_TASK_WMT)
@@ -440,6 +485,8 @@ static int mt6797_stp_send_locked(struct mt6797_stp_session *session,
 	ret = mt6797_stp_queue_frame(session, task, payload, length, &slot);
 	if (ret)
 		return ret;
+	mt6797_stp_trace(session, "TX", task, (session->tx_next + 7) & 7,
+			 session->rx_ack, false, length);
 	for (attempt = 0; attempt <= MT6797_STP_RETRY_LIMIT; attempt++) {
 		if (attempt) {
 			ret = mt6797_stp_send_resync(session);
