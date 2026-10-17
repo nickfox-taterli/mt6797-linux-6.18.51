@@ -50,4 +50,8 @@ int mt6797_consys_get_emi(void *context, phys_addr_t *base,
 int mt6797_consys_emi_patch_begin(void *context);
 int mt6797_consys_emi_patch_end(void *context);
 
+/* Bounded, verified WLAN firmware copy with MPU restoration on every exit. */
+int mt6797_consys_wifi_emi_write(void *context, u32 offset,
+			       const void *data, size_t length);
+
 #endif /* __LINUX_MT6797_CONSYS_H */

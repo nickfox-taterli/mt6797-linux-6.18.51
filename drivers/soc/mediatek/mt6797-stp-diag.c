@@ -16,6 +16,7 @@
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
@@ -36,6 +37,7 @@ enum mt6797_stp_diag_mode {
 	MT6797_STP_DIAG_FULL,
 	MT6797_STP_DIAG_VERSION,
 	MT6797_STP_DIAG_PATCH,
+	MT6797_STP_DIAG_INIT,
 	MT6797_STP_DIAG_EMI_TEST,
 	MT6797_STP_DIAG_BT_ON,
 	MT6797_STP_DIAG_BT_OFF,
@@ -48,6 +50,8 @@ struct mt6797_stp_diag {
 	struct device *dev;
 	struct device *consys_dev;
 	struct mutex lock;
+	struct mt6797_wmt_config config;
+	struct mt6797_wmt_calibration calibration;
 	u8 response[MT6797_STP_DIAG_RESPONSE_MAX];
 	u16 response_length;
 	int last_result;
@@ -149,8 +153,12 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	bool function_on_ack = false;
 	bool hif_claimed = false;
 
-	ret = mt6797_consys_stp_acquire(diag->consys_dev, &host_ops,
-					&host_context);
+	if (mode == MT6797_STP_DIAG_INIT)
+		ret = mt6797_consys_stp_open(diag->consys_dev, &host_ops,
+					   &host_context);
+	else
+		ret = mt6797_consys_stp_acquire(diag->consys_dev, &host_ops,
+					      &host_context);
 	if (ret)
 		return ret;
 	if (mode == MT6797_STP_DIAG_EMI_TEST) {
@@ -175,7 +183,10 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	if (ret)
 		goto out_stop;
 
-	if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
+	if (mode == MT6797_STP_DIAG_INIT) {
+		ret = mt6797_wmt_bootstrap(diag->dev, session, host_context,
+					   &diag->config, &diag->calibration);
+	} else if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
 	    mode == MT6797_STP_DIAG_WIFI_ON || mode == MT6797_STP_DIAG_WIFI_OFF ||
 	    mode == MT6797_STP_DIAG_WIFI_HIF) {
 		function = (mode == MT6797_STP_DIAG_BT_ON ||
@@ -289,7 +300,7 @@ static ssize_t command_show(struct device *dev, struct device_attribute *attr,
 				    char *buf)
 {
 	return sysfs_emit(buf,
-			  "write 'query', 'full', 'version', 'patch', 'emi-test', 'bt-on', 'bt-off', 'wifi-on', 'wifi-off', or 'wifi-hif' to execute one bounded test\n");
+			  "write 'init' for managed WMT bootstrap, or 'query', 'full', 'version', 'patch', 'emi-test', 'bt-on', 'bt-off', 'wifi-on', 'wifi-off', 'wifi-hif' for a powered test\n");
 }
 
 static ssize_t command_store(struct device *dev, struct device_attribute *attr,
@@ -312,6 +323,9 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 	} else if (sysfs_streq(buf, "patch")) {
 		mode = MT6797_STP_DIAG_PATCH;
 		name = "patch";
+	} else if (sysfs_streq(buf, "init")) {
+		mode = MT6797_STP_DIAG_INIT;
+		name = "init";
 	} else if (sysfs_streq(buf, "emi-test")) {
 		mode = MT6797_STP_DIAG_EMI_TEST;
 		name = "emi-test";
@@ -399,6 +413,28 @@ static DEVICE_ATTR_RO(result);
 static DEVICE_ATTR_RO(response);
 static DEVICE_ATTR_RO(busy);
 
+static ssize_t calibration_read(struct file *file, struct kobject *kobj,
+				const struct bin_attribute *attr, char *buf,
+				loff_t offset, size_t count)
+{
+	struct mt6797_stp_diag *diag = dev_get_drvdata(kobj_to_dev(kobj));
+	ssize_t length = 0;
+
+	mutex_lock(&diag->lock);
+	if (offset < diag->calibration.length) {
+		length = min_t(size_t, count, diag->calibration.length - offset);
+		memcpy(buf, diag->calibration.data + offset, length);
+	}
+	mutex_unlock(&diag->lock);
+	return length;
+}
+static BIN_ATTR_RO(calibration, MT6797_WMT_CALIBRATION_MAX);
+
+static const struct bin_attribute *mt6797_stp_diag_bin_attrs[] = {
+	&bin_attr_calibration,
+	NULL,
+};
+
 static struct attribute *mt6797_stp_diag_attrs[] = {
 	&dev_attr_command.attr,
 	&dev_attr_result.attr,
@@ -406,7 +442,11 @@ static struct attribute *mt6797_stp_diag_attrs[] = {
 	&dev_attr_busy.attr,
 	NULL,
 };
-ATTRIBUTE_GROUPS(mt6797_stp_diag);
+static const struct attribute_group mt6797_stp_diag_group = {
+	.attrs = mt6797_stp_diag_attrs,
+	.bin_attrs = mt6797_stp_diag_bin_attrs,
+};
+__ATTRIBUTE_GROUPS(mt6797_stp_diag);
 
 static int mt6797_stp_diag_probe(struct platform_device *pdev)
 {
@@ -435,6 +475,17 @@ static int mt6797_stp_diag_probe(struct platform_device *pdev)
 	}
 	diag->dev = &pdev->dev;
 	diag->consys_dev = &consys_pdev->dev;
+	ret = device_property_read_u8(&pdev->dev, "mediatek,antenna-mode",
+				      &diag->config.antenna_mode);
+	if (!ret)
+		ret = device_property_read_u8(&pdev->dev, "mediatek,fm-transport",
+					      &diag->config.fm_transport);
+	if (ret) {
+		put_device(&consys_pdev->dev);
+		return dev_err_probe(&pdev->dev, ret, "missing board WMT configuration\n");
+	}
+	diag->config.co_clock = device_property_read_bool(&pdev->dev,
+							 "mediatek,co-clock");
 	mutex_init(&diag->lock);
 	diag->last_result = -ENODATA;
 	platform_set_drvdata(pdev, diag);

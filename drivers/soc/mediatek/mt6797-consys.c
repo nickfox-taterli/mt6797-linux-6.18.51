@@ -809,6 +809,37 @@ int mt6797_consys_emi_patch_end(void *context)
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_emi_patch_end);
 
+int mt6797_consys_wifi_emi_write(void *context, u32 offset,
+			       const void *data, size_t length)
+{
+	struct mt6797_consys *cs = context;
+	u8 verify[64];
+	size_t position, count;
+	int ret, restore_ret;
+
+	if (!cs || !data || !length || offset >= MT6797_CONSYS_WIFI_EMI_SIZE ||
+	    length > MT6797_CONSYS_WIFI_EMI_SIZE - offset)
+		return -EINVAL;
+	ret = mt6797_consys_emi_patch_begin(context);
+	if (ret)
+		return ret;
+	mutex_lock(&cs->lock);
+	memcpy_toio(cs->emi_io + offset, data, length);
+	wmb();
+	for (position = 0; position < length; position += count) {
+		count = min_t(size_t, sizeof(verify), length - position);
+		memcpy_fromio(verify, cs->emi_io + offset + position, count);
+		if (memcmp(verify, (const u8 *)data + position, count)) {
+			ret = -EIO;
+			break;
+		}
+	}
+	mutex_unlock(&cs->lock);
+	restore_ret = mt6797_consys_emi_patch_end(context);
+	return ret ? ret : restore_ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_consys_wifi_emi_write);
+
 static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {

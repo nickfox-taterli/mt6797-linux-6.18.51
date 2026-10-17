@@ -148,6 +148,16 @@ config MTK_MT6797_STP_DIAG
 	  host parser while the transaction runs, and never exposes BTIF as a tty
 	  or HCI device.
 
+config MTK_MT6797_WMT
+	tristate "MT6797 shared connectivity lifecycle"
+	depends on OF && MTK_MT6797_CONSYS && MTK_MT6797_STP_SESSION
+	select MTK_MT6797_WMT_INIT
+	select SRCU
+	help
+	  Share the powered firmware and STP session between standard WLAN and
+	  Bluetooth clients. Firmware starts with the first client and stops with
+	  the last one; independent radio rails and callbacks are managed here.
+
 config MTK_MT6797_WLAN_HIF
 	tristate "MT6797 WLAN AHB sdioLike PIO HIF"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

@@ -20,6 +20,10 @@
 
 #include <linux/mt6797-btif.h>
 
+static bool trace;
+module_param(trace, bool, 0600);
+MODULE_PARM_DESC(trace, "Log raw BTIF bytes and initial IRQ state");
+
 #define BTIF_RBR_THR		0x00
 #define BTIF_IER		0x04
 #define BTIF_IIR_FIFOCTRL	0x08
@@ -98,6 +102,8 @@ static void btif_fifo_reset(struct mt6797_btif *btif)
 
 static void btif_debug_state(struct mt6797_btif *btif, const char *where)
 {
+	if (!trace)
+		return;
 	dev_info(btif->dev,
 		 "BTIF debug %s: ier=%08x iir=%08x lsr=%08x tri=%08x dma=%08x handshake=%08x wak=%08x clk=%lu\n",
 		 where, readl(btif->base + BTIF_IER),
@@ -142,7 +148,7 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 	ops = READ_ONCE(btif->ops);
 
 	iir = readl(btif->base + BTIF_IIR_FIFOCTRL);
-	if (btif->debug_irq_count < 32) {
+	if (trace && btif->debug_irq_count < 32) {
 		btif->debug_irq_count++;
 		dev_info(btif->dev,
 			 "BTIF debug irq#%u: iir=%08x ier=%08x lsr=%08x\n",
@@ -177,7 +183,7 @@ static irqreturn_t mt6797_btif_irq(int irq, void *data)
 		wake_up_all(&btif->tx_wait);
 	}
 
-	if (rx_len && ops && ops->rx_bytes)
+	if (trace && rx_len && ops && ops->rx_bytes)
 		dev_info(btif->dev, "BTIF debug rx len=%u data=%*phN\n", rx_len,
 			 rx_len, rx);
 	if (rx_len && ops && ops->rx_bytes)
@@ -285,7 +291,7 @@ ssize_t mt6797_btif_write(struct device *client, const u8 *data,
 					 BTIF_IER_TXEEN);
 		spin_unlock_irq(&btif->tx_lock);
 		written += count;
-		if (count)
+		if (trace && count)
 			dev_info(btif->dev,
 				 "BTIF debug write queued=%u/%zu data=%*phN ier=%08x lsr=%08x\n",
 				 count, length, (int)min_t(size_t, count, 32), data + written - count,

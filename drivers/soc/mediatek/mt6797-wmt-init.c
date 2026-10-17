@@ -12,7 +12,7 @@
 #include <linux/mt6797-stp-session.h>
 #include <linux/mt6797-wmt.h>
 
-#define MT6797_WMT_TIMEOUT_MS	1000
+#define MT6797_WMT_TIMEOUT_MS	2000
 #define MT6797_WMT_RESET_TIMEOUT_MS	5000
 #define MT6797_WMT_RESPONSE_MAX	32
 #define MT6797_WMT_GEN_HVR		0x80000000
@@ -373,10 +373,11 @@ int mt6797_wmt_download_patches(struct device *dev,
 	ret = mt6797_wmt_power_on_dlm(session);
 	if (ret)
 		goto out_release;
+	/* Even a failed write can have changed part of the clock setup. */
+	clock_boosted = true;
 	ret = mt6797_wmt_mcu_clock(dev, session, true);
 	if (ret)
-		goto out_release;
-	clock_boosted = true;
+		goto out_clock;
 	for (index = 0; index < ARRAY_SIZE(fw); index++) {
 		ret = mt6797_wmt_patch_one(dev, session, fw[index], fw_version,
 							index + 1);
@@ -411,6 +412,155 @@ out_release:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_wmt_download_patches);
+
+static int mt6797_wmt_expect(struct mt6797_stp_session *session, u8 opcode,
+			     const u8 *params, u16 length,
+			     const u8 *expected, u16 expected_length)
+{
+	u8 response[MT6797_WMT_RESPONSE_MAX];
+	u16 response_length = 0;
+	int ret;
+
+	ret = mt6797_stp_session_wmt(session, opcode, params, length,
+				     response, &response_length, sizeof(response),
+				     msecs_to_jiffies(MT6797_WMT_TIMEOUT_MS));
+	if (ret)
+		return ret;
+	if (response_length != expected_length ||
+	    memcmp(response, expected, expected_length))
+		return -EPROTO;
+	return 0;
+}
+
+int mt6797_wmt_function_control(struct device *dev,
+				struct mt6797_stp_session *session,
+				u8 function, bool enabled)
+{
+	const u8 params[] = { function, enabled ? 1 : 0 };
+	static const u8 expected[] = { 0 };
+	int ret;
+
+	ret = mt6797_wmt_expect(session, 0x06, params, sizeof(params),
+				expected, sizeof(expected));
+	if (!ret)
+		dev_info(dev, "WMT function %u %s acknowledged\n", function,
+			 enabled ? "on" : "off");
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_function_control);
+
+static int mt6797_wmt_calibrate(struct device *dev,
+			       struct mt6797_stp_session *session, void *host_context,
+			       struct mt6797_wmt_calibration *calibration)
+{
+	static const u8 params[] = { 1 };
+	bool bt_changed = false, wifi_changed = false;
+	int ret, cleanup_ret;
+
+	calibration->length = 0;
+	ret = mt6797_consys_radio_power(host_context, MT6797_CONSYS_FUNC_BT,
+				       true, &bt_changed);
+	if (ret)
+		return ret;
+	ret = mt6797_consys_radio_power(host_context, MT6797_CONSYS_FUNC_WIFI,
+				       true, &wifi_changed);
+	if (!ret) {
+		ret = mt6797_stp_session_wmt(session, 0x14, params, sizeof(params),
+				calibration->data, &calibration->length,
+				sizeof(calibration->data),
+				msecs_to_jiffies(MT6797_WMT_TIMEOUT_MS));
+		/* BSP skips comparison for opcode 0x14 because newer patches append
+		 * calibration data. Validate status/subcommand and retain all bytes;
+		 * the appended format is firmware-owned, not an invented host ABI.
+		 */
+		if (!ret && (calibration->length < 2 || calibration->data[0] ||
+			     calibration->data[1] != 1))
+			ret = -EPROTO;
+		if (ret)
+			calibration->length = 0;
+	}
+	if (wifi_changed) {
+		cleanup_ret = mt6797_consys_radio_power(host_context,
+					 MT6797_CONSYS_FUNC_WIFI, false, NULL);
+		if (!ret)
+			ret = cleanup_ret;
+	}
+	if (bt_changed) {
+		cleanup_ret = mt6797_consys_radio_power(host_context,
+					 MT6797_CONSYS_FUNC_BT, false, NULL);
+		if (!ret)
+			ret = cleanup_ret;
+	}
+	if (!ret)
+		dev_info(dev, "WMT RF calibration acknowledged, retained %u bytes\n",
+			 calibration->length);
+	return ret;
+}
+
+int mt6797_wmt_post_patch_init(struct device *dev,
+			      struct mt6797_stp_session *session,
+			      void *host_context, const struct mt6797_wmt_config *config,
+			      struct mt6797_wmt_calibration *calibration)
+{
+	static const u8 status_ok[] = { 0 };
+	static const u8 oscillator[] = { 0x08, 0x03 };
+	u8 coexistence[] = { 1, 0 };
+	u8 fm[] = { 2, 0 }, fm_expected[] = { 0, 0 };
+	int ret;
+
+	if (!config || !calibration ||
+	    (config->fm_transport != 1 && config->fm_transport != 2))
+		return -EINVAL;
+	ret = mt6797_wmt_calibrate(dev, session, host_context, calibration);
+	if (ret)
+		return ret;
+	coexistence[1] = config->antenna_mode;
+	ret = mt6797_wmt_expect(session, 0x10, coexistence, sizeof(coexistence),
+				status_ok, sizeof(status_ok));
+	if (ret)
+		return ret;
+	if (config->co_clock) {
+		ret = mt6797_wmt_expect(session, 0x0a, oscillator, sizeof(oscillator),
+					status_ok, sizeof(status_ok));
+		if (ret)
+			return ret;
+	}
+	fm[1] = fm_expected[1] = config->fm_transport;
+	ret = mt6797_wmt_expect(session, 0x05, fm, sizeof(fm),
+				fm_expected, sizeof(fm_expected));
+	if (!ret)
+		dev_info(dev, "WMT board configuration: antenna=%u co-clock=%u FM transport=%u\n",
+			 config->antenna_mode, config->co_clock, config->fm_transport);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_post_patch_init);
+
+int mt6797_wmt_bootstrap(struct device *dev, struct mt6797_stp_session *session,
+			 void *host_context, const struct mt6797_wmt_config *config,
+			      struct mt6797_wmt_calibration *calibration)
+{
+	u32 hw_version, fw_version;
+	int ret;
+
+	if (!dev || !session || !host_context || !config || !calibration)
+		return -EINVAL;
+	ret = mt6797_stp_session_configure_btif_full(session,
+					msecs_to_jiffies(MT6797_WMT_TIMEOUT_MS));
+	if (ret)
+		return ret;
+	ret = mt6797_wmt_read_version(dev, session, &hw_version, &fw_version);
+	if (ret)
+		return ret;
+	ret = mt6797_wmt_download_patches(dev, session, host_context, hw_version, fw_version);
+	if (ret)
+		return ret;
+	ret = mt6797_wmt_post_patch_init(dev, session, host_context, config, calibration);
+	if (!ret)
+		dev_info(dev, "WMT initialization complete\n");
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_bootstrap);
+
 MODULE_FIRMWARE(MT6797_WMT_PATCH_FW_1);
 MODULE_FIRMWARE(MT6797_WMT_PATCH_FW_2);
 MODULE_DESCRIPTION("MT6797 WMT firmware initialization");

@@ -25,9 +25,21 @@
 		};
 	};
 
+	wmt: wmt {
+		compatible = "mediatek,mt6797-wmt";
+		consys = <&consys>;
+		btif = <&btif>;
+		mediatek,antenna-mode = /bits/ 8 <1>;
+		mediatek,fm-transport = /bits/ 8 <2>;
+		status = "okay";
+	};
+
 	stp_diag: stp-diag {
 		compatible = "mediatek,mt6797-stp-diag";
 		consys = <&consys>;
+		/* X20 BSP WMT_SOC.cfg: antenna mode 1, external 26 MHz TCXO. */
+		mediatek,antenna-mode = /bits/ 8 <1>;
+		mediatek,fm-transport = /bits/ 8 <2>;
 		status = "okay";
 	};
 };
