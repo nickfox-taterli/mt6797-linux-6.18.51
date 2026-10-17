@@ -20,8 +20,13 @@ fa68e7a, ROM reads match both EMI section headers and firmware starts;
 wlan0/p2p0 are present. A standard iw scan returned 21 BSS entries, including
 the laboratory SSIDs on 2432 and 5200 MHz. Laboratory 2.4-GHz WPA2/CCMP with
 PMF, DHCP, build-host SSH, Q6A bidirectional ping and hash-verified SFTP in both
-directions now pass. The board subsequently reset unexpectedly; sustained
-traffic, 5-GHz association and recovery remain unverified. Module load returning zero does
+directions now pass. An initial upload reset is retained as a failure. After reserving the BSP secure
+64 KiB DRAM area, ordinary SysV tests passed for laboratory 2.4-GHz STA,
+5-GHz WPA2 STA to Q6A, and MTK AP to Q6A STA, each with 96 MiB of bidirectional
+SHA-verified SFTP. A successful WLAN/WMT unload, full power-off and reload
+passed, followed by three STA reconnects. Minute-scale bandwidth testing is
+now in progress; first measurements exposed a missing BSP CPUxGPT divide-by-two
+initialization, corrected in the RAM ATF before repeating duration tests. Module load returning zero does
 not imply the platform device bound successfully.
 
 An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
@@ -39,8 +44,11 @@ address list and shadow. ARM64 modules link; replacement and wlan0 open passed
 without a new dev_addr warning. Warnings while unloading the preceding module
 describe its old address state, not the replacement.
 
-Remaining work includes repeatable firmware startup, data queues/interrupts, AP-DMA validation,
-dynamic virtual interfaces, standard userspace role tests, factory calibration
-provenance, shared fault recovery and power management. AP/P2P static paths
-are retained but unverified. Unsafe raw diagnostic mappings remain unavailable
+Remaining work includes sustained traffic/recovery, AP-DMA validation, dynamic
+virtual interfaces, AP station statistics/dump, P2P negotiation, factory calibration
+provenance, shared fault recovery and power management. Static AP has real peer
+data evidence; this does not validate P2P negotiation. Native Bluetooth now has
+real LE central pairing and GATT traffic while WLAN is associated, but fast BT
+off/on exposed a shared firmware failure; concurrent load and lifecycle recovery
+remain open. Unsafe raw diagnostic mappings remain unavailable
 until they have an owned mapping. Do not treat this checkpoint as a release.
