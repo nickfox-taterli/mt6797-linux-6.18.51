@@ -14,9 +14,10 @@ replace the corresponding obsolete platform calls.
 Verified on 2026-10-17: ARM64 module linking; bounded firmware validation,
 NVRAM and PIO fault tests; board WMT initialization/calibration, HIF claim,
 two IDLM download acknowledgements, bounded EMI writes and failure teardown.
-Module unload works after a failed probe. Wi-Fi Start is sent, but WCIR stays
-0x00100279 with mailbox0=10 and firmware-ready times out. There is no verified
-wlan0, scan, association or data traffic yet. Module load returning zero does
+Module unload works after a failed probe. The UART rescue Preloader must run the normal master-domain initialization:
+without it ConSys cannot read its protected EMI firmware. With Preloader
+fa68e7a, ROM reads match both EMI section headers and firmware starts;
+wlan0/p2p0 are present. Scan, association and data traffic are still unverified. Module load returning zero does
 not imply the platform device bound successfully.
 
 An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
@@ -28,7 +29,7 @@ configuration ACKs, but firmware-ready still timed out, as with PIO in the
 same kernel. Failure teardown returned the channel and ConSys power. This
 is not evidence of firmware execution or wireless traffic.
 
-Remaining work includes firmware startup, data queues/interrupts, AP-DMA validation,
+Remaining work includes repeatable firmware startup, data queues/interrupts, AP-DMA validation,
 dynamic virtual interfaces, standard userspace role tests, factory calibration
 provenance, shared fault recovery and power management. AP/P2P static paths
 are retained but unverified. Unsafe raw diagnostic mappings remain unavailable
