@@ -127,12 +127,21 @@ config MTK_MT6797_STP_SESSION
 	  of the MT6797 BTIF transport.  It claims BTIF only when explicitly
 	  started by a higher-level ConSys owner and does not power the chip.
 
+config MTK_MT6797_WMT_INIT
+	tristate "MT6797 WMT firmware initialization"
+	depends on MTK_MT6797_CONSYS && MTK_MT6797_STP_SESSION
+	select FW_LOADER
+	help
+	  Shared ROM version and ROMv3 patch/reset initialization for MT6797
+	  connectivity clients. The caller owns ConSys power and the STP session.
+
 config MTK_MT6797_STP_DIAG
 	tristate "MT6797 bounded STP/WMT diagnostic client"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 	depends on MTK_MT6797_CONSYS
 	depends on MTK_MT6797_STP_SESSION
 	depends on MTK_MT6797_WLAN_HIF
+	select MTK_MT6797_WMT_INIT
 	help
 	  Root-controlled diagnostic client for one bounded MT6797 STP/WMT
 	  transaction.  It requires ConSys to be powered explicitly, reserves the

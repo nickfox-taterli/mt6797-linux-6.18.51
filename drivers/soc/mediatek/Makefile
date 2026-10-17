@@ -13,5 +13,6 @@ obj-$(CONFIG_MTK_MT6797_CONSYS) += mt6797-consys.o
 obj-$(CONFIG_MTK_MT6797_BTIF) += mt6797-btif.o
 obj-$(CONFIG_MTK_MT6797_STP) += mt6797-stp.o
 obj-$(CONFIG_MTK_MT6797_STP_SESSION) += mt6797-stp-session.o
+obj-$(CONFIG_MTK_MT6797_WMT_INIT) += mt6797-wmt-init.o
 obj-$(CONFIG_MTK_MT6797_STP_DIAG) += mt6797-stp-diag.o
 obj-$(CONFIG_MTK_MT6797_WLAN_HIF) += mt6797-wlan-hif.o
