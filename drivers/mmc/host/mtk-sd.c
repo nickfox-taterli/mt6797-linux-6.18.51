@@ -3105,6 +3105,15 @@ static inline void msdc_set_data_sample_edge(struct msdc_host *host, bool rising
 		if (host->hs400_mode) {
 			sdr_set_field(host->base + MSDC_IOCON,
 				      MSDC_IOCON_DSPL, value);
+		} else if (host->timing == MMC_TIMING_UHS_SDR104) {
+			/*
+			 * BSP PORT1_PB0_RD_DAT_SEL_VALID: tune the receive FIFO
+			 * edge, keeping pad sampling rising.  The write CRC FIFO
+			 * edge is set after the read scan, without changing pad edges.
+			 */
+			sdr_set_field(host->base + MSDC_PATCH_BIT,
+				      MSDC_PATCH_BIT_RD_DAT_SEL, value);
+			sdr_clr_bits(host->base + MSDC_IOCON, MSDC_IOCON_DSPL);
 		} else {
 			/* Keep the existing non-HS400 MTK tuning behavior. */
 			sdr_set_field(host->base + MSDC_PATCH_BIT,
@@ -3380,6 +3389,18 @@ skip_fall:
 		final_delay = final_fall_delay.final_phase;
 	}
 	msdc_set_data_delay(host, final_delay);
+	if (host->dev_comp->vendor_timing_init &&
+	    host->timing == MMC_TIMING_UHS_SDR104) {
+		u32 edge;
+
+		/* BSP execute_online_tuning() commits the selected FIFO edge
+		 * to WD_FIFO_EDGE too. IOCON.W_D_SMPL remains rising.
+		 */
+		sdr_get_field(host->base + MSDC_PATCH_BIT,
+			      MSDC_PATCH_BIT_RD_DAT_SEL, &edge);
+		sdr_set_field(host->base + MSDC_PATCH_BIT2,
+			      MSDC_PB2_CFGCRCSTSEDGE, edge);
+	}
 
 	dev_dbg(host->dev, "Final data pad delay: %x\n", final_delay);
 	return final_delay == 0xff ? -EIO : 0;
@@ -3453,6 +3474,24 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200)
 		msdc_mt6797_hs200_tuning_init(host);
+	if (host->dev_comp->vendor_timing_init &&
+	    mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
+		u32 latch = mmc->actual_clock > 100000000 ? 4 : 2;
+
+		/*
+		 * BSP autok_init_sdr104(): CMD and write-CRC status must be
+		 * latched for 4 clocks above 100 MHz and 2 clocks below it.
+		 */
+		sdr_set_field(host->base + MSDC_PATCH_BIT2,
+			      MSDC_PB2_RESPSTSENSEL, latch);
+		sdr_set_field(host->base + MSDC_PATCH_BIT2,
+			      MSDC_PB2_CRCSTSENSEL, latch);
+		sdr_clr_bits(host->base + MSDC_IOCON,
+			     MSDC_IOCON_DSPL | MSDC_IOCON_W_DSPL |
+			     MSDC_IOCON_DSPLSEL | MSDC_IOCON_W_DSPLSEL);
+		sdr_clr_bits(host->base + MSDC_PATCH_BIT2,
+			     MSDC_PB2_CFGCRCSTSEDGE);
+	}
 
 	if (host->dev_comp->data_tune && host->dev_comp->async_fifo) {
 		ret = msdc_tune_together(mmc, opcode);
@@ -3643,6 +3682,20 @@ static void msdc_hw_reset(struct mmc_host *mmc)
 	sdr_set_bits(host->base + EMMC_IOCON, 1);
 	udelay(10); /* 10us is enough */
 	sdr_clr_bits(host->base + EMMC_IOCON, 1);
+	if (host->dev_comp->vendor_timing_init) {
+		/*
+		 * BSP msdc_card_reset() reinitializes the host after RST_n.
+		 * A card reset alone leaves the old HS400 response/CRC path
+		 * active while MMC core starts over with legacy CMD1.
+		 */
+		usleep_range(200, 500);
+		host->hs400_mode = false;
+		host->hs400_tuning = false;
+		msdc_init_hw(host);
+		sdr_set_field(host->base + MSDC_CFG, MSDC_CFG_START_BIT, 0);
+		writel(0, host->base + PAD_CMD_TUNE);
+		host->mclk = 0;
+	}
 }
 
 static void msdc_ack_sdio_irq(struct mmc_host *mmc)
@@ -3907,14 +3960,15 @@ static void msdc_of_property_parse(struct platform_device *pdev,
 				      &host->descriptor_max_req_size);
 	if (host->descriptor_dma) {
 		/*
-		 * The X20 descriptor path is a board-level probe.  Keep it
-		 * synchronous and mutually exclusive with the diagnostic paths
-		 * whose lifetime/ownership rules differ from streaming DMA.
+		 * pre_req() maps SG buffers only; the one shared GPD/BD chain is
+		 * built in start_data() for the active request.  This also permits
+		 * asynchronous mappings, whose CPU ownership is returned at data
+		 * completion and whose lifetime ends in post_req().
 		 */
 		if (host->dev_comp != &mt6797_compat ||
-		    !host->disable_async_dma || host->force_pio || host->cqhci) {
+		    host->force_pio || host->cqhci) {
 			dev_warn(&pdev->dev,
-				 "descriptor-dma ignored unless MT6797 synchronous non-PIO DMA is used\n");
+				 "descriptor-dma ignored unless MT6797 non-PIO, non-CQE DMA is used\n");
 			host->descriptor_dma = false;
 		} else {
 			/* Explicit opt-in overrides the board's force-basic default. */

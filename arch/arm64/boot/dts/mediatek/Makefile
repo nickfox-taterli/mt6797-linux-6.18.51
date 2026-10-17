@@ -7,6 +7,7 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6795-sony-xperia-m5.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-evb.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-dev.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-storage.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless-basic-hs400-150m.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless-hs400-pio.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless-descriptor-hs400-150m.dtb

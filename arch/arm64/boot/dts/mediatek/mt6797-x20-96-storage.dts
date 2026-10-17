@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* BSP storage alignment with the established shared wireless hardware. */
+/dts-v1/;
+
+#include "mt6797-x20-96-wireless-stp-hif.dts"
+
+&stp_diag {
+	mediatek,defer-registration;
+};
+
+&pmic {
+	regulators {
+		mt6351_vemc: ldo_vemc {
+			regulator-name = "vemc";
+			/* BSP msdc_emmc_power(): VCC=3.0 V; VCCQ is shared VIO18. */
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-boot-on;
+		};
+	};
+};
+
+&mmc0 {
+	vmmc-supply = <&mt6351_vemc>;
+	cap-mmc-hw-reset;
+	/* Map queued SG buffers in pre_req; descriptors remain request-local. */
+	/delete-property/ mediatek,disable-async-dma;
+};
+
+&mmc1 {
+	/* The present SL08G passes at 96 MHz actual; 192 MHz still retries reads. */
+	max-frequency = <104000000>;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+};
+
+&mt6351_vmch {
+	/delete-property/ regulator-always-on;
+};
+
+/* Board BSP drive encodings 6/3/4 correspond to 14/8/10 mA. */
+&mmc1_pins_default {
+	pins-cmd {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+	pins-dat {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+	pins-clk {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+};
+
+&mmc1_pins_uhs {
+	pins-cmd {
+		drive-strength = <8>;
+		mediatek,tdsel = <12>;
+	};
+	pins-dat {
+		drive-strength = <8>;
+		mediatek,tdsel = <12>;
+	};
+	pins-clk {
+		drive-strength = <10>;
+		mediatek,tdsel = <12>;
+	};
+};

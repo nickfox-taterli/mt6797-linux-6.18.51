@@ -10,7 +10,7 @@
 // handshake.  It exposes the resulting state through sysfs for bring-up and
 // testing; protocol stacks (WMT/STP, WLAN) are out of scope here.
 //
-//       power  - 1 to run the full power-on sequence, 0 to power off
+//       radio_power - 1 to run the full power-on sequence, 0 to power off
 //       chipid - read of CONN_MCU_CFG + 0x08 (0x0279 when the MCU is alive)
 
 #include <linux/bitops.h>
@@ -857,7 +857,7 @@ int mt6797_consys_wifi_emi_write(void *context, u32 offset,
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_wifi_emi_write);
 
-static ssize_t power_show(struct device *dev, struct device_attribute *attr,
+static ssize_t radio_power_show(struct device *dev, struct device_attribute *attr,
 			  char *buf)
 {
 	struct mt6797_consys *cs = dev_get_drvdata(dev);
@@ -870,7 +870,7 @@ static ssize_t power_show(struct device *dev, struct device_attribute *attr,
 	return sysfs_emit(buf, "%d\n", powered);
 }
 
-static ssize_t power_store(struct device *dev, struct device_attribute *attr,
+static ssize_t radio_power_store(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
 {
 	struct mt6797_consys *cs = dev_get_drvdata(dev);
@@ -975,7 +975,8 @@ static ssize_t emi_show(struct device *dev, struct device_attribute *attr,
 			  &base, &size, MT6797_CONSYS_WIFI_EMI_SIZE);
 }
 
-static DEVICE_ATTR_RW(power);
+/* "power" is the device PM directory when CONFIG_PM is enabled. */
+static DEVICE_ATTR_RW(radio_power);
 static DEVICE_ATTR_RO(chipid);
 static DEVICE_ATTR_RO(state);
 static DEVICE_ATTR_RO(stp_mode);
@@ -984,7 +985,7 @@ static DEVICE_ATTR_RO(last_error);
 static DEVICE_ATTR_RO(emi);
 
 static struct attribute *consys_attrs[] = {
-	&dev_attr_power.attr,
+	&dev_attr_radio_power.attr,
 	&dev_attr_chipid.attr,
 	&dev_attr_state.attr,
 	&dev_attr_stp_mode.attr,

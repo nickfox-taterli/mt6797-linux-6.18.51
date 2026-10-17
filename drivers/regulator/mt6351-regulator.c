@@ -11,6 +11,8 @@
 
 #define MT6351_LDO_VMCH_CON0	0x0a2e
 #define MT6351_VMCH_ANA_CON0	0x0ace
+#define MT6351_LDO_VEMC_CON0	0x0a28
+#define MT6351_VEMC_ANA_CON0	0x0ad2
 #define MT6351_LDO_VMC_CON0	0x0aaa
 #define MT6351_VMC_ANA_CON0	0x0ae2
 #define MT6351_LDO_VCN18_CON0	0x0a52
@@ -65,6 +67,22 @@ static const struct regulator_desc mt6351_vmch_desc = {
 	.vsel_reg = MT6351_VMCH_ANA_CON0,
 	.vsel_mask = BIT(8),
 	.enable_reg = MT6351_LDO_VMCH_CON0,
+	.enable_mask = BIT(1),
+	.ops = &mt6351_vmch_ops,
+};
+
+/* MT6797 BSP VEMC33: the same 3.0/3.3-V selector encoding as VMCH. */
+static const struct regulator_desc mt6351_vemc_desc = {
+	.name = "vemc",
+	.of_match = "ldo_vemc",
+	.regulators_node = of_match_ptr("regulators"),
+	.type = REGULATOR_VOLTAGE,
+	.owner = THIS_MODULE,
+	.n_voltages = ARRAY_SIZE(mt6351_vmch_voltages),
+	.volt_table = mt6351_vmch_voltages,
+	.vsel_reg = MT6351_VEMC_ANA_CON0,
+	.vsel_mask = BIT(8),
+	.enable_reg = MT6351_LDO_VEMC_CON0,
 	.enable_mask = BIT(1),
 	.ops = &mt6351_vmch_ops,
 };
@@ -126,6 +144,7 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 		.regmap = dev_get_regmap(pdev->dev.parent, NULL),
 	};
 	const struct regulator_desc *descs[] = {
+		&mt6351_vemc_desc,
 		&mt6351_vmch_desc,
 		&mt6351_vmc_desc,
 		&mt6351_vcn18_desc,
@@ -135,12 +154,25 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 	};
 	unsigned int i;
 	struct regulator_dev *rdev;
+	struct device_node *regulators, *vemc;
+	bool has_vemc;
 
 	if (!config.regmap)
 		return dev_err_probe(&pdev->dev, -ENODEV,
 				     "PMIC wrapper regmap is unavailable\n");
+	regulators = of_get_child_by_name(pdev->dev.of_node, "regulators");
+	vemc = of_get_child_by_name(regulators, "ldo_vemc");
+	has_vemc = !!vemc;
+	of_node_put(vemc);
+	of_node_put(regulators);
 
 	for (i = 0; i < ARRAY_SIZE(descs); i++) {
+		/*
+		 * Legacy DTs model VCC as fixed: do not register an unused,
+		 * switchable VEMC that regulator late init could turn off.
+		 */
+		if (descs[i] == &mt6351_vemc_desc && !has_vemc)
+			continue;
 		rdev = devm_regulator_register(&pdev->dev, descs[i], &config);
 		if (IS_ERR(rdev))
 			return dev_err_probe(&pdev->dev, PTR_ERR(rdev),
@@ -166,5 +198,5 @@ static struct platform_driver mt6351_regulator_driver = {
 };
 module_platform_driver(mt6351_regulator_driver);
 
-MODULE_DESCRIPTION("Minimal MT6351 VMC/VMCH/VCN regulator driver");
+MODULE_DESCRIPTION("MT6351 VEMC/VMC/VMCH/VCN regulator driver");
 MODULE_LICENSE("GPL");
