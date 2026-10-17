@@ -1657,8 +1657,17 @@ wlanAdapterStart(IN P_ADAPTER_T prAdapter,
 				nicGetMailbox(prAdapter, 0, &u4MailBox0);
 				DBGLOG(INIT, ERROR, "Waiting for Ready bit: Timeout, ID=%d\n",
 						     (u4MailBox0 & 0x0000FFFF));
-				if (wlan_firmware_trace)
-					pr_info("mt6797-wlan: ready timeout WCIR=%08x mailbox0=%08x\n", u4Value, u4MailBox0);
+				if (wlan_firmware_trace) {
+					UINT_32 lpcr, mailbox1, lengths, interrupts;
+
+					HAL_MCR_RD(prAdapter, MCR_WHLPCR, &lpcr);
+					HAL_MCR_RD(prAdapter, MCR_D2HRM1R, &mailbox1);
+					HAL_MCR_RD(prAdapter, MCR_WRPLR, &lengths);
+					HAL_MCR_RD(prAdapter, MCR_WHISR, &interrupts);
+					pr_info("mt6797-wlan: ready timeout WCIR=%08x mailbox0=%08x mailbox1=%08x LPCR=%08x RXlen=%08x ISR=%08x\n",
+						u4Value, u4MailBox0, mailbox1, lpcr, lengths, interrupts);
+					glDumpConnSysCpuInfo(prAdapter->prGlueInfo);
+				}
 				u4Status = WLAN_STATUS_FAILURE;
 				eFailReason = WAIT_FIRMWARE_READY_FAIL;
 				break;
@@ -3777,6 +3786,10 @@ WLAN_STATUS wlanImageQueryStatus(IN P_ADAPTER_T prAdapter)
 			u4Status = WLAN_STATUS_FAILURE;
 		} else {
 			prInitHifRxHeader = (P_INIT_HIF_RX_HEADER_T) aucBuffer;
+			if (wlan_firmware_trace)
+				print_hex_dump(KERN_INFO, "mt6797-wlan: download ACK ",
+					       DUMP_PREFIX_NONE, 16, 1, aucBuffer,
+					       min_t(size_t, u4RxPktLength, sizeof(aucBuffer)), false);
 
 			/* EID / SeqNum check */
 			if (prInitHifRxHeader->rInitWifiEvent.ucEID != INIT_EVENT_ID_PENDING_ERROR) {
@@ -3835,6 +3848,11 @@ WLAN_STATUS wlanImageSectionDownloadStatus(IN P_ADAPTER_T prAdapter, IN UINT_8 u
 			u4Status = WLAN_STATUS_FAILURE;
 		} else {
 			prInitHifRxHeader = (P_INIT_HIF_RX_HEADER_T) aucBuffer;
+			if (wlan_firmware_trace)
+				print_hex_dump(KERN_INFO, "mt6797-wlan: download ACK ",
+					       DUMP_PREFIX_NONE, 16, 1, aucBuffer,
+					       min_t(size_t, u4RxPktLength, sizeof(aucBuffer)), false);
+
 
 			/* EID / SeqNum check */
 			if (prInitHifRxHeader->rInitWifiEvent.ucEID != INIT_EVENT_ID_CMD_RESULT) {
