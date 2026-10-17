@@ -11,17 +11,21 @@
 
 #include <linux/errno.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/unaligned.h>
 
 #include <linux/mt6797-wlan-hif.h>
 
 #define MT6797_WLAN_HIF_LENGTH		0x1100
 #define MT6797_WLAN_HIF_CMD_SETUP	0x0000
 #define MT6797_WLAN_HIF_CMD53_DATA	0x1000
+#define MT6797_WLAN_HIF_CMD52_DATA	0x0004
+#define MT6797_WLAN_HIF_IRQ_MASK		0x0200
 
 /* CMD53 descriptor: count[8:0], addr[25:9], op[26], block[27], func[30:28], rw[31]. */
 #define CMD53_ADDR_MASK			GENMASK(16, 0)
@@ -41,6 +45,7 @@ struct mt6797_wlan_hif {
 	bool claimed;
 	bool irq_requested;
 	bool irq_enabled;
+	bool irq_tearing_down;
 	irq_handler_t irq_handler;
 	void *irq_data;
 };
@@ -102,6 +107,8 @@ int mt6797_wlan_hif_claim(struct device *client)
 		mutex_lock(&hif->lock);
 		if (hif->claimed)
 			ret = hif->owner == client ? -EALREADY : -EBUSY;
+		else if (!device_link_add(client, hif->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
+			ret = -ENOMEM;
 		else {
 			hif->owner = client;
 			hif->claimed = true;
@@ -190,6 +197,152 @@ int mt6797_wlan_hif_wcir_read(struct device *client, u32 *value)
 }
 EXPORT_SYMBOL_GPL(mt6797_wlan_hif_wcir_read);
 
+static u8 mt6797_wlan_hif_cccr_read(struct mt6797_wlan_hif *hif, u32 address)
+{
+	writel(address << CMD53_ADDR_SHIFT, hif->base + MT6797_WLAN_HIF_CMD_SETUP);
+	return readl(hif->base + MT6797_WLAN_HIF_CMD52_DATA);
+}
+
+static void mt6797_wlan_hif_cccr_write(struct mt6797_wlan_hif *hif,
+				     u32 address, u8 value)
+{
+	writel(BIT(31) | (address << CMD53_ADDR_SHIFT) | value,
+	       hif->base + MT6797_WLAN_HIF_CMD_SETUP);
+	writel(value, hif->base + MT6797_WLAN_HIF_CMD52_DATA);
+}
+
+int mt6797_wlan_hif_function(struct device *client, bool enabled)
+{
+	struct mt6797_wlan_hif *hif;
+	u8 value;
+	int ret;
+
+	ret = mt6797_wlan_hif_lock_client(client, &hif);
+	if (ret)
+		return ret;
+	/* Keep the AHB interrupt masked while CCCR/function state changes. */
+	writel(readl(hif->base + MT6797_WLAN_HIF_IRQ_MASK) | BIT(0),
+	       hif->base + MT6797_WLAN_HIF_IRQ_MASK);
+	value = mt6797_wlan_hif_cccr_read(hif, 0x02);
+	mt6797_wlan_hif_cccr_write(hif, 0x02,
+				    enabled ? value | BIT(1) : value & ~BIT(1));
+	if (enabled) {
+		ret = read_poll_timeout(mt6797_wlan_hif_cccr_read, value,
+					value & BIT(1), 100, 100000, false, hif, 0x03);
+		if (ret) {
+			value = mt6797_wlan_hif_cccr_read(hif, 0x02);
+			mt6797_wlan_hif_cccr_write(hif, 0x02, value & ~BIT(1));
+			goto out;
+		}
+		/* Function 1 FBR block size = 512, matching the BSP HIF. */
+		mt6797_wlan_hif_cccr_write(hif, 0x110, 0);
+		mt6797_wlan_hif_cccr_write(hif, 0x111, 2);
+	}
+	value = mt6797_wlan_hif_cccr_read(hif, 0x04);
+	if (enabled)
+		value |= BIT(0) | BIT(1);
+	else {
+		value &= ~BIT(1);
+		if (!(value & ~BIT(0)))
+			value = 0;
+	}
+	mt6797_wlan_hif_cccr_write(hif, 0x04, value);
+out:
+	mutex_unlock(&hif->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wlan_hif_function);
+
+int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
+			     void *buffer, size_t length)
+{
+	struct mt6797_wlan_hif *hif;
+	size_t count, position, valid;
+	u32 command, value;
+	u8 tail[4];
+	int ret;
+
+	if (!buffer || !length || port > CMD53_ADDR_MASK || (port & 3) ||
+	    length > 511 * 512)
+		return -EINVAL;
+	count = ALIGN(length, 4);
+	command = (port << CMD53_ADDR_SHIFT) | (CMD53_FUNC_WIFI << CMD53_FUNC_SHIFT);
+	if (count >= 512) {
+		count = ALIGN(count, 512);
+		command |= BIT(27) | (count / 512);
+	} else {
+		command |= count;
+	}
+	if (write)
+		command |= BIT(31);
+	ret = mt6797_wlan_hif_lock_client(client, &hif);
+	if (ret)
+		return ret;
+	writel(command, hif->base + MT6797_WLAN_HIF_CMD_SETUP);
+	for (position = 0; position < count; position += sizeof(value)) {
+		valid = position < length ? min(sizeof(value), length - position) : 0;
+		if (write) {
+			memset(tail, 0, sizeof(tail));
+			if (valid)
+				memcpy(tail, (u8 *)buffer + position, valid);
+			writel(get_unaligned_le32(tail), hif->base + MT6797_WLAN_HIF_CMD53_DATA);
+		} else {
+			value = readl(hif->base + MT6797_WLAN_HIF_CMD53_DATA);
+			put_unaligned_le32(value, tail);
+			if (valid)
+				memcpy((u8 *)buffer + position, tail, valid);
+		}
+	}
+	mutex_unlock(&hif->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_wlan_hif_transfer);
+
+int mt6797_wlan_hif_mask_irq(struct device *client, bool masked)
+{
+	struct mt6797_wlan_hif *hif;
+	u32 value;
+	int ret;
+
+	ret = mt6797_wlan_hif_lock_client(client, &hif);
+	if (ret)
+		return ret;
+	value = readl(hif->base + MT6797_WLAN_HIF_IRQ_MASK);
+	writel(masked ? value | BIT(0) : value & ~BIT(0),
+	       hif->base + MT6797_WLAN_HIF_IRQ_MASK);
+	mutex_unlock(&hif->lock);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_wlan_hif_mask_irq);
+
+int mt6797_wlan_hif_request_threaded_irq(struct device *client,
+			irq_handler_t thread, const char *name, void *data)
+{
+	struct mt6797_wlan_hif *hif;
+	int ret;
+
+	if (!thread)
+		return -EINVAL;
+	ret = mt6797_wlan_hif_lock_client(client, &hif);
+	if (ret)
+		return ret;
+	if (hif->irq_requested)
+		ret = -EBUSY;
+	else {
+		ret = request_threaded_irq(hif->irq, NULL, thread,
+					   IRQF_ONESHOT | IRQF_NO_AUTOEN, name, data);
+		if (!ret) {
+			hif->irq_requested = true;
+			hif->irq_enabled = false;
+			hif->irq_handler = thread;
+			hif->irq_data = data;
+		}
+	}
+	mutex_unlock(&hif->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wlan_hif_request_threaded_irq);
+
 int mt6797_wlan_hif_request_irq(struct device *client, irq_handler_t handler,
 				unsigned long flags, const char *name, void *data)
 {
@@ -231,15 +384,19 @@ int mt6797_wlan_hif_free_irq(struct device *client, void *data)
 		return ret;
 	if (!hif->irq_requested)
 		ret = -EINVAL;
+	else if (hif->irq_tearing_down)
+		ret = -EBUSY;
 	else if (data != hif->irq_data)
 		ret = -EPERM;
 	else {
-		if (hif->irq_enabled) {
-			disable_irq(hif->irq);
-			hif->irq_enabled = false;
-		}
+		hif->irq_tearing_down = true;
+		mutex_unlock(&hif->lock);
+		/* The IRQ thread may need the command lock while being drained. */
 		free_irq(hif->irq, hif->irq_data);
+		mutex_lock(&hif->lock);
 		hif->irq_requested = false;
+		hif->irq_enabled = false;
+		hif->irq_tearing_down = false;
 		hif->irq_handler = NULL;
 		hif->irq_data = NULL;
 	}
@@ -258,6 +415,8 @@ int mt6797_wlan_hif_enable_irq(struct device *client)
 		return ret;
 	if (!hif->irq_requested)
 		ret = -EINVAL;
+	else if (hif->irq_tearing_down)
+		ret = -EBUSY;
 	else if (!hif->irq_enabled) {
 		enable_irq(hif->irq);
 		hif->irq_enabled = true;
@@ -277,9 +436,15 @@ int mt6797_wlan_hif_disable_irq(struct device *client)
 		return ret;
 	if (!hif->irq_requested)
 		ret = -EINVAL;
+	else if (hif->irq_tearing_down)
+		ret = -EBUSY;
 	else if (hif->irq_enabled) {
-		disable_irq(hif->irq);
+		hif->irq_tearing_down = true;
 		hif->irq_enabled = false;
+		mutex_unlock(&hif->lock);
+		disable_irq(hif->irq);
+		mutex_lock(&hif->lock);
+		hif->irq_tearing_down = false;
 	}
 	mutex_unlock(&hif->lock);
 	return ret;

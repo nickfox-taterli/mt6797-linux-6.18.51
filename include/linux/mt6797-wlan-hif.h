@@ -25,6 +25,12 @@ int mt6797_wlan_hif_release(struct device *client);
 int mt6797_wlan_hif_pio_read(struct device *client, u32 address, u32 *value);
 int mt6797_wlan_hif_pio_write(struct device *client, u32 address, u32 value);
 int mt6797_wlan_hif_wcir_read(struct device *client, u32 *value);
+int mt6797_wlan_hif_function(struct device *client, bool enabled);
+int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
+			     void *buffer, size_t length);
+int mt6797_wlan_hif_mask_irq(struct device *client, bool masked);
+int mt6797_wlan_hif_request_threaded_irq(struct device *client,
+			irq_handler_t thread, const char *name, void *data);
 
 /* IRQ ownership is separate from the HIF claim and is explicitly deferred. */
 int mt6797_wlan_hif_request_irq(struct device *client, irq_handler_t handler,
