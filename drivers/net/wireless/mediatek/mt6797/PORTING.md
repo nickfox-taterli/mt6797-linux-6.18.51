@@ -1,54 +1,66 @@
-# MT6797 gen3 development checkpoint
+# MT6797 gen3 port checkpoint
 
 The protocol core comes from the project-local MediaTek 3.18 BSP at
 `X20-96-board/kernel-3.18/drivers/misc/mediatek/connectivity/wlan/gen3`.
-Keep its STA, AP, P2P, security and management implementations while adapting
-the selected Linux/AHB path to 6.18. This is an experimental driver.
+AIS/SAA, static AP/P2P roles and firmware CCMP remain in that framework;
+Linux 6.18 cfg80211 and the owned ConSys/WMT/HIF providers supply the host API.
+Firmware uses request_firmware. NVRAM accepts a checked 512-byte NVMEM record
+or read-only firmware fallback. The official default record is not this
+board's factory calibration. Workspace tests derive and persist distinct
+board-assigned WiFi/BT addresses from eMMC CID while preserving other bytes.
 
-The native AHB glue uses the owned ConSys/WMT/HIF providers. Firmware loading
-uses request_firmware; NVRAM uses a 512-byte NVMEM cell, with an explicit
-read-only firmware fallback. Opaque WMT calibration is retained by the shared
-provider. Mainline cfg80211, timer, wakeup, file, proc and frequency-QoS APIs
-replace the corresponding obsolete platform calls.
+## Implemented and tested on 2026-10-18
 
-Verified on 2026-10-17: ARM64 module linking; bounded firmware validation,
-NVRAM and PIO fault tests; board WMT initialization/calibration, HIF claim,
-two IDLM download acknowledgements, bounded EMI writes and failure teardown.
-Module unload works after a failed probe. The UART rescue Preloader must run the normal master-domain initialization:
-without it ConSys cannot read its protected EMI firmware. With Preloader
-fa68e7a, ROM reads match both EMI section headers and firmware starts;
-wlan0/p2p0 are present. A standard iw scan returned 21 BSS entries, including
-the laboratory SSIDs on 2432 and 5200 MHz. Laboratory 2.4-GHz WPA2/CCMP with
-PMF, DHCP, build-host SSH, Q6A bidirectional ping and hash-verified SFTP in both
-directions now pass. An initial upload reset is retained as a failure. After reserving the BSP secure
-64 KiB DRAM area, ordinary SysV tests passed for laboratory 2.4-GHz STA,
-5-GHz WPA2 STA to Q6A, and MTK AP to Q6A STA, each with 96 MiB of bidirectional
-SHA-verified SFTP. A successful WLAN/WMT unload, full power-off and reload
-passed, followed by three STA reconnects. Minute-scale bandwidth testing is
-now in progress; first measurements exposed a missing BSP CPUxGPT divide-by-two
-initialization, corrected in the RAM ATF before repeating duration tests. Module load returning zero does
-not imply the platform device bound successfully.
+- Standard dual-band STA, WPA2/CCMP/PMF, HT20/HT40/VHT80 and static AP have
+  real X20/Q6A data evidence. VHT wiphy capabilities and air IEs share policy:
+  NSS1 MCS0..9, remaining streams unsupported; no 160/80+80 declaration.
+- AHB FIFO APDMA uses an aligned coherent bounce buffer, actual physical
+  address bit32, bounded fast polling plus slow completion/reset. The X20
+  storage DT selects it at probe. Diagnostic DTs keep PIO. The sysfs
+  `180f0000.wifi/transfer_mode` control changes mode only between sessions.
+  Dual DMA with BTIF passed each-direction 210-second SHA streams at about
+  145.9/118.4 Mbps on the Q6A VHT80 fixture, with zero DMA faults.
+- Native BTIF DMA/VFIFO, standard HCI, encrypted BR/EDR L2CAP and BLE
+  central/peripheral GATT passed with independent peer SHA checks and WLAN
+  load. BlueZ uses the qualified 4000-ms LE supervision policy; the original
+  420-ms RF/coexistence gap is not claimed fixed. Firmware DLE/privacy/ECC
+  event limitations remain; do not enable unsupported feature bits.
+- WMT coordinates bounded shared recovery across both consumers, power-off,
+  firmware/calibration and re-probe. Native udev/SysV restores association,
+  fixed IP and HCI. Manual and real-send provider-error injection passed,
+  followed by WiFi and saved-pair GATT data. This is not a DMA-hardware-hang
+  or every firmware-fault qualification.
+- STP/WMT PSM performs firmware sleep/host-ack, the real BTIF wake edge and
+  BGF peer wake. It drains TX, masks/synchronizes IRQ, retains VFIFO storage,
+  releases this consumer's clocks and restores clocks before wake protocol.
+  Clock-off peer wake plus 180-second encrypted GATT/WLAN overlap passed.
+  Native integration selects PSM auto after association. Shared APDMA may
+  remain clocked for other consumers; system suspend/CPU_OFF is not qualified.
 
-An opt-in AP-DMA backend now preserves the dedicated MT6797 BSP channel
-programming, using a coherent bounce buffer, bounded completion/reset and
-failure propagation. PIO remains the default; `180f0000.wifi/transfer_mode`
-can select DMA only between WLAN sessions. Real-function fault tests and
-ARM64 compilation pass. Board DMA completed 13 FIFO transfers with valid
-configuration ACKs, but firmware-ready still timed out, as with PIO in the
-same kernel. Failure teardown returned the channel and ConSys power. This
-is not evidence of firmware execution or wireless traffic.
+## WPA3-Personal STA
 
-The first netdev open exposed legacy direct dev_addr writes. STA, static P2P,
-and retained BOW/role creation now use eth_hw_addr_set to maintain the kernel's
-address list and shadow. ARM64 modules link; replacement and wlan0 open passed
-without a new dev_addr warning. Warnings while unloading the preceding module
-describe its old address state, not the replacement.
+The user explicitly added SAE to the scope on 2026-10-18, superseding its
+previous exclusion. Standard cfg80211 external_auth lets unmodified
+wpa_supplicant 2.10 perform SAE; management frames use standard mgmt_tx/rx.
+Completion returns through the adapter mailbox and checks JOIN/state,
+BSSID/SSID and STA lifetime. Bounded timeout/cancel sends the original auth
+identity back to userspace. RSNXE H2E and optional PMKID are bounded/copied;
+firmware retains its RSN/CCMP/key-installation ABI, with the actual SAE RSNE.
 
-Remaining work includes sustained traffic/recovery, AP-DMA validation, dynamic
-virtual interfaces, AP station statistics/dump, P2P negotiation, factory calibration
-provenance, shared fault recovery and power management. Static AP has real peer
-data evidence; this does not validate P2P negotiation. Native Bluetooth now has
-real LE central pairing and GATT traffic while WLAN is associated, but fast BT
-off/on exposed a shared firmware failure; concurrent load and lifecycle recovery
-remain open. Unsafe raw diagnostic mappings remain unavailable
-until they have an owned mapping. Do not treat this checkpoint as a release.
+`sae_external_auth=1` is the default; zero disables the STA-only SAE feature.
+Only RSN/CCMP with required PMF and userspace external_auth is accepted.
+AP/P2P do not advertise SAE. No FT-SAE, SAE-PK or WPA3-Enterprise expansion.
+Q6A SAE-only/PMF and Xiaomi_F5F6 H2E/Group19 passed; wrong password rejected,
+three uncached reconnects passed, and each-direction 180-second streams
+matched full SHA (about 187.2/51.8 Mbps on that laboratory AP).
+
+Evidence and the final boot-integration state are in the workspace
+`docs/bsp/20261018-alignment/{DMA,RECOVERY,SAE,STORAGE}.md` and release manifests.
+A successful module load is not proof that a device bound. Retain UART/RAM
+rescue when replacing built-in providers, DTs or a different kernel ABI.
+
+Remaining qualifications include P2P negotiation/concurrency, roaming/TDLS,
+DFS roles, additional media/thermal conditions and system PM's ATF prerequisite.
+Dynamic VIF, AP station dump/statistics and scheduled scan are BSP interface
+limitations or optional integration, not enabled by these changes. Unsafe
+raw diagnostic mappings remain unavailable without an owned mapping.
