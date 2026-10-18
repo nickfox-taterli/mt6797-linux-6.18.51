@@ -1,0 +1,38 @@
+MT6797 BSP AutoK import
+======================
+
+Source: X20-96-board, commit de3e0196cc3799775052af899c90f9a105e07492,
+kernel-3.18/drivers/mmc/host/mediatek/mt6797/.
+
+autok.c is the complete BSP source. The only edit rejects a fifth boundary
+before the original parser writes past bd_info[4]. The original rejection
+after that write was too late. No valid scan, filter, edge, delay, cycle,
+latch, repeat count, platform constant or fallback rule has been changed.
+There is no added window-selection algorithm or card-specific parameter.
+
+autok.h and sync_write.h are byte-identical to the BSP. msdc_reg.h changes
+only the include path of sync_write.h. tune-path.h contains the verbatim
+msdc_init_tune_path() from msdc_tune.c. mt_sd.h supplies the small host view
+needed by AutoK and copies the original bit-field/MMIO helpers verbatim.
+
+The outer mtk-sd-mt6797-autok.c adapter supplies the removed timeval API for
+elapsed-time logging, declarations required by the modern compiler, and
+the mainline host layout. The tuning sender still polls the controller
+directly, including its resets, FIFO handling, interrupt status, and latch
+test. It is not replaced with mmc_send_tuning(). The adapter sets/restores
+PIO mode for that sender and propagates failures to the modern MMC core.
+
+mtk-sd.c routes removable MT6797 SDR104 through this implementation. Modern
+MMC core retune requests rerun the original BSP re-AutoK operation; clock
+changes reapply the saved BSP parameter array. A power-off discards that
+card's result. PAD_TUNE1 is preserved across runtime PM, like the BSP timing
+save/restore. eMMC tuning is unchanged. Imported offline/eMMC entry points
+are not called by this integration.
+
+Run x20-sbc/tools/test-mt6797-bsp-autok-import.py from the X20 workspace to
+check the entire imported source against the BSP and the declared edits.
+The original BSP fallthrough in autok_pad_dly_sel() is deliberately retained;
+modern GCC reports -Wimplicit-fallthrough there.
+
+Building and matching sources do not prove SD stability. See the workspace
+docs/bsp/20261018-alignment/bsp-autok-* evidence for actual acceptance.
