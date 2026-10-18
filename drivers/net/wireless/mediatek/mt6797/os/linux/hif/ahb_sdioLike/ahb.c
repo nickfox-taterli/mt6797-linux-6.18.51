@@ -312,34 +312,7 @@ int mt6797_wlan_restart(void)
 		ret = -ENODEV;
 		goto out;
 	}
-	if (bus->glue)
-		wlan_remove();
-	if (bus->function) {
-		ret = mt6797_wlan_hif_function(dev, false);
-		if (ret)
-			goto out;
-		bus->function = false;
-	}
-	ret = mt6797_wmt_client_close(bus->wmt);
-	if (ret)
-		goto out;
-	ret = mt6797_wmt_client_open(bus->wmt);
-	if (ret)
-		goto out;
-	ret = mt6797_wlan_hif_function(dev, true);
-	if (ret)
-		goto close;
-	bus->function = true;
-	WRITE_ONCE(fgIsResetting, FALSE);
-	if (wlan_probe(dev) == WLAN_STATUS_SUCCESS) {
-		ret = 0;
-		goto out;
-	}
-	mt6797_wlan_hif_function(dev, false);
-	bus->function = false;
-	ret = -EIO;
-close:
-	mt6797_wmt_client_close(bus->wmt);
+	ret = mt6797_wmt_client_recover(bus->wmt, -EIO);
 out:
 	device_unlock(dev);
 	put_device(dev);

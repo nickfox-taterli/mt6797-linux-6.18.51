@@ -12,6 +12,7 @@
 #include <linux/property.h>
 #include <linux/slab.h>
 #include <linux/srcu.h>
+#include <linux/workqueue.h>
 
 #include <linux/mt6797-consys.h>
 #include <linux/mt6797-stp-session.h>
@@ -25,6 +26,13 @@ struct mt6797_wmt {
 	struct kref ref;
 	struct srcu_struct rx_srcu;
 	struct mt6797_wmt_client __rcu *clients[4];
+	struct device *radios[4];
+	struct work_struct recovery_work;
+	bool recovery_pending;
+	bool reprobing;
+	unsigned int recovery_generation;
+	unsigned long last_recovery;
+	int recovery_result;
 	struct mt6797_stp_session *session;
 	struct mt6797_wmt_config config;
 	struct mt6797_wmt_calibration calibration;
@@ -33,6 +41,11 @@ struct mt6797_wmt {
 	int error;
 	bool removed;
 };
+
+/* Protect drvdata lookup independently of the supplier device lock. Recovery
+ * holds that device lock while rebinding consumers through their normal probe.
+ */
+static DEFINE_MUTEX(mt6797_wmt_lookup_lock);
 
 struct mt6797_wmt_client {
 	struct mt6797_wmt *wmt;
@@ -47,6 +60,8 @@ static void mt6797_wmt_release(struct kref *ref)
 	struct mt6797_wmt *wmt = container_of(ref, struct mt6797_wmt, ref);
 
 	cleanup_srcu_struct(&wmt->rx_srcu);
+	for (int task = 0; task < ARRAY_SIZE(wmt->radios); task++)
+		put_device(wmt->radios[task]);
 	put_device(wmt->btif);
 	put_device(wmt->consys);
 	put_device(wmt->dev);
@@ -121,6 +136,115 @@ fail:
 	return ret;
 }
 
+/* One whole-chip attempt, with no WMT mutex held across consumer callbacks.
+ * Driver removal drains HCI/WLAN work and RX before the last client releases
+ * STP and ConSys. Reprobe then reloads firmware and restores native devices.
+ */
+static void mt6797_wmt_recovery_work(struct work_struct *work)
+{
+	struct mt6797_wmt *wmt = container_of(work, struct mt6797_wmt, recovery_work);
+	struct device *radios[4] = {};
+	unsigned int task, count = 0;
+	int ret = 0, attached;
+	bool locked;
+
+	/* Supplier removal may be holding this lock and waiting for this work.
+	 * Never wait on it: removal owns teardown if it wins this race.
+	 */
+	locked = device_trylock(wmt->dev);
+	mutex_lock(&wmt->lock);
+	if (!locked || wmt->removed) {
+		ret = wmt->removed ? -ENODEV : -EBUSY;
+		goto finish;
+	}
+	for (task = 0; task < ARRAY_SIZE(radios); task++) {
+		if (wmt->radios[task] && device_is_registered(wmt->radios[task])) {
+			radios[task] = get_device(wmt->radios[task]);
+			count++;
+		}
+	}
+	if (!count) {
+		ret = -ENODEV;
+		goto finish;
+	}
+	wmt->recovery_generation++;
+	dev_warn(wmt->dev, "whole-chip recovery %u: quiescing %u radios\n",
+		 wmt->recovery_generation, count);
+	/* Quiescing is gated by recovery_pending, so retain only errors from
+	 * this teardown, not a stale fault from an earlier failed attempt.
+	 */
+	wmt->error = 0;
+	mutex_unlock(&wmt->lock);
+	for (task = 0; task < ARRAY_SIZE(radios); task++)
+		if (radios[task])
+			device_release_driver(radios[task]);
+	mutex_lock(&wmt->lock);
+	if (wmt->users || wmt->session || wmt->host) {
+		ret = -EBUSY;
+		goto finish;
+	}
+	if (wmt->error) {
+		ret = wmt->error;
+		goto finish;
+	}
+	wmt->reprobing = true;
+	mutex_unlock(&wmt->lock);
+	for (task = 0; task < ARRAY_SIZE(radios); task++) {
+		if (!radios[task])
+			continue;
+		attached = device_attach(radios[task]);
+		if (attached != 1 && !ret)
+			ret = attached < 0 ? attached : -ENODEV;
+	}
+	if (ret) {
+		/* A partial reprobe must not leave one radio using a failed MCU. */
+		for (task = 0; task < ARRAY_SIZE(radios); task++)
+			if (radios[task])
+				device_release_driver(radios[task]);
+	}
+	mutex_lock(&wmt->lock);
+finish:
+	wmt->recovery_result = ret;
+	wmt->error = ret;
+	wmt->reprobing = false;
+	wmt->recovery_pending = false;
+	mutex_unlock(&wmt->lock);
+	if (locked)
+		device_unlock(wmt->dev);
+	for (task = 0; task < ARRAY_SIZE(radios); task++)
+		put_device(radios[task]);
+	dev_info(wmt->dev, "whole-chip recovery %u %s: %d\n",
+		 wmt->recovery_generation, ret ? "failed" : "complete", ret);
+	if (!ret) {
+		char *env[] = { "X20_RECOVERY=complete", NULL };
+
+		/* Network policy belongs to userspace; the new netdev has no IP. */
+		kobject_uevent_env(&wmt->dev->kobj, KOBJ_CHANGE, env);
+	}
+}
+
+/* lock held. Terminal errors schedule one attempt, never a reset loop. A
+ * failed attempt requires an explicit retry; successful ones have a cooldown.
+ */
+static int mt6797_wmt_queue_recovery(struct mt6797_wmt *wmt, int reason, bool manual)
+{
+	if (wmt->removed)
+		return -ENODEV;
+	if (wmt->recovery_pending)
+		return -EALREADY;
+	wmt->error = reason;
+	if (!manual && (wmt->recovery_result ||
+	    (wmt->last_recovery && time_before(jiffies, wmt->last_recovery + 30 * HZ))))
+		return -EAGAIN;
+	wmt->recovery_pending = true;
+	wmt->last_recovery = jiffies;
+	if (!schedule_work(&wmt->recovery_work)) {
+		wmt->recovery_pending = false;
+		return -EBUSY;
+	}
+	return 0;
+}
+
 struct mt6797_wmt_client *mt6797_wmt_client_get(struct device *dev, u8 task,
 				const struct mt6797_wmt_client_ops *ops, void *context)
 {
@@ -128,6 +252,7 @@ struct mt6797_wmt_client *mt6797_wmt_client_get(struct device *dev, u8 task,
 	struct platform_device *pdev;
 	struct device_node *node;
 	struct mt6797_wmt *wmt;
+	struct device *old_radio = NULL;
 	int ret;
 
 	if (!dev || (task != MT6797_STP_TASK_BT && task != MT6797_STP_TASK_WIFI))
@@ -139,11 +264,11 @@ struct mt6797_wmt_client *mt6797_wmt_client_get(struct device *dev, u8 task,
 	of_node_put(node);
 	if (!pdev)
 		return ERR_PTR(-EPROBE_DEFER);
-	device_lock(&pdev->dev);
+	mutex_lock(&mt6797_wmt_lookup_lock);
 	wmt = platform_get_drvdata(pdev);
 	if (wmt)
 		kref_get(&wmt->ref);
-	device_unlock(&pdev->dev);
+	mutex_unlock(&mt6797_wmt_lookup_lock);
 	if (!wmt) {
 		ret = -EPROBE_DEFER;
 		goto put_device;
@@ -168,10 +293,15 @@ struct mt6797_wmt_client *mt6797_wmt_client_get(struct device *dev, u8 task,
 	else if (rcu_access_pointer(wmt->clients[task]))
 		ret = -EBUSY;
 	else {
+		if (wmt->radios[task] != dev) {
+			old_radio = wmt->radios[task];
+			wmt->radios[task] = get_device(dev);
+		}
 		rcu_assign_pointer(wmt->clients[task], client);
 		ret = 0;
 	}
 	mutex_unlock(&wmt->lock);
+	put_device(old_radio);
 	if (!ret) {
 		put_device(&pdev->dev);
 		return client;
@@ -196,6 +326,10 @@ int mt6797_wmt_client_open(struct mt6797_wmt_client *client)
 	mutex_lock(&wmt->lock);
 	if (wmt->removed) {
 		ret = -ENODEV;
+		goto out;
+	}
+	if (wmt->recovery_pending && !wmt->reprobing) {
+		ret = -EAGAIN;
 		goto out;
 	}
 	if (client->active) {
@@ -248,7 +382,7 @@ int mt6797_wmt_client_close(struct mt6797_wmt_client *client)
 	WRITE_ONCE(client->active, false);
 	if (wmt->removed)
 		goto out;
-	if (client->task == MT6797_STP_TASK_BT)
+	if (client->task == MT6797_STP_TASK_BT && !wmt->recovery_pending)
 		ret = mt6797_wmt_function_control(wmt->dev, wmt->session,
 						 client->task, false);
 	cleanup_ret = mt6797_consys_radio_power(wmt->host, client->task, false, NULL);
@@ -297,15 +431,32 @@ int mt6797_wmt_client_send(struct mt6797_wmt_client *client,
 	mutex_lock(&wmt->lock);
 	if (wmt->removed || !client->active)
 		ret = -ESHUTDOWN;
+	else if (wmt->recovery_pending && !wmt->reprobing)
+		ret = -EAGAIN;
 	else if (wmt->error)
 		ret = wmt->error;
 	else
 		ret = mt6797_stp_session_send(wmt->session, client->task, data, length,
 					     msecs_to_jiffies(2000));
+	if (ret == -ETIMEDOUT || ret == -EIO || ret == -EPROTO || ret == -ENOBUFS)
+		mt6797_wmt_queue_recovery(wmt, ret, false);
 	mutex_unlock(&wmt->lock);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_wmt_client_send);
+
+int mt6797_wmt_client_recover(struct mt6797_wmt_client *client, int reason)
+{
+	int ret;
+
+	if (!client || reason >= 0)
+		return -EINVAL;
+	mutex_lock(&client->wmt->lock);
+	ret = mt6797_wmt_queue_recovery(client->wmt, reason, false);
+	mutex_unlock(&client->wmt->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wmt_client_recover);
 
 int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 			    const void *data, size_t length)
@@ -319,6 +470,8 @@ int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 	mutex_lock(&wmt->lock);
 	if (wmt->removed || !client->active)
 		ret = -ESHUTDOWN;
+	else if (wmt->recovery_pending && !wmt->reprobing)
+		ret = -EAGAIN;
 	else
 		ret = mt6797_consys_wifi_emi_write(wmt->host, offset, data, length);
 	mutex_unlock(&wmt->lock);
@@ -337,6 +490,8 @@ int mt6797_wmt_client_version(struct mt6797_wmt_client *client, u32 *hw, u32 *fw
 	mutex_lock(&wmt->lock);
 	if (wmt->removed || !client->active)
 		ret = -ESHUTDOWN;
+	else if (wmt->recovery_pending && !wmt->reprobing)
+		ret = -EAGAIN;
 	else {
 		*hw = wmt->calibration.hw_version;
 		*fw = wmt->calibration.fw_version;
@@ -357,6 +512,8 @@ int mt6797_wmt_client_cpupcr(struct mt6797_wmt_client *client, u32 *value)
 	mutex_lock(&wmt->lock);
 	if (wmt->removed || !client->active)
 		ret = -ESHUTDOWN;
+	else if (wmt->recovery_pending && !wmt->reprobing)
+		ret = -EAGAIN;
 	else
 		ret = mt6797_consys_read_cpupcr(wmt->host, value);
 	mutex_unlock(&wmt->lock);
@@ -386,6 +543,52 @@ static struct device *mt6797_wmt_provider(struct device *dev, const char *name)
 	}
 	return &pdev->dev;
 }
+
+static ssize_t recovery_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct mt6797_wmt *wmt = dev_get_drvdata(dev);
+	const char *state;
+	ssize_t length;
+
+	mutex_lock(&wmt->lock);
+	state = wmt->recovery_pending ? (wmt->reprobing ? "reprobing" : "quiescing") :
+		(wmt->recovery_result ? "failed" : wmt->error ? "fault" : "idle");
+	length = sysfs_emit(buf, "%s generation=%u result=%d error=%d users=%u\n", state,
+			   wmt->recovery_generation, wmt->recovery_result, wmt->error, wmt->users);
+	mutex_unlock(&wmt->lock);
+	return length;
+}
+
+static ssize_t recovery_store(struct device *dev, struct device_attribute *attr,
+			      const char *buf, size_t count)
+{
+	struct mt6797_wmt *wmt = dev_get_drvdata(dev);
+	int ret;
+
+	if (!sysfs_streq(buf, "recover") &&
+	    !(IS_ENABLED(CONFIG_FAULT_INJECTION) && sysfs_streq(buf, "fault")))
+		return -EINVAL;
+	mutex_lock(&wmt->lock);
+	if (sysfs_streq(buf, "fault")) {
+		if (!wmt->session || !wmt->users || wmt->recovery_pending)
+			ret = -EBUSY;
+		else {
+			/* Latch a provider failure, not an arbitrary MMIO fault. The
+			 * next real radio send exercises automatic error recovery.
+			 */
+			wmt->error = -EIO;
+			ret = 0;
+		}
+	} else {
+		ret = mt6797_wmt_queue_recovery(wmt, -ECANCELED, true);
+	}
+	mutex_unlock(&wmt->lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(recovery);
+static struct attribute *mt6797_wmt_attrs[] = { &dev_attr_recovery.attr, NULL };
+ATTRIBUTE_GROUPS(mt6797_wmt);
 
 static int mt6797_wmt_probe(struct platform_device *pdev)
 {
@@ -419,7 +622,10 @@ static int mt6797_wmt_probe(struct platform_device *pdev)
 	wmt->dev = get_device(&pdev->dev);
 	kref_init(&wmt->ref);
 	mutex_init(&wmt->lock);
+	INIT_WORK(&wmt->recovery_work, mt6797_wmt_recovery_work);
+	mutex_lock(&mt6797_wmt_lookup_lock);
 	platform_set_drvdata(pdev, wmt);
+	mutex_unlock(&mt6797_wmt_lookup_lock);
 	dev_info(&pdev->dev, "shared WMT ready; firmware starts with the first radio client\n");
 	return 0;
 put_btif:
@@ -437,9 +643,14 @@ static void mt6797_wmt_remove(struct platform_device *pdev)
 	struct mt6797_wmt_client *client;
 	unsigned int task;
 
+	mutex_lock(&mt6797_wmt_lookup_lock);
 	platform_set_drvdata(pdev, NULL);
+	mutex_unlock(&mt6797_wmt_lookup_lock);
 	mutex_lock(&wmt->lock);
 	wmt->removed = true;
+	mutex_unlock(&wmt->lock);
+	cancel_work_sync(&wmt->recovery_work);
+	mutex_lock(&wmt->lock);
 	for (task = 0; task < ARRAY_SIZE(wmt->clients); task++) {
 		client = rcu_dereference_protected(wmt->clients[task],
 						 lockdep_is_held(&wmt->lock));
@@ -464,6 +675,7 @@ static struct platform_driver mt6797_wmt_driver = {
 	.driver = {
 		.name = "mt6797-wmt",
 		.of_match_table = mt6797_wmt_of_match,
+		.dev_groups = mt6797_wmt_groups,
 	},
 };
 module_platform_driver(mt6797_wmt_driver);

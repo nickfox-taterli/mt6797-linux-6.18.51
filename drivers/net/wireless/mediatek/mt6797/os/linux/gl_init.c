@@ -2069,6 +2069,19 @@ static VOID wlanNetUnregister(struct wireless_dev *prWdev)
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(prWdev->wiphy);
 
+	/* Removal has drained the WLAN threads and stopped firmware access.
+	 * Report a local disconnect before unregister processes pending events;
+	 * it cannot obtain a deauthentication response from a halted MCU.
+	 */
+	wiphy_lock(prWdev->wiphy);
+	if ((prWdev->iftype == NL80211_IFTYPE_STATION ||
+	     prWdev->iftype == NL80211_IFTYPE_P2P_CLIENT) && prWdev->connected) {
+		cfg80211_disconnected(prWdev->netdev, WLAN_REASON_DEAUTH_LEAVING,
+				      NULL, 0, true, GFP_KERNEL);
+		prGlueInfo->eParamMediaStateIndicated = PARAM_MEDIA_STATE_DISCONNECTED;
+	}
+	wiphy_unlock(prWdev->wiphy);
+	netif_carrier_off(prWdev->netdev);
 	wlanClearDevIdx(prWdev->netdev);
 	unregister_netdev(prWdev->netdev);
 

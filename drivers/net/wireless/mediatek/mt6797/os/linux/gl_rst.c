@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Recover WLAN through its Linux lifecycle, preserving other WMT clients.
- * A terminal shared MCU/STP fault still requires coordinated radio recovery;
- * WLAN restart reports that failure rather than claiming a whole-chip reset.
- */
+/* A firmware assertion requests asynchronous shared WMT radio recovery. */
 #include "precomp.h"
 
 BOOLEAN fgIsResetting;
@@ -21,7 +18,7 @@ static void wlan_reset_work(struct work_struct *work)
 	if (ret)
 		pr_err("mt6797-wlan: recovery failed: %d\n", ret);
 	else
-		pr_info("mt6797-wlan: WLAN lifecycle recovery complete\n");
+		pr_info("mt6797-wlan: shared radio recovery requested\n");
 }
 
 VOID glResetInit(VOID)

@@ -367,6 +367,9 @@ int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, int link_
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
+	/* Adapter teardown destroys its key state; firmware is already halted. */
+	if (test_bit(GLUE_FLAG_HALT_BIT, &prGlueInfo->ulFlag))
+		return 0;
 
 #if DBG
 	DBGLOG(RSN, TRACE, "mtk_cfg80211_del_key\n");
@@ -1095,6 +1098,9 @@ int mtk_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *ndev, u16 re
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
+	/* Forced driver teardown already queued the local disconnect event. */
+	if (test_bit(GLUE_FLAG_HALT_BIT, &prGlueInfo->ulFlag))
+		return 0;
 
 	rStatus = kalIoctl(prGlueInfo, wlanoidSetDisassociate, NULL, 0, FALSE, FALSE, TRUE, &u4BufLen);
 

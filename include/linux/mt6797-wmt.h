@@ -20,6 +20,8 @@ int mt6797_wmt_client_open(struct mt6797_wmt_client *client);
 int mt6797_wmt_client_close(struct mt6797_wmt_client *client);
 int mt6797_wmt_client_send(struct mt6797_wmt_client *client,
 			   const void *data, size_t length);
+/* Queue a bounded reset of all registered radios; completion is asynchronous. */
+int mt6797_wmt_client_recover(struct mt6797_wmt_client *client, int reason);
 int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 			    const void *data, size_t length);
 int mt6797_wmt_client_version(struct mt6797_wmt_client *client, u32 *hw, u32 *fw);
