@@ -5,7 +5,6 @@
  */
 
 #include <linux/module.h>
-#include <linux/atomic.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/clk.h>
@@ -37,7 +36,6 @@
 
 #include "cqhci.h"
 #include "mmc_hsq.h"
-#include "mtk-sd-autok.h"
 
 #define MAX_BD_NUM          1024
 #define MSDC_NR_CLOCKS      3
@@ -468,7 +466,6 @@ struct msdc_save_para {
 	u32 iocon;
 	u32 sdc_cfg;
 	u32 pad_tune;
-	u32 pad_tune1;
 	u32 patch_bit0;
 	u32 patch_bit1;
 	u32 patch_bit2;
@@ -509,7 +506,6 @@ struct mtk_mmc_compatible {
 struct msdc_tune_para {
 	u32 iocon;
 	u32 pad_tune;
-	u32 pad_tune1;
 	u32 pad_cmd_tune;
 	u32 emmc_top_control;
 	u32 emmc_top_cmd;
@@ -570,14 +566,6 @@ struct msdc_host {
 	unsigned char timing;
 	bool vqmmc_enabled;
 	u32 latch_ck;
-	u32 autok_cmd_cycle;
-	bool hs400_tuned;
-	u32 sd_original_caps;
-	bool sd_caps_saved, sd_recovery_busy;
-	unsigned int sd_retunes, sd_degrades;
-#ifdef CONFIG_FAULT_INJECTION
-	atomic_t fault_crc_requests;
-#endif
 	u32 hs400_ds_delay;
 	u32 hs400_ds_dly3;
 	u32 hs200_cmd_int_delay; /* cmd internal delay for HS200/SDR104 */
@@ -1612,15 +1600,6 @@ static void msdc_new_tx_setting(struct msdc_host *host)
 	writel(val, host->top_base + LOOP_TEST_CONTROL);
 }
 
-/* Keep removable SD on the pre-AutoK, multi-card-tested SDR104 path.
- * The new BSP window/latch/PAD1 policy is restricted to nonremovable MMC.
- */
-static bool msdc_mt6797_mmc_autok(struct msdc_host *host)
-{
-	return host->dev_comp->vendor_timing_init &&
-	       (mmc_from_priv(host)->caps & MMC_CAP_NONREMOVABLE);
-}
-
 static void msdc_mt6797_hs400_timing_init(struct msdc_host *host);
 
 static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
@@ -1752,11 +1731,6 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 			       host->base + tune_reg);
 		}
 	}
-
-	if (msdc_mt6797_mmc_autok(host))
-		writel(mmc->actual_clock <= 52000000 ? host->def_tune_para.pad_tune1 :
-		       host->saved_tune_para.pad_tune1,
-		       host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 
 	if (timing == MMC_TIMING_MMC_HS400 &&
 	    host->dev_comp->hs400_tune)
@@ -1980,103 +1954,6 @@ static void msdc_track_cmd_data(struct msdc_host *host, struct mmc_command *cmd)
 			cmd->opcode, cmd->arg, host->error);
 }
 
-#define MT6797_SD_SPEED_CAPS (MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_DDR50 | \
-			      MMC_CAP_UHS_SDR50 | MMC_CAP_UHS_SDR25)
-
-static void msdc_mt6797_init_card(struct mmc_host *mmc, struct mmc_card *card)
-{
-	struct msdc_host *host = mmc_priv(mmc);
-
-	if (!host->dev_comp->vendor_timing_init || !mmc_card_sd(card))
-		return;
-	if (!host->sd_caps_saved) {
-		host->sd_original_caps = mmc->caps & MT6797_SD_SPEED_CAPS;
-		host->sd_caps_saved = true;
-	}
-	/* A reset reuses the same card; an actual new insertion gets full caps. */
-	if (!host->sd_recovery_busy && mmc->card != card) {
-		mmc->caps = (mmc->caps & ~MT6797_SD_SPEED_CAPS) | host->sd_original_caps;
-		host->sd_retunes = 0;
-		host->sd_degrades = 0;
-#ifdef CONFIG_FAULT_INJECTION
-		atomic_set(&host->fault_crc_requests, 0);
-#endif
-	}
-}
-
-static void msdc_mt6797_record_io(struct msdc_host *host, struct mmc_request *mrq)
-{
-	struct mmc_host *mmc = mmc_from_priv(host);
-
-	if (!host->dev_comp->vendor_timing_init || !mmc->card ||
-	    !mmc_card_sd(mmc->card) || !mrq->data || mmc_doing_tune(mmc))
-		return;
-	switch (mrq->cmd->opcode) {
-	case MMC_READ_SINGLE_BLOCK:
-	case MMC_READ_MULTIPLE_BLOCK:
-	case MMC_WRITE_BLOCK:
-	case MMC_WRITE_MULTIPLE_BLOCK:
-		break;
-	default:
-		return;
-	}
-#ifdef CONFIG_FAULT_INJECTION
-	/* Report a bounded, explicit status fault after hardware completion.
-	 * No DMA contents are corrupted and tuning commands are never faulted.
-	 */
-	if (!mrq->cmd->error && !mrq->data->error &&
-	    atomic_dec_if_positive(&host->fault_crc_requests) >= 0) {
-		mrq->data->error = -EILSEQ;
-		mrq->data->bytes_xfered = 0;
-	}
-#endif
-	if (!mrq->cmd->error && !mrq->data->error &&
-	    (!mrq->sbc || !mrq->sbc->error) && (!mrq->stop || !mrq->stop->error))
-		WRITE_ONCE(host->sd_retunes, 0);
-}
-
-/* 0: normal tuning; 1: reset already reinitialized/tuned the lower mode. */
-static int msdc_mt6797_retune_recovery(struct mmc_host *mmc)
-{
-	struct msdc_host *host = mmc_priv(mmc);
-	u32 mask;
-	int ret;
-
-	if (!host->dev_comp->vendor_timing_init || host->sd_recovery_busy ||
-	    !mmc->card || !mmc_card_sd(mmc->card) || !mmc_doing_retune(mmc))
-		return 0;
-	if (++host->sd_retunes < 4)
-		return 0;
-	switch (mmc->ios.timing) {
-	case MMC_TIMING_UHS_SDR104:
-		mask = MMC_CAP_UHS_SDR104;
-		break;
-	case MMC_TIMING_UHS_DDR50:
-		mask = MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_DDR50;
-		break;
-	case MMC_TIMING_UHS_SDR50:
-		mask = MMC_CAP_UHS_SDR104 | MMC_CAP_UHS_DDR50 | MMC_CAP_UHS_SDR50;
-		break;
-	case MMC_TIMING_UHS_SDR25:
-		mask = MT6797_SD_SPEED_CAPS;
-		break;
-	default:
-		return 0;
-	}
-	/* BSP sdcard_reset_tuning(): remove the failing mode then power reset.
-	 * Let MMC core select only modes actually declared by this host/card.
-	 */
-	mmc->caps &= ~mask;
-	host->sd_retunes = 0;
-	host->sd_degrades++;
-	host->sd_recovery_busy = true;
-	ret = mmc_hw_reset(mmc->card);
-	host->sd_recovery_busy = false;
-	dev_warn(host->dev, "SD persistent CRC recovery: step=%u caps=%08x timing=%u result=%d\n",
-		 host->sd_degrades, mmc->caps & MT6797_SD_SPEED_CAPS, mmc->ios.timing, ret);
-	return ret ? ret : 1;
-}
-
 static void msdc_request_done(struct msdc_host *host, struct mmc_request *mrq)
 {
 	struct mmc_host *mmc = mmc_from_priv(host);
@@ -2125,7 +2002,6 @@ static void msdc_request_done(struct msdc_host *host, struct mmc_request *mrq)
 	 * as HSQ request finalization will eventually call the .post_req()
 	 * callback of this driver which, in turn, unprepares the data.
 	 */
-	msdc_mt6797_record_io(host, mrq);
 	hsq_req_done = host->hsq_en ? mmc_hsq_finalize_request(mmc, mrq) : false;
 	if (hsq_req_done) {
 		return;
@@ -2979,11 +2855,6 @@ static void msdc_init_hw(struct msdc_host *host)
 	if (host->dev_comp->vendor_timing_init)
 		msdc_mt6797_vendor_timing_init(host);
 
-	if (msdc_mt6797_mmc_autok(host)) {
-		host->hs400_tuned = false;
-		host->def_tune_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
-		host->saved_tune_para.pad_tune1 = host->def_tune_para.pad_tune1;
-	}
 	host->def_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	if (host->top_base) {
@@ -3301,9 +3172,6 @@ static void msdc_mt6797_hs400_timing_init(struct msdc_host *host)
 		     MSDC_IOCON_RSPL | MSDC_IOCON_DSPL |
 		     MSDC_IOCON_DDLSEL | MSDC_IOCON_DSPLSEL |
 		     MSDC_IOCON_W_DSPL | MSDC_IOCON_W_DSPLSEL);
-	if (host->hs400_tuned)
-		sdr_set_bits(host->base + MSDC_IOCON,
-			     host->saved_tune_para.iocon & MSDC_IOCON_RSPL);
 	sdr_clr_bits(host->base + MSDC_PAD_TUNE0,
 		     MSDC_PAD_TUNE_RXDLYSEL);
 	sdr_clr_bits(host->base + MSDC_PATCH_BIT, MSDC_PATCH_BIT_RD_DAT_SEL);
@@ -3344,123 +3212,6 @@ static void msdc_mt6797_hs400_timing_init(struct msdc_host *host)
 		      PAD_DAT7_TX_DLY, 0);
 }
 
-static void msdc_mt6797_autok_report(struct msdc_host *host, const char *path,
-		u64 rise, u64 fall, const struct mt6797_autok_result *r)
-{
-	dev_info(host->dev,
-		 "AutoK %s: rise=%016llx fall=%016llx edge=%u delay=%u "
-		 "window=%u+%u left=%u right=%u cycle=%u lost=%u fallback=%u\n",
-		 path, rise, fall, r->edge, r->delay, r->start, r->width,
-		 r->left, r->right, r->cycle, r->margin_lost, r->fallback);
-}
-
-static int msdc_mt6797_tune_response(struct mmc_host *mmc, u32 opcode, u32 rca)
-{
-	struct msdc_host *host = mmc_priv(mmc);
-	struct mt6797_autok_result result;
-	u64 pass[2] = {};
-	unsigned int edge, delay, repeat;
-	int error, ret;
-
-	if (mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
-	    mmc->ios.timing == MMC_TIMING_UHS_SDR104)
-		sdr_set_field(host->base + MSDC_PAD_TUNE0, MSDC_PAD_TUNE_CMDRRDLY,
-			      host->hs200_cmd_int_delay);
-	for (edge = 0; edge < 2; edge++) {
-		sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_RSPL, edge);
-		for (delay = 0; delay < 64; delay++) {
-			msdc_set_cmd_delay(host, delay);
-			for (repeat = 0; repeat < 10; repeat++) {
-				if (opcode == MMC_SEND_STATUS) {
-					struct mmc_command cmd = {
-						.opcode = opcode, .arg = rca << 16,
-						.flags = MMC_RSP_R1 | MMC_CMD_AC,
-					};
-
-					error = mmc_wait_for_cmd(mmc, &cmd, 0);
-				} else {
-					mmc_send_tuning(mmc, opcode, &error);
-				}
-				if (error)
-					break;
-			}
-			if (repeat == 10)
-				pass[edge] |= BIT_ULL(delay);
-		}
-	}
-	ret = mt6797_autok_select(pass[0], pass[1], &result);
-	if (ret)
-		return ret;
-	sdr_set_field(host->base + MSDC_IOCON, MSDC_IOCON_RSPL, result.edge);
-	msdc_set_cmd_delay(host, result.delay);
-	host->autok_cmd_cycle = result.cycle;
-	msdc_mt6797_autok_report(host, "CMD", pass[0], pass[1], &result);
-	return 0;
-}
-
-static int msdc_mt6797_tune_latch(struct mmc_host *mmc, u32 opcode)
-{
-	struct msdc_host *host = mmc_priv(mmc);
-	unsigned int saved = host->latch_ck, latch, repeat;
-	unsigned int step = max_t(unsigned int, 1,
-			host->src_clk_freq / max_t(unsigned int, mmc->actual_clock, 1));
-	unsigned int count = opcode == MMC_SEND_TUNING_BLOCK_HS200 ? 10 : 3;
-	int ret = -EIO;
-
-	/* Use standard one-block tuning requests; never program an invalid count. */
-	for (latch = saved; latch < 8; latch += step) {
-		sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_INT_DAT_LATCH_CK_SEL, latch);
-		for (repeat = 0; repeat < count; repeat++) {
-			ret = mmc_send_tuning(mmc, opcode, NULL);
-			if (ret)
-				break;
-		}
-		if (!ret) {
-			host->latch_ck = latch;
-			dev_info(host->dev, "AutoK latch: start=%u step=%u selected=%u repeats=%u\n",
-				 saved, step, latch, count);
-			return 0;
-		}
-	}
-	sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_INT_DAT_LATCH_CK_SEL, saved);
-	return ret;
-}
-
-static int msdc_mt6797_tune_data(struct mmc_host *mmc, u32 opcode)
-{
-	struct msdc_host *host = mmc_priv(mmc);
-	struct mt6797_autok_result result;
-	u64 pass[2] = {};
-	unsigned int edge, delay, repeat;
-	int ret, cmd_error;
-
-	sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_INT_DAT_LATCH_CK_SEL, host->latch_ck);
-	for (edge = 0; edge < 2; edge++) {
-		msdc_set_data_sample_edge(host, !edge);
-		for (delay = 0; delay < 64; delay++) {
-			msdc_set_data_delay(host, delay);
-			for (repeat = 0; repeat < 10; repeat++) {
-				ret = mmc_send_tuning(mmc, opcode, &cmd_error);
-				if (cmd_error)
-					return cmd_error;
-				if (ret)
-					break;
-			}
-			if (repeat == 10)
-				pass[edge] |= BIT_ULL(delay);
-		}
-	}
-	ret = mt6797_autok_select_data(pass[0], pass[1], &result);
-	if (ret)
-		return ret;
-	msdc_set_data_sample_edge(host, !result.edge);
-	msdc_set_data_delay(host, result.delay);
-	if (host->timing == MMC_TIMING_UHS_SDR104)
-		sdr_set_field(host->base + MSDC_PATCH_BIT2, MSDC_PB2_CFGCRCSTSEDGE, result.edge);
-	msdc_mt6797_autok_report(host, "DAT", pass[0], pass[1], &result);
-	return msdc_mt6797_tune_latch(mmc, opcode);
-}
-
 static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 {
 	struct msdc_host *host = mmc_priv(mmc);
@@ -3472,9 +3223,6 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 	int cmd_err;
 	int i, j;
-
-	if (msdc_mt6797_mmc_autok(host))
-		return msdc_mt6797_tune_response(mmc, opcode, 0);
 
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
 	    mmc->ios.timing == MMC_TIMING_UHS_SDR104)
@@ -3618,9 +3366,6 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 	u8 final_delay, final_maxlen;
 	int i, ret;
 
-	if (msdc_mt6797_mmc_autok(host))
-		return msdc_mt6797_tune_data(mmc, opcode);
-
 	sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_INT_DAT_LATCH_CK_SEL,
 		      host->latch_ck);
 	msdc_set_data_sample_edge(host, true);
@@ -3738,10 +3483,6 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	int ret;
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 
-	ret = msdc_mt6797_retune_recovery(mmc);
-	if (ret)
-		return ret > 0 ? 0 : ret;
-
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200)
 		msdc_mt6797_hs200_tuning_init(host);
 	if (host->dev_comp->vendor_timing_init &&
@@ -3801,8 +3542,6 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 			 readl(host->base + EMMC50_CFG0));
 
 tune_done:
-	if (msdc_mt6797_mmc_autok(host))
-		host->saved_tune_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	host->saved_tune_para.pad_tune = readl(host->base + tune_reg);
 	host->saved_tune_para.pad_cmd_tune = readl(host->base + PAD_CMD_TUNE);
@@ -3820,7 +3559,6 @@ static int msdc_prepare_hs400_tuning(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct msdc_host *host = mmc_priv(mmc);
 
 	host->hs400_mode = true;
-	host->hs400_tuned = false;
 
 	/*
 	 * MT6797 exposes AXI read/write outstanding limits in the eMMC50
@@ -3869,16 +3607,8 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 {
 	struct msdc_host *host = mmc_priv(mmc);
 	struct msdc_delay_phase dly1_delay;
-	struct mt6797_autok_result autok;
-	u8 data_adjust;
 	u32 val, result_dly1 = 0;
 	int i, j, ret, data_delay = -1;
-
-	if (host->dev_comp->vendor_timing_init) {
-		ret = msdc_mt6797_tune_response(mmc, MMC_SEND_STATUS, card->rca);
-		if (ret)
-			return ret;
-	}
 
 	if (host->top_base) {
 		sdr_set_bits(host->top_base + EMMC50_PAD_DS_TUNE,
@@ -3908,7 +3638,8 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 		if (data_delay >= 0)
 			break;
 	}
-	msdc_set_data_delay(host, data_delay >= 0 ? data_delay : 0);
+	if (data_delay >= 0)
+		msdc_set_data_delay(host, data_delay);
 	dev_info(host->dev, "MT6797 HS400 DAT boundary: delay=%d\n",
 		 data_delay);
 
@@ -3921,29 +3652,13 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 				      host->dev_comp->vendor_timing_init ?
 				      MT6797_PAD_DS_DLY1 : PAD_DS_TUNE_DLY1, i);
 		/* Vendor MT6797 autok uses CMD17 here, not only EXT_CSD. */
-		for (j = 0; j < (host->dev_comp->vendor_timing_init ? 5 : 1); j++) {
-			ret = mmc_read_tuning(mmc, 512, 1);
-			if (ret)
-				break;
-		}
+		ret = mmc_read_tuning(mmc, 512, 1);
 		if (!ret)
 			result_dly1 |= BIT(i);
 	}
 	host->hs400_tuning = false;
 
-	if (host->dev_comp->vendor_timing_init) {
-		ret = mt6797_autok_select_ds(result_dly1, host->autok_cmd_cycle, &autok, &data_adjust);
-		if (ret)
-			goto fail;
-		if (data_adjust)
-			msdc_set_data_delay(host, data_adjust);
-		dly1_delay = (struct msdc_delay_phase) {
-			.maxlen = autok.width, .start = autok.start, .final_phase = autok.delay,
-		};
-		msdc_mt6797_autok_report(host, "DS", result_dly1, 0, &autok);
-	} else {
-		dly1_delay = get_best_delay(host, result_dly1);
-	}
+	dly1_delay = get_best_delay(host, result_dly1);
 	if (dly1_delay.maxlen == 0) {
 		dev_err(host->dev, "Failed to get DLY1 delay!\n");
 		goto fail;
@@ -3964,13 +3679,6 @@ static int msdc_execute_hs400_tuning(struct mmc_host *mmc, struct mmc_card *card
 
 	dev_info(host->dev, "Final PAD_DS_TUNE: 0x%x\n", val);
 
-	if (host->dev_comp->vendor_timing_init) {
-		host->hs400_tuned = true;
-		host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
-		host->saved_tune_para.pad_tune = readl(host->base + MSDC_PAD_TUNE0);
-		host->saved_tune_para.pad_tune1 = readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
-		host->saved_tune_para.pad_cmd_tune = readl(host->base + PAD_CMD_TUNE);
-	}
 	return 0;
 
 fail:
@@ -4159,7 +3867,6 @@ static void msdc_cqe_post_disable(struct mmc_host *mmc)
 
 static const struct mmc_host_ops mt_msdc_ops = {
 	.post_req = msdc_post_req,
-	.init_card = msdc_mt6797_init_card,
 	.pre_req = msdc_pre_req,
 	.request = msdc_ops_request,
 	.set_ios = msdc_ops_set_ios,
@@ -4338,65 +4045,6 @@ static int msdc_of_clock_parse(struct platform_device *pdev,
 
 	return 0;
 }
-
-static ssize_t recovery_status_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct mmc_host *mmc = dev_get_drvdata(dev);
-	struct msdc_host *host;
-
-	if (!mmc)
-		return -ENODEV;
-	host = mmc_priv(mmc);
-
-	return sysfs_emit(buf, "retunes=%u degrades=%u original_caps=%08x current_caps=%08x busy=%u\n",
-		READ_ONCE(host->sd_retunes), READ_ONCE(host->sd_degrades), host->sd_original_caps,
-		mmc_from_priv(host)->caps & MT6797_SD_SPEED_CAPS, READ_ONCE(host->sd_recovery_busy));
-}
-static DEVICE_ATTR_RO(recovery_status);
-
-#ifdef CONFIG_FAULT_INJECTION
-static ssize_t fault_crc_requests_show(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct mmc_host *mmc = dev_get_drvdata(dev);
-	struct msdc_host *host;
-
-	if (!mmc)
-		return -ENODEV;
-	host = mmc_priv(mmc);
-
-	return sysfs_emit(buf, "%d\n", atomic_read(&host->fault_crc_requests));
-}
-
-static ssize_t fault_crc_requests_store(struct device *dev, struct device_attribute *attr,
-		const char *buf, size_t count)
-{
-	struct mmc_host *mmc = dev_get_drvdata(dev);
-	struct msdc_host *host;
-	unsigned int value;
-	int ret = kstrtouint(buf, 0, &value);
-
-	if (ret || value > 32)
-		return ret ? ret : -ERANGE;
-	if (!mmc)
-		return -ENODEV;
-	host = mmc_priv(mmc);
-	/* Completion consumes the budget only for a live SD card. New-card
-	 * initialization clears it, so no card pointer is needed here.
-	 */
-	atomic_set(&host->fault_crc_requests, value);
-	return count;
-}
-static DEVICE_ATTR_RW(fault_crc_requests);
-#endif
-
-static struct attribute *mt6797_msdc_attrs[] = {
-	&dev_attr_recovery_status.attr,
-#ifdef CONFIG_FAULT_INJECTION
-	&dev_attr_fault_crc_requests.attr,
-#endif
-	NULL,
-};
-static const struct attribute_group mt6797_msdc_group = { .attrs = mt6797_msdc_attrs };
 
 static int msdc_drv_probe(struct platform_device *pdev)
 {
@@ -4669,14 +4317,6 @@ static int msdc_drv_probe(struct platform_device *pdev)
 	spin_lock_init(&host->lock);
 
 	platform_set_drvdata(pdev, mmc);
-#ifdef CONFIG_FAULT_INJECTION
-	atomic_set(&host->fault_crc_requests, 0);
-#endif
-	if (host->dev_comp->vendor_timing_init) {
-		ret = devm_device_add_group(&pdev->dev, &mt6797_msdc_group);
-		if (ret)
-			goto release_clk;
-	}
 	ret = msdc_ungate_clock(host);
 	if (ret) {
 		dev_err(&pdev->dev, "Cannot ungate clocks!\n");
@@ -4783,8 +4423,6 @@ static void msdc_save_reg(struct msdc_host *host)
 {
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 
-	if (msdc_mt6797_mmc_autok(host))
-		host->save_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	host->save_para.msdc_cfg = readl(host->base + MSDC_CFG);
 	host->save_para.iocon = readl(host->base + MSDC_IOCON);
 	host->save_para.sdc_cfg = readl(host->base + SDC_CFG);
@@ -4824,8 +4462,6 @@ static void msdc_restore_reg(struct msdc_host *host)
 		sdr_set_bits(host->base + MSDC_NEW_RX_CFG, MSDC_NEW_RX_PATH_SEL);
 	}
 
-	if (msdc_mt6797_mmc_autok(host))
-		writel(host->save_para.pad_tune1, host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	writel(host->save_para.msdc_cfg, host->base + MSDC_CFG);
 	writel(host->save_para.iocon, host->base + MSDC_IOCON);
 	writel(host->save_para.sdc_cfg, host->base + SDC_CFG);
