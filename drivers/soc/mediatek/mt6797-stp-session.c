@@ -811,6 +811,61 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_wmt);
 
+int mt6797_stp_session_power(struct mt6797_stp_session *session, u8 action,
+			      unsigned long timeout_jiffies)
+{
+	u8 response[2];
+	u16 length = 0;
+	unsigned long flags, remaining;
+	int ret;
+
+	if (!session || !timeout_jiffies || action < MT6797_STP_POWER_SLEEP ||
+	    action > MT6797_STP_POWER_WAKE)
+		return -EINVAL;
+	if (action != MT6797_STP_POWER_WAKE) {
+		ret = mt6797_stp_session_wmt(session, 3, &action, 1, response,
+					     &length, sizeof(response), timeout_jiffies);
+		if (ret)
+			return ret;
+		return length == 2 && !response[0] && response[1] == action ? 0 : -EPROTO;
+	}
+
+	/* MT6797's BSP uses a BTIF wake edge, not its disabled raw-0xff path.
+	 * Arm the opcode-03 event before the edge, as firmware may answer fast.
+	 */
+	mutex_lock(&session->send_lock);
+	spin_lock_irqsave(&session->state_lock, flags);
+	if (!session->active || session->terminal_error) {
+		ret = session->terminal_error ?: -ESHUTDOWN;
+		spin_unlock_irqrestore(&session->state_lock, flags);
+		goto unlock;
+	}
+	reinit_completion(&session->response_done);
+	session->response_opcode = 3;
+	session->response_length = 0;
+	session->response_status = -ETIMEDOUT;
+	session->response_waiting = true;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+	ret = mt6797_btif_wake(session->owner);
+	if (!ret) {
+		remaining = wait_for_completion_timeout(&session->response_done, timeout_jiffies);
+		if (!remaining)
+			ret = -ETIMEDOUT;
+	}
+	spin_lock_irqsave(&session->state_lock, flags);
+	session->response_waiting = false;
+	if (!ret)
+		ret = session->terminal_error ?: session->response_status;
+	if (!ret && (session->response_length != 2 || session->response[0] ||
+		     session->response[1] != MT6797_STP_POWER_WAKE))
+		ret = -EPROTO;
+	spin_unlock_irqrestore(&session->state_lock, flags);
+unlock:
+	mutex_unlock(&session->send_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_session_power);
+
 static int mt6797_stp_expect_wmt(struct mt6797_stp_session *session,
 					const u8 *params, u16 parameter_length,
 					const u8 *expected, u16 expected_length,

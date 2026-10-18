@@ -597,6 +597,11 @@ int mt6797_btif_wake(struct device *client)
 		mutex_unlock(&mt6797_btif_singleton_lock);
 		return -ENODEV;
 	}
+	/* BSP hal_btif_raise_wak_sig(): a fresh low/high edge spanning at
+	 * least one 32-kHz period is required for every wake, not only boot.
+	 */
+	writel(0, btif->base + BTIF_WAK);
+	udelay(64);
 	writel(BTIF_WAK_SIGNAL, btif->base + BTIF_WAK);
 	mutex_unlock(&mt6797_btif_singleton_lock);
 	return 0;

@@ -3,6 +3,7 @@
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/jiffies.h>
+#include <linux/interrupt.h>
 #include <linux/kref.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -33,6 +34,17 @@ struct mt6797_wmt {
 	unsigned int recovery_generation;
 	unsigned long last_recovery;
 	int recovery_result;
+	int wake_irq;
+	spinlock_t wake_irq_lock;
+	bool wake_irq_enabled;
+	atomic_t host_wake_pending;
+	struct work_struct host_wake_work;
+	struct delayed_work idle_work;
+	bool psm_enabled;
+	bool asleep;
+	unsigned long last_activity;
+	u64 sleeps, wakes, host_wakes;
+	int psm_error;
 	struct mt6797_stp_session *session;
 	struct mt6797_wmt_config config;
 	struct mt6797_wmt_calibration calibration;
@@ -46,6 +58,120 @@ struct mt6797_wmt {
  * holds that device lock while rebinding consumers through their normal probe.
  */
 static DEFINE_MUTEX(mt6797_wmt_lookup_lock);
+
+#define WMT_PSM_IDLE_MS 200
+static int mt6797_wmt_queue_recovery(struct mt6797_wmt *wmt, int reason, bool manual);
+
+static void mt6797_wmt_psm_touch(struct mt6797_wmt *wmt)
+{
+	WRITE_ONCE(wmt->last_activity, jiffies);
+	if (READ_ONCE(wmt->psm_enabled) && !READ_ONCE(wmt->removed))
+		mod_delayed_work(system_wq, &wmt->idle_work, msecs_to_jiffies(WMT_PSM_IDLE_MS));
+}
+
+static void mt6797_wmt_wake_irq_set(struct mt6797_wmt *wmt, bool enabled)
+{
+	unsigned long flags;
+
+	if (wmt->wake_irq < 0)
+		return;
+	spin_lock_irqsave(&wmt->wake_irq_lock, flags);
+	if (enabled != wmt->wake_irq_enabled) {
+		wmt->wake_irq_enabled = enabled;
+		if (enabled)
+			enable_irq(wmt->wake_irq);
+		else
+			disable_irq_nosync(wmt->wake_irq);
+	}
+	spin_unlock_irqrestore(&wmt->wake_irq_lock, flags);
+	if (!enabled)
+		synchronize_irq(wmt->wake_irq);
+}
+
+/* wmt->lock serializes every power transaction against functional sends. */
+static int mt6797_wmt_psm_wake(struct mt6797_wmt *wmt)
+{
+	bool host_wake;
+	int ret;
+
+	mt6797_wmt_wake_irq_set(wmt, false);
+	host_wake = atomic_xchg(&wmt->host_wake_pending, 0);
+	if (!wmt->asleep && !host_wake)
+		return 0;
+	ret = mt6797_stp_session_power(wmt->session,
+		host_wake ? MT6797_STP_POWER_HOST_AWAKE : MT6797_STP_POWER_WAKE,
+		msecs_to_jiffies(1000));
+	if (ret) {
+		wmt->psm_error = ret;
+		wmt->psm_enabled = false;
+		mt6797_wmt_queue_recovery(wmt, ret, false);
+		return ret;
+	}
+	wmt->asleep = false;
+	if (host_wake)
+		wmt->host_wakes++;
+	else
+		wmt->wakes++;
+	mt6797_wmt_psm_touch(wmt);
+	return 0;
+}
+
+static void mt6797_wmt_host_wake_work(struct work_struct *work)
+{
+	struct mt6797_wmt *wmt = container_of(work, struct mt6797_wmt, host_wake_work);
+
+	mutex_lock(&wmt->lock);
+	if (!wmt->removed && !wmt->recovery_pending && wmt->session && wmt->users)
+		mt6797_wmt_psm_wake(wmt);
+	mutex_unlock(&wmt->lock);
+}
+
+static irqreturn_t mt6797_wmt_wake_irq(int irq, void *data)
+{
+	struct mt6797_wmt *wmt = data;
+	unsigned long flags;
+
+	spin_lock_irqsave(&wmt->wake_irq_lock, flags);
+	if (wmt->wake_irq_enabled) {
+		wmt->wake_irq_enabled = false;
+		disable_irq_nosync(irq);
+	}
+	spin_unlock_irqrestore(&wmt->wake_irq_lock, flags);
+	atomic_set(&wmt->host_wake_pending, 1);
+	if (!READ_ONCE(wmt->removed))
+		schedule_work(&wmt->host_wake_work);
+	return IRQ_HANDLED;
+}
+
+static void mt6797_wmt_idle_work(struct work_struct *work)
+{
+	struct mt6797_wmt *wmt = container_of(to_delayed_work(work), struct mt6797_wmt, idle_work);
+	unsigned long due;
+	int ret;
+
+	mutex_lock(&wmt->lock);
+	if (wmt->removed || !wmt->psm_enabled || wmt->asleep || !wmt->users ||
+	    !wmt->session || wmt->error || wmt->recovery_pending)
+		goto out;
+	due = READ_ONCE(wmt->last_activity) + msecs_to_jiffies(WMT_PSM_IDLE_MS);
+	if (time_before(jiffies, due)) {
+		mod_delayed_work(system_wq, &wmt->idle_work, due - jiffies);
+		goto out;
+	}
+	ret = mt6797_stp_session_power(wmt->session, MT6797_STP_POWER_SLEEP,
+				       msecs_to_jiffies(1000));
+	if (ret) {
+		wmt->psm_error = ret;
+		wmt->psm_enabled = false;
+		mt6797_wmt_queue_recovery(wmt, ret, false);
+		goto out;
+	}
+	wmt->asleep = true;
+	wmt->sleeps++;
+	mt6797_wmt_wake_irq_set(wmt, true);
+out:
+	mutex_unlock(&wmt->lock);
+}
 
 struct mt6797_wmt_client {
 	struct mt6797_wmt *wmt;
@@ -77,6 +203,7 @@ static void mt6797_wmt_receive(void *context, u8 task,
 
 	if (task >= ARRAY_SIZE(wmt->clients))
 		return;
+	mt6797_wmt_psm_touch(wmt);
 	index = srcu_read_lock(&wmt->rx_srcu);
 	client = srcu_dereference(wmt->clients[task], &wmt->rx_srcu);
 	if (client && READ_ONCE(client->active) && client->ops.receive)
@@ -89,6 +216,10 @@ static int mt6797_wmt_stop(struct mt6797_wmt *wmt)
 {
 	int ret = 0;
 
+	cancel_delayed_work(&wmt->idle_work);
+	mt6797_wmt_wake_irq_set(wmt, false);
+	wmt->asleep = false;
+	atomic_set(&wmt->host_wake_pending, 0);
 	if (wmt->session) {
 		mt6797_stp_session_stop(wmt->session);
 		mt6797_stp_session_free(wmt->session);
@@ -344,6 +475,9 @@ int mt6797_wmt_client_open(struct mt6797_wmt_client *client)
 		ret = wmt->error;
 		goto out;
 	}
+	ret = mt6797_wmt_psm_wake(wmt);
+	if (ret)
+		goto fail;
 	ret = mt6797_consys_radio_power(wmt->host, client->task, true, NULL);
 	if (ret)
 		goto fail;
@@ -358,6 +492,7 @@ int mt6797_wmt_client_open(struct mt6797_wmt_client *client)
 	}
 	WRITE_ONCE(client->active, true);
 	wmt->users++;
+	mt6797_wmt_psm_touch(wmt);
 	goto out;
 fail:
 	if (!wmt->users)
@@ -382,7 +517,9 @@ int mt6797_wmt_client_close(struct mt6797_wmt_client *client)
 	WRITE_ONCE(client->active, false);
 	if (wmt->removed)
 		goto out;
-	if (client->task == MT6797_STP_TASK_BT && !wmt->recovery_pending)
+	if (!wmt->recovery_pending)
+		ret = mt6797_wmt_psm_wake(wmt);
+	if (!ret && client->task == MT6797_STP_TASK_BT && !wmt->recovery_pending)
 		ret = mt6797_wmt_function_control(wmt->dev, wmt->session,
 						 client->task, false);
 	cleanup_ret = mt6797_consys_radio_power(wmt->host, client->task, false, NULL);
@@ -435,9 +572,13 @@ int mt6797_wmt_client_send(struct mt6797_wmt_client *client,
 		ret = -EAGAIN;
 	else if (wmt->error)
 		ret = wmt->error;
-	else
-		ret = mt6797_stp_session_send(wmt->session, client->task, data, length,
-					     msecs_to_jiffies(2000));
+	else {
+		ret = mt6797_wmt_psm_wake(wmt);
+		if (!ret)
+			ret = mt6797_stp_session_send(wmt->session, client->task, data, length,
+						     msecs_to_jiffies(2000));
+		mt6797_wmt_psm_touch(wmt);
+	}
 	if (ret == -ETIMEDOUT || ret == -EIO || ret == -EPROTO || ret == -ENOBUFS)
 		mt6797_wmt_queue_recovery(wmt, ret, false);
 	mutex_unlock(&wmt->lock);
@@ -472,8 +613,12 @@ int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 		ret = -ESHUTDOWN;
 	else if (wmt->recovery_pending && !wmt->reprobing)
 		ret = -EAGAIN;
-	else
-		ret = mt6797_consys_wifi_emi_write(wmt->host, offset, data, length);
+	else {
+		ret = mt6797_wmt_psm_wake(wmt);
+		if (!ret)
+			ret = mt6797_consys_wifi_emi_write(wmt->host, offset, data, length);
+		mt6797_wmt_psm_touch(wmt);
+	}
 	mutex_unlock(&wmt->lock);
 	return ret;
 }
@@ -587,7 +732,55 @@ static ssize_t recovery_store(struct device *dev, struct device_attribute *attr,
 	return ret ?: count;
 }
 static DEVICE_ATTR_RW(recovery);
-static struct attribute *mt6797_wmt_attrs[] = { &dev_attr_recovery.attr, NULL };
+
+static ssize_t psm_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct mt6797_wmt *wmt = dev_get_drvdata(dev);
+	ssize_t length;
+
+	mutex_lock(&wmt->lock);
+	length = sysfs_emit(buf, "%s %s sleeps=%llu wakes=%llu host_wakes=%llu error=%d irq=%d\n",
+		wmt->psm_enabled ? "auto" : "off", wmt->asleep ? "asleep" : "awake",
+		wmt->sleeps, wmt->wakes, wmt->host_wakes, wmt->psm_error, wmt->wake_irq);
+	mutex_unlock(&wmt->lock);
+	return length;
+}
+
+static ssize_t psm_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct mt6797_wmt *wmt = dev_get_drvdata(dev);
+	bool enabled;
+	int ret = 0;
+
+	if (sysfs_streq(buf, "auto"))
+		enabled = true;
+	else if (sysfs_streq(buf, "off"))
+		enabled = false;
+	else
+		return -EINVAL;
+	mutex_lock(&wmt->lock);
+	if (wmt->removed || wmt->recovery_pending || wmt->error)
+		ret = -EBUSY;
+	else if (enabled && wmt->wake_irq < 0)
+		ret = -EOPNOTSUPP;
+	else {
+		if (!enabled && wmt->session)
+			ret = mt6797_wmt_psm_wake(wmt);
+		if (!ret) {
+			wmt->psm_enabled = enabled;
+			wmt->psm_error = 0;
+			if (enabled)
+				mt6797_wmt_psm_touch(wmt);
+			else
+				cancel_delayed_work(&wmt->idle_work);
+		}
+	}
+	mutex_unlock(&wmt->lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_RW(psm);
+static struct attribute *mt6797_wmt_attrs[] = { &dev_attr_recovery.attr, &dev_attr_psm.attr, NULL };
 ATTRIBUTE_GROUPS(mt6797_wmt);
 
 static int mt6797_wmt_probe(struct platform_device *pdev)
@@ -622,12 +815,30 @@ static int mt6797_wmt_probe(struct platform_device *pdev)
 	wmt->dev = get_device(&pdev->dev);
 	kref_init(&wmt->ref);
 	mutex_init(&wmt->lock);
+	spin_lock_init(&wmt->wake_irq_lock);
+	atomic_set(&wmt->host_wake_pending, 0);
+	INIT_WORK(&wmt->host_wake_work, mt6797_wmt_host_wake_work);
+	INIT_DELAYED_WORK(&wmt->idle_work, mt6797_wmt_idle_work);
 	INIT_WORK(&wmt->recovery_work, mt6797_wmt_recovery_work);
+	wmt->wake_irq = platform_get_irq_optional(pdev, 0);
+	if (wmt->wake_irq == -EPROBE_DEFER) {
+		ret = wmt->wake_irq;
+		goto cleanup_srcu;
+	}
+	if (wmt->wake_irq >= 0) {
+		ret = devm_request_irq(&pdev->dev, wmt->wake_irq, mt6797_wmt_wake_irq,
+				       IRQF_NO_AUTOEN, "mt6797-wmt-wake", wmt);
+		if (ret)
+			goto cleanup_srcu;
+	}
 	mutex_lock(&mt6797_wmt_lookup_lock);
 	platform_set_drvdata(pdev, wmt);
 	mutex_unlock(&mt6797_wmt_lookup_lock);
 	dev_info(&pdev->dev, "shared WMT ready; firmware starts with the first radio client\n");
 	return 0;
+cleanup_srcu:
+	put_device(wmt->dev);
+	cleanup_srcu_struct(&wmt->rx_srcu);
 put_btif:
 	put_device(wmt->btif);
 put_consys:
@@ -648,7 +859,11 @@ static void mt6797_wmt_remove(struct platform_device *pdev)
 	mutex_unlock(&mt6797_wmt_lookup_lock);
 	mutex_lock(&wmt->lock);
 	wmt->removed = true;
+	wmt->psm_enabled = false;
 	mutex_unlock(&wmt->lock);
+	mt6797_wmt_wake_irq_set(wmt, false);
+	cancel_delayed_work_sync(&wmt->idle_work);
+	cancel_work_sync(&wmt->host_wake_work);
 	cancel_work_sync(&wmt->recovery_work);
 	mutex_lock(&wmt->lock);
 	for (task = 0; task < ARRAY_SIZE(wmt->clients); task++) {

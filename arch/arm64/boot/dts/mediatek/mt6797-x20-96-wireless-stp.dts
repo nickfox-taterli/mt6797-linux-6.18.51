@@ -27,6 +27,7 @@
 
 	wmt: wmt {
 		compatible = "mediatek,mt6797-wmt";
+		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>;
 		consys = <&consys>;
 		btif = <&btif>;
 		mediatek,antenna-mode = /bits/ 8 <1>;

@@ -46,6 +46,13 @@ int mt6797_stp_session_start(struct mt6797_stp_session *session,
 void mt6797_stp_session_stop(struct mt6797_stp_session *session);
 int mt6797_stp_session_wake(struct mt6797_stp_session *session);
 
+#define MT6797_STP_POWER_SLEEP 1
+#define MT6797_STP_POWER_HOST_AWAKE 2
+#define MT6797_STP_POWER_WAKE 3
+/* BSP WMT sleep/host-awake transactions and BTIF-edge wake acknowledgement. */
+int mt6797_stp_session_power(struct mt6797_stp_session *session, u8 action,
+			      unsigned long timeout_jiffies);
+
 /* Install platform-owned host mode/enable operations before start(). */
 int mt6797_stp_session_set_host_ops(struct mt6797_stp_session *session,
 					const struct mt6797_stp_host_ops *ops,
