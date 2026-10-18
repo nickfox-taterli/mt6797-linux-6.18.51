@@ -91,6 +91,7 @@ struct mt6797_btif {
 	struct clk *dma_clk;
 	struct btif_dma_channel tx_dma, rx_dma;
 	bool dma_mode, dma_clocked, dma_fault;
+	bool dma_live, clocked, idle, irqs_enabled;
 
 	struct mutex client_lock;
 	struct device *owner;
@@ -156,7 +157,7 @@ static void btif_dma_free(void *data)
 	int i;
 
 	/* Never free memory while an engine could still write into it. */
-	if (btif->dma_clocked) {
+	if (btif->dma_clocked || btif->dma_live) {
 		dev_err(btif->dev, "retaining DMA buffers and clock after failed stop\n");
 		return;
 	}
@@ -278,8 +279,113 @@ static int btif_dma_stop(struct mt6797_btif *btif)
 	}
 	clk_disable_unprepare(btif->dma_clk);
 	btif->dma_clocked = false;
+	btif->dma_live = false;
 	return 0;
 }
+
+static void btif_enable_irqs(struct mt6797_btif *btif)
+{
+	if (btif->irqs_enabled || !btif->running)
+		return;
+	btif->irqs_enabled = true;
+	if (btif->dma_mode) {
+		enable_irq(btif->tx_dma.irq);
+		enable_irq(btif->rx_dma.irq);
+	} else {
+		enable_irq(btif->irq);
+	}
+}
+
+static void btif_disable_irqs(struct mt6797_btif *btif)
+{
+	if (!btif->irqs_enabled)
+		return;
+	btif->irqs_enabled = false;
+	if (btif->dma_mode) {
+		disable_irq(btif->tx_dma.irq);
+		disable_irq(btif->rx_dma.irq);
+	} else {
+		disable_irq(btif->irq);
+	}
+}
+
+/* Singleton/client ownership keeps clock changes out of write and release. */
+static int btif_exit_idle(struct mt6797_btif *btif)
+{
+	int ret;
+
+	if (!btif->idle)
+		return 0;
+	if (btif->dma_mode) {
+		ret = clk_prepare_enable(btif->dma_clk);
+		if (ret)
+			return ret;
+		btif->dma_clocked = true;
+	}
+	ret = clk_prepare_enable(btif->clk);
+	if (ret) {
+		if (btif->dma_mode) {
+			clk_disable_unprepare(btif->dma_clk);
+			btif->dma_clocked = false;
+		}
+		return ret;
+	}
+	btif->clocked = true;
+	btif->idle = false;
+	btif_enable_irqs(btif);
+	return 0;
+}
+
+int mt6797_btif_idle(struct device *client, bool idle)
+{
+	struct mt6797_btif *btif;
+	u32 value;
+	int ret = 0;
+
+	mutex_lock(&mt6797_btif_singleton_lock);
+	btif = mt6797_btif_singleton;
+	if (!btif || btif->owner != client || !btif->running) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (!idle) {
+		ret = btif_exit_idle(btif);
+		goto out;
+	}
+	if (btif->idle)
+		goto out;
+	/* WMT has acknowledged sleep. Drain its final STP ACK before gating.
+	 * No producer can enqueue TX while this ownership mutex is held.
+	 */
+	ret = readl_poll_timeout(btif->base + BTIF_LSR, value,
+		(value & BTIF_LSR_TEMT) && kfifo_is_empty(&btif->tx_fifo) &&
+		(!btif->dma_mode || !readl(btif->tx_dma.base + VFF_VALID)), 10, 100000);
+	if (ret)
+		goto out;
+	btif_disable_irqs(btif);
+	/* Synchronizing RX above also waits for its final DMA RPT update. A
+	 * racing wake/data event must drain before a later sleep can gate.
+	 */
+	if ((btif->dma_mode &&
+	     (readl(btif->rx_dma.base + VFF_VALID) ||
+	      readl(btif->rx_dma.base + VFF_WPT) != btif->rx_dma.pointer)) ||
+	    (!btif->dma_mode && (readl(btif->base + BTIF_IIR_FIFOCTRL) & BTIF_IIR_RX))) {
+		btif_enable_irqs(btif);
+		ret = -EBUSY;
+		goto out;
+	}
+	if (btif->dma_mode) {
+		clk_disable_unprepare(btif->dma_clk);
+		btif->dma_clocked = false;
+	}
+	clk_disable_unprepare(btif->clk);
+	btif->clocked = false;
+	btif->idle = true;
+out:
+	mutex_unlock(&mt6797_btif_singleton_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_btif_idle);
 
 /* The caller holds the singleton lock, keeping ownership and clocks stable. */
 static ssize_t btif_dma_write(struct mt6797_btif *btif, const u8 *data,
@@ -458,11 +564,14 @@ int mt6797_btif_claim(struct device *client,
 	ret = clk_prepare_enable(btif->clk);
 	if (ret)
 		goto unlock_client;
+	btif->clocked = true;
+	btif->idle = false;
 	btif_hw_init(btif);
 	if (btif->dma_mode) {
 		ret = btif_dma_start(btif);
 		if (ret) {
 			clk_disable_unprepare(btif->clk);
+			btif->clocked = false;
 			goto unlock_client;
 		}
 		btif_update_bits(btif, BTIF_IER, BTIF_IER_RXFEN | BTIF_IER_TXEEN, 0);
@@ -474,13 +583,11 @@ int mt6797_btif_claim(struct device *client,
 	btif->owner = client;
 	WRITE_ONCE(btif->context, context);
 	WRITE_ONCE(btif->running, true);
+	btif_enable_irqs(btif);
 	if (btif->dma_mode) {
-		enable_irq(btif->tx_dma.irq);
-		enable_irq(btif->rx_dma.irq);
 		writel(3, btif->rx_dma.base + VFF_INT_EN);
+		btif->dma_live = true;
 		writel(1, btif->rx_dma.base + VFF_EN);
-	} else {
-		enable_irq(btif->irq);
 	}
 	dev_info(btif->dev, "BTIF claimed: %s\n", btif->dma_mode ? "DMA/VFIFO" : "PIO");
 	ret = 0;
@@ -510,21 +617,26 @@ void mt6797_btif_release(struct device *client)
 		goto unlock_client;
 	} else
 		goto unlock_client;
-	if (btif->dma_mode) {
-		disable_irq(btif->tx_dma.irq);
-		disable_irq(btif->rx_dma.irq);
-		btif_dma_stop(btif);
-	} else {
-		disable_irq(btif->irq);
+	btif_disable_irqs(btif);
+	if (btif_exit_idle(btif)) {
+		btif->dma_fault = true;
+		dev_err(btif->dev, "clock resume failed during release; retaining live DMA buffers\n");
+		goto clear_owner;
 	}
+	if (btif->dma_mode)
+		btif_dma_stop(btif);
 	btif_update_bits(btif, BTIF_IER, BTIF_IER_RXFEN | BTIF_IER_TXEEN, 0);
+clear_owner:
 	WRITE_ONCE(btif->ops, NULL);
 	btif->owner = NULL;
 	WRITE_ONCE(btif->context, NULL);
 	spin_lock_irq(&btif->tx_lock);
 	kfifo_reset(&btif->tx_fifo);
 	spin_unlock_irq(&btif->tx_lock);
-	clk_disable_unprepare(btif->clk);
+	if (btif->clocked) {
+		clk_disable_unprepare(btif->clk);
+		btif->clocked = false;
+	}
 unlock_client:
 	mutex_unlock(&btif->client_lock);
 out:
@@ -545,6 +657,11 @@ ssize_t mt6797_btif_write(struct device *client, const u8 *data,
 	if (!btif || btif->owner != client || !btif->running) {
 		mutex_unlock(&mt6797_btif_singleton_lock);
 		return -ENODEV;
+	}
+	written = btif_exit_idle(btif);
+	if (written) {
+		mutex_unlock(&mt6797_btif_singleton_lock);
+		return written;
 	}
 	if (btif->dma_mode) {
 		written = btif_dma_write(btif, data, length, timeout_jiffies);
@@ -590,12 +707,18 @@ EXPORT_SYMBOL_GPL(mt6797_btif_write);
 int mt6797_btif_wake(struct device *client)
 {
 	struct mt6797_btif *btif;
+	int ret;
 
 	mutex_lock(&mt6797_btif_singleton_lock);
 	btif = mt6797_btif_singleton;
 	if (!btif || btif->owner != client || !btif->running) {
 		mutex_unlock(&mt6797_btif_singleton_lock);
 		return -ENODEV;
+	}
+	ret = btif_exit_idle(btif);
+	if (ret) {
+		mutex_unlock(&mt6797_btif_singleton_lock);
+		return ret;
 	}
 	/* BSP hal_btif_raise_wak_sig(): a fresh low/high edge spanning at
 	 * least one 32-kHz period is required for every wake, not only boot.
@@ -613,10 +736,11 @@ static ssize_t transfer_mode_show(struct device *dev,
 {
 	struct mt6797_btif *btif = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%s tx=%llu rx=%llu fault=%u running=%u\n",
+	return sysfs_emit(buf, "%s tx=%llu rx=%llu fault=%u running=%u idle=%u clocked=%u live=%u\n",
 		btif->dma_mode ? "dma" : "pio", READ_ONCE(btif->tx_dma.bytes),
 		READ_ONCE(btif->rx_dma.bytes), READ_ONCE(btif->dma_fault),
-		READ_ONCE(btif->running));
+		READ_ONCE(btif->running), READ_ONCE(btif->idle),
+		READ_ONCE(btif->clocked), READ_ONCE(btif->dma_live));
 }
 
 static ssize_t transfer_mode_store(struct device *dev, struct device_attribute *attr,
@@ -634,7 +758,7 @@ static ssize_t transfer_mode_store(struct device *dev, struct device_attribute *
 		return -EINVAL;
 	mutex_lock(&mt6797_btif_singleton_lock);
 	mutex_lock(&btif->client_lock);
-	if (btif->running || btif->dma_clocked)
+	if (btif->running || btif->dma_clocked || btif->dma_live)
 		ret = -EBUSY;
 	else if (dma && !btif->rx_dma.buffer)
 		ret = -EOPNOTSUPP;

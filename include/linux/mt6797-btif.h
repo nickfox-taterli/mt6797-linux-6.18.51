@@ -23,5 +23,7 @@ void mt6797_btif_release(struct device *client);
 ssize_t mt6797_btif_write(struct device *client, const u8 *data,
 			   size_t length, unsigned long timeout_jiffies);
 int mt6797_btif_wake(struct device *client);
+/* WMT sleep is acknowledged before entry; retain FIFO/register state. */
+int mt6797_btif_idle(struct device *client, bool idle);
 
 #endif /* __LINUX_MT6797_BTIF_H */

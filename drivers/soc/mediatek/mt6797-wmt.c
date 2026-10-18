@@ -98,9 +98,11 @@ static int mt6797_wmt_psm_wake(struct mt6797_wmt *wmt)
 	host_wake = atomic_xchg(&wmt->host_wake_pending, 0);
 	if (!wmt->asleep && !host_wake)
 		return 0;
-	ret = mt6797_stp_session_power(wmt->session,
-		host_wake ? MT6797_STP_POWER_HOST_AWAKE : MT6797_STP_POWER_WAKE,
-		msecs_to_jiffies(1000));
+	ret = mt6797_stp_session_idle(wmt->session, false);
+	if (!ret)
+		ret = mt6797_stp_session_power(wmt->session,
+			host_wake ? MT6797_STP_POWER_HOST_AWAKE : MT6797_STP_POWER_WAKE,
+			msecs_to_jiffies(1000));
 	if (ret) {
 		wmt->psm_error = ret;
 		wmt->psm_enabled = false;
@@ -168,6 +170,13 @@ static void mt6797_wmt_idle_work(struct work_struct *work)
 	}
 	wmt->asleep = true;
 	wmt->sleeps++;
+	ret = mt6797_stp_session_idle(wmt->session, true);
+	if (ret && ret != -EBUSY) {
+		wmt->psm_error = ret;
+		wmt->psm_enabled = false;
+		mt6797_wmt_queue_recovery(wmt, ret, false);
+		goto out;
+	}
 	mt6797_wmt_wake_irq_set(wmt, true);
 out:
 	mutex_unlock(&wmt->lock);

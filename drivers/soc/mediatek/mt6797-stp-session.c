@@ -866,6 +866,20 @@ unlock:
 }
 EXPORT_SYMBOL_GPL(mt6797_stp_session_power);
 
+int mt6797_stp_session_idle(struct mt6797_stp_session *session, bool idle)
+{
+	int ret;
+
+	if (!session)
+		return -EINVAL;
+	/* Serialize gating with the RX worker's final sleep-response ACK. */
+	mutex_lock(&session->tx_io_lock);
+	ret = mt6797_btif_idle(session->owner, idle);
+	mutex_unlock(&session->tx_io_lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_stp_session_idle);
+
 static int mt6797_stp_expect_wmt(struct mt6797_stp_session *session,
 					const u8 *params, u16 parameter_length,
 					const u8 *expected, u16 expected_length,
