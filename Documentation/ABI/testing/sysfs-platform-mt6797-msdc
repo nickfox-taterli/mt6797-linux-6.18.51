@@ -1,0 +1,25 @@
+What:           /sys/bus/platform/devices/...mmc/recovery_status
+Date:           October 2026
+Contact:        X20 port maintainers
+Description:
+                MT6797 SD per-card persistent-CRC recovery counters. Reports
+                consecutive retune entries, completed degradation attempts,
+                original/current UHS capability masks and reset-in-progress.
+                Four consecutive retunes without a successful normal data
+                request remove the current and higher UHS modes and request
+                the standard MMC core card reset. A genuinely new insertion
+                restores the host's original capabilities. eMMC does not use
+                this SD mode degradation policy.
+
+What:           /sys/bus/platform/devices/...mmc/fault_crc_requests
+Date:           October 2026
+Contact:        X20 port maintainers
+Description:
+                Debug interface, present only with CONFIG_FAULT_INJECTION.
+                A write of 0..32 sets a finite number of successful SD normal
+                read/write completions to report -EILSEQ with zero transferred
+                bytes. Does not modify DMA contents, fault tuning commands, or
+                affect eMMC requests. New-card initialization clears the budget.
+                Reads return the remaining budget. Intended for an unmounted
+                card under an independent RAM root; default is zero. This is
+                status fault injection, not an electrical CRC fault generator.
