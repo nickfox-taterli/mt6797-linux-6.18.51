@@ -1500,7 +1500,14 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS)
 			prStaRec = cnmGetStaRecByIndex(prAdapter, prMsduInfo->ucStaRecIndex);
 
-		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS
+		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS &&
+		    prAdapter->prGlueInfo->fgSae && prAdapter->prGlueInfo->fgSaePmkid) {
+			WLAN_SET_FIELD_16(cp, 1);
+			cp += 2;
+			memcpy(cp, prAdapter->prGlueInfo->aucSaePmkid, 16);
+			cp += 16;
+			RSN_IE(pucBuffer)->ucLength += 18;
+		} else if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS
 		    && rsnSearchPmkidEntry(prAdapter, prStaRec->aucMacAddr, &u4Entry)) {
 			/* DBGLOG(RSN, TRACE, ("Add Pmk at assoc req\n")); */
 			/* DBGLOG(RSN, TRACE, ("addr " MACSTR" PMKID "MACSTR"\n", */
@@ -1523,6 +1530,7 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 				kalMemCopy(cp,
 					   (PVOID) prAdapter->rWifiVar.rAisSpecificBssInfo.
 					   arPmkidCache[u4Entry].rBssidInfo.arPMKID, sizeof(PARAM_PMKID_VALUE));
+			cp += sizeof(PARAM_PMKID_VALUE);
 				/* ucExpendedLen = 40; */
 			} else {
 				WLAN_SET_FIELD_16(cp, 0);	/* PMKID count */
@@ -1558,6 +1566,13 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		}
 #endif
 		prMsduInfo->u2FrameLength += IE_SIZE(pucBuffer);
+		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS &&
+		    prAdapter->prGlueInfo->fgSae) {
+			P_GLUE_INFO_T glue = prAdapter->prGlueInfo;
+
+			memcpy(pucBuffer + IE_SIZE(pucBuffer), glue->aucSaeRsnxe, glue->ucSaeRsnxeLen);
+			prMsduInfo->u2FrameLength += glue->ucSaeRsnxeLen;
+		}
 	}
 
 }				/* rsnGenerateRSNIE */

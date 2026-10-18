@@ -148,6 +148,7 @@
 #if CFG_SUPPORT_802_11W
 #define RSN_AKM_SUITE_802_1X_SHA256     0x05AC0F00
 #define RSN_AKM_SUITE_PSK_SHA256        0x06AC0F00
+#define RSN_AKM_SUITE_SAE               0x08AC0F00
 #endif
 
 #define WPA_AKM_SUITE_NONE              0x00F25000

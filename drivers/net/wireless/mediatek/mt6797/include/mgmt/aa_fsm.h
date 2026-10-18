@@ -122,6 +122,7 @@ typedef enum _ENUM_AA_STATE_T {
 	AAA_STATE_SEND_AUTH2,
 	AAA_STATE_SEND_AUTH4,	/* We may not use, because P2P GO didn't support WEP and 11r */
 	AAA_STATE_SEND_ASSOC2,
+	SAA_STATE_EXTERNAL_AUTH,
 	AA_STATE_RESOURCE,	/* A state for debugging the case of out of msg buffer. */
 	AA_STATE_NUM
 } ENUM_AA_STATE_T;
@@ -162,6 +163,7 @@ saaFsmSendEventJoinComplete(IN P_ADAPTER_T prAdapter,
 			    WLAN_STATUS rJoinStatus, P_STA_RECORD_T prStaRec, P_SW_RFB_T prSwRfb);
 
 VOID saaFsmRunEventStart(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr);
+VOID saaFsmRunEventExternalAuth(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr);
 
 WLAN_STATUS
 saaFsmRunEventTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN ENUM_TX_RESULT_CODE_T rTxDoneStatus);

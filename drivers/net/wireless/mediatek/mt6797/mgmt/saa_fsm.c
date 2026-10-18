@@ -337,6 +337,7 @@ static PUINT_8 apucDebugAAState[AA_STATE_NUM] = {
 	(PUINT_8) DISP_STRING("AAA_STATE_SEND_AUTH2"),
 	(PUINT_8) DISP_STRING("AAA_STATE_SEND_AUTH4"),
 	(PUINT_8) DISP_STRING("AAA_STATE_SEND_ASSOC2"),
+	(PUINT_8) DISP_STRING("SAA_STATE_EXTERNAL_AUTH"),
 	(PUINT_8) DISP_STRING("AA_STATE_RESOURCE")
 };
 
@@ -391,6 +392,8 @@ saaFsmSteps(IN P_ADAPTER_T prAdapter,
 				    DBG_SAA_IDX, prStaRec->eAuthAssocState, eNextState);
 #endif
 		ePreviousState = prStaRec->eAuthAssocState;
+		if (ePreviousState == SAA_STATE_EXTERNAL_AUTH && eNextState == AA_STATE_IDLE)
+			kalExternalAuthAbort(prAdapter->prGlueInfo, prStaRec);
 
 		/* NOTE(Kevin): This is the only place to change the eAuthAssocState(except initial) */
 		prStaRec->eAuthAssocState = eNextState;
@@ -431,6 +434,11 @@ saaFsmSteps(IN P_ADAPTER_T prAdapter,
 			break;
 
 		case SAA_STATE_SEND_AUTH1:
+			if (prStaRec->ucAuthAlgNum == AUTH_ALGORITHM_NUM_SAE) {
+				eNextState = SAA_STATE_EXTERNAL_AUTH;
+				fgIsTransition = TRUE;
+				break;
+			}
 
 			/* Do tasks in INIT STATE */
 			if (prStaRec->ucTxAuthAssocRetryCount >= prStaRec->ucTxAuthAssocRetryLimit) {
@@ -468,6 +476,19 @@ saaFsmSteps(IN P_ADAPTER_T prAdapter,
 				}
 			}
 
+			break;
+
+		case SAA_STATE_EXTERNAL_AUTH:
+			/* Arm before notification; completion is queued back to this thread. */
+			cnmTimerInitTimer(prAdapter, &prStaRec->rTxReqDoneOrRxRespTimer,
+				(PFN_MGMT_TIMEOUT_FUNC)saaFsmRunEventRxRespTimeOut, (ULONG)prStaRec);
+			cnmTimerStartTimer(prAdapter, &prStaRec->rTxReqDoneOrRxRespTimer, 3500);
+			if (kalExternalAuthRequest(prAdapter->prGlueInfo, prStaRec)) {
+				cnmTimerStopTimer(prAdapter, &prStaRec->rTxReqDoneOrRxRespTimer);
+				prStaRec->u2StatusCode = STATUS_CODE_UNSPECIFIED_FAILURE;
+				eNextState = AA_STATE_IDLE;
+				fgIsTransition = TRUE;
+			}
 			break;
 
 		case SAA_STATE_WAIT_AUTH2:
@@ -942,6 +963,10 @@ VOID saaFsmRunEventRxRespTimeOut(IN P_ADAPTER_T prAdapter, IN ULONG ulParamPtr)
 	eNextState = prStaRec->eAuthAssocState;
 
 	switch (prStaRec->eAuthAssocState) {
+	case SAA_STATE_EXTERNAL_AUTH:
+		prStaRec->u2StatusCode = STATUS_CODE_AUTH_TIMEOUT;
+		eNextState = AA_STATE_IDLE;
+		break;
 	case SAA_STATE_WAIT_AUTH2:
 		/* Record the Status Code of Authentication Request */
 		prStaRec->u2StatusCode = STATUS_CODE_AUTH_TIMEOUT;
@@ -1536,6 +1561,9 @@ VOID saaFsmRunEventAbort(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr)
 	/* For the Auth/Assoc State to IDLE */
 	prStaRec->eAuthAssocState = AA_STATE_IDLE;
 #else
+	/* Cancel any pending userspace SAE exchange before releasing the record. */
+	if (prStaRec->eAuthAssocState == SAA_STATE_EXTERNAL_AUTH)
+		kalExternalAuthAbort(prAdapter->prGlueInfo, prStaRec);
 	/* Free this StaRec */
 	cnmStaRecFree(prAdapter, prStaRec);
 #endif
@@ -2014,3 +2042,34 @@ VOID joinComplete(IN P_ADAPTER_T prAdapter)
 
 }				/* end of joinComplete() */
 #endif
+
+/* Completion cannot retain STA pointers across cfg80211 and teardown. */
+VOID saaFsmRunEventExternalAuth(IN P_ADAPTER_T adapter, IN P_MSG_HDR_T header)
+{
+	MSG_EXTERNAL_AUTH_T *msg = (MSG_EXTERNAL_AUTH_T *)header;
+	P_AIS_FSM_INFO_T ais = &adapter->rWifiVar.rAisFsmInfo;
+	P_CONNECTION_SETTINGS_T conn = &adapter->rWifiVar.rConnSettings;
+	P_STA_RECORD_T sta = ais->prTargetStaRec;
+
+	if (ais->eCurrentState == AIS_STATE_JOIN && sta && sta->fgIsInUse &&
+	    sta->eAuthAssocState == SAA_STATE_EXTERNAL_AUTH &&
+	    sta->ucAuthAlgNum == AUTH_ALGORITHM_NUM_SAE &&
+	    EQUAL_MAC_ADDR(sta->aucMacAddr, msg->bssid) &&
+	    conn->ucSSIDLen == msg->ssid_len &&
+	    !memcmp(conn->aucSSID, msg->ssid, msg->ssid_len)) {
+		cnmTimerStopTimer(adapter, &sta->rTxReqDoneOrRxRespTimer);
+		adapter->prGlueInfo->fgExternalAuthPending = FALSE;
+		sta->u2StatusCode = msg->status;
+		sta->ucTxAuthAssocRetryCount = 0;
+		if (msg->status == STATUS_CODE_SUCCESSFUL) {
+			adapter->prGlueInfo->fgSaePmkid = msg->has_pmkid;
+			if (msg->has_pmkid)
+				memcpy(adapter->prGlueInfo->aucSaePmkid, msg->pmkid, sizeof(msg->pmkid));
+			cnmStaRecChangeState(adapter, sta, STA_STATE_2);
+			saaFsmSteps(adapter, sta, SAA_STATE_SEND_ASSOC1, NULL);
+		} else {
+			saaFsmSteps(adapter, sta, AA_STATE_IDLE, NULL);
+		}
+	}
+	cnmMemFree(adapter, msg);
+}

@@ -287,6 +287,7 @@ typedef enum _ENUM_MSG_ID_T {
 	MID_OID_AIS_FSM_ABORT,	/* OID/IOCTL notify AIS for abort */
 	MID_AIS_SAA_FSM_START,	/* AIS notify SAA for Starting authentication/association fsm */
 	MID_AIS_SAA_FSM_ABORT,	/* AIS notify SAA for Aborting authentication/association fsm */
+	MID_OID_SAA_EXTERNAL_AUTH,
 	MID_SAA_AIS_JOIN_COMPLETE,	/* SAA notify AIS for indicating join complete */
 
 #if CFG_ENABLE_BT_OVER_WIFI
@@ -418,6 +419,16 @@ typedef struct _MSG_MGMT_TX_REQUEST_T {
 	BOOLEAN fgNoneCckRate;
 	BOOLEAN fgIsWaitRsp;
 } MSG_MGMT_TX_REQUEST_T, *P_MSG_MGMT_TX_REQUEST_T;
+
+typedef struct {
+	MSG_HDR_T rMsgHdr;
+	UINT_8 bssid[MAC_ADDR_LEN];
+	UINT_8 ssid[32];
+	UINT_8 ssid_len;
+	UINT_16 status;
+	BOOLEAN has_pmkid;
+	UINT_8 pmkid[16];
+} MSG_EXTERNAL_AUTH_T;
 
 /* specific message data types */
 typedef MSG_SAA_FSM_START_T MSG_JOIN_REQ_T, *P_MSG_JOIN_REQ_T;

@@ -973,7 +973,28 @@ struct delayed_work sched_workq;
 ********************************************************************************
 */
 
+bool mtk_sae_external_auth = true;
+module_param_named(sae_external_auth, mtk_sae_external_auth, bool, 0444);
+MODULE_PARM_DESC(sae_external_auth, "Enable standard userspace SAE authentication");
+
+static const u32 mtk_akm_suites[] = {
+	WLAN_AKM_SUITE_8021X, WLAN_AKM_SUITE_PSK,
+#if CFG_SUPPORT_802_11W
+	WLAN_AKM_SUITE_8021X_SHA256, WLAN_AKM_SUITE_PSK_SHA256,
+	WLAN_AKM_SUITE_SAE, /* must remain last: optional STA external auth */
+#endif
+};
+
+#if CFG_SUPPORT_802_11W
+static const struct wiphy_iftype_akm_suites mtk_sta_akm_suites[] = {
+	{ .iftypes_mask = BIT(NL80211_IFTYPE_STATION),
+	  .akm_suites = mtk_akm_suites,
+	  .n_akm_suites = ARRAY_SIZE(mtk_akm_suites) },
+};
+#endif
+
 static struct cfg80211_ops mtk_wlan_ops = {
+	.external_auth = mtk_cfg80211_external_auth,
 	.suspend = mtk_cfg80211_suspend,
 	.resume	= mtk_cfg80211_resume,
 	.change_virtual_intf = mtk_cfg80211_change_iface,
@@ -1162,7 +1183,8 @@ static const struct ieee80211_txrx_stypes
 	},
 	[NL80211_IFTYPE_STATION] = {
 		.tx = 0xffff,
-		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) | BIT(IEEE80211_STYPE_PROBE_REQ >> 4)
+		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) | BIT(IEEE80211_STYPE_PROBE_REQ >> 4) |
+		      BIT(IEEE80211_STYPE_AUTH >> 4)
 	},
 	[NL80211_IFTYPE_AP] = {
 		.tx = 0xffff,
@@ -2151,6 +2173,16 @@ static int createWirelessDevice(void)
 	prWiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 	prWiphy->cipher_suites = mtk_cipher_suites;
 	prWiphy->n_cipher_suites = ARRAY_SIZE(mtk_cipher_suites);
+	prWiphy->akm_suites = mtk_akm_suites;
+	prWiphy->n_akm_suites = ARRAY_SIZE(mtk_akm_suites);
+#if CFG_SUPPORT_802_11W
+	prWiphy->n_akm_suites--; /* SAE is only implemented for STA. */
+	if (mtk_sae_external_auth) {
+		prWiphy->features |= NL80211_FEATURE_SAE;
+		prWiphy->iftype_akm_suites = mtk_sta_akm_suites;
+		prWiphy->num_iftype_akm_suites = ARRAY_SIZE(mtk_sta_akm_suites);
+	}
+#endif
 	prWiphy->flags = WIPHY_FLAG_SUPPORTS_FW_ROAM | WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL;
 	prWiphy->regulatory_flags = REGULATORY_CUSTOM_REG;
 #if CFG_SUPPORT_TDLS

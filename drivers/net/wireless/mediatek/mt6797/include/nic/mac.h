@@ -666,6 +666,7 @@
 #define AUTH_ALGORITHM_NUM_OPEN_SYSTEM              0	/* Open System */
 #define AUTH_ALGORITHM_NUM_SHARED_KEY               1	/* Shared Key */
 #define AUTH_ALGORITHM_NUM_FAST_BSS_TRANSITION      2	/* Fast BSS Transition */
+#define AUTH_ALGORITHM_NUM_SAE                      3
 
 /* 7.3.1.2 Authentication Transaction Sequence Number field */
 #define AUTH_TRANSACTION_SEQENCE_NUM_FIELD_LEN      2
@@ -1020,7 +1021,7 @@
 
 /* 7.3.2.25 RSN information element */
 #define ELEM_MAX_LEN_WPA                            34	/* one pairwise, one AKM suite, one PMKID */
-#define ELEM_MAX_LEN_RSN                            38	/* one pairwise, one AKM suite, one PMKID */
+#define ELEM_MAX_LEN_RSN                            42	/* pairwise, AKM, PMKID and management-group suite */
 #define ELEM_MAX_LEN_WAPI                           38	/* one pairwise, one AKM suite, one BKID */
 #define ELEM_MAX_LEN_WSC                            200	/* one pairwise, one AKM suite, one BKID */
 

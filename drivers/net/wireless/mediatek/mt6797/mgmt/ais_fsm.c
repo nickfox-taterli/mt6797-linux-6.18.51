@@ -1563,6 +1563,9 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 		ASSERT(0);
 	}
 
+	if (prAdapter->prGlueInfo->fgSae)
+		prStaRec->ucAuthAlgNum = AUTH_ALGORITHM_NUM_SAE;
+
 	/* 4 <5> Overwrite Connection Setting for eConnectionPolicy == ANY (Used by Assoc Req) */
 	if (prBssDesc->ucSSIDLen)
 		COPY_SSID(prConnSettings->aucSSID, prConnSettings->ucSSIDLen, prBssDesc->aucSSID, prBssDesc->ucSSIDLen);

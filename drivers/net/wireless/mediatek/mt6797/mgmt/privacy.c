@@ -281,6 +281,8 @@ VOID secInit(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex)
 	    RSN_AKM_SUITE_802_1X_SHA256;
 	prAdapter->rMib.dot11RSNAConfigAuthenticationSuitesTable[7].dot11RSNAConfigAuthenticationSuite =
 	    RSN_AKM_SUITE_PSK_SHA256;
+	prAdapter->rMib.dot11RSNAConfigAuthenticationSuitesTable[8].dot11RSNAConfigAuthenticationSuite =
+	    RSN_AKM_SUITE_SAE;
 #endif
 
 	for (i = 0; i < MAX_NUM_SUPPORTED_AKM_SUITES; i++) {

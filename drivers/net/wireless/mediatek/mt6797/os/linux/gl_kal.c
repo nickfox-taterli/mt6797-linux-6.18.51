@@ -5612,3 +5612,36 @@ VOID kalFbNotifierUnReg(VOID)
 {
 }
 #endif
+
+int kalExternalAuthRequest(P_GLUE_INFO_T glue, P_STA_RECORD_T sta)
+{
+	int result;
+	P_CONNECTION_SETTINGS_T conn = &glue->prAdapter->rWifiVar.rConnSettings;
+	struct cfg80211_external_auth_params params = {
+		.action = NL80211_EXTERNAL_AUTH_START,
+		/* nl80211 external-auth uses the four selector octets in order. */
+		.key_mgmt_suite = (__force u32)cpu_to_be32(WLAN_AKM_SUITE_SAE),
+	};
+
+	if (!glue->fgSae || conn->ucSSIDLen > sizeof(params.ssid.ssid))
+		return -EINVAL;
+	memcpy(params.bssid, sta->aucMacAddr, MAC_ADDR_LEN);
+	params.ssid.ssid_len = conn->ucSSIDLen;
+	memcpy(params.ssid.ssid, conn->aucSSID, conn->ucSSIDLen);
+	glue->rExternalAuth = params;
+	glue->fgExternalAuthPending = TRUE;
+	result = cfg80211_external_auth_request(glue->prDevHandler, &params, GFP_KERNEL);
+	if (result)
+		glue->fgExternalAuthPending = FALSE;
+	return result;
+}
+
+void kalExternalAuthAbort(P_GLUE_INFO_T glue, P_STA_RECORD_T sta)
+{
+	if (!glue->fgExternalAuthPending ||
+	    !EQUAL_MAC_ADDR(glue->rExternalAuth.bssid, sta->aucMacAddr))
+		return;
+	glue->fgExternalAuthPending = FALSE;
+	glue->rExternalAuth.action = NL80211_EXTERNAL_AUTH_ABORT;
+	cfg80211_external_auth_request(glue->prDevHandler, &glue->rExternalAuth, GFP_KERNEL);
+}

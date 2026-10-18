@@ -691,11 +691,23 @@ WLAN_STATUS authCheckRxAuthFrameTransSeq(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T
 	/* 4 <2> Parse the Header of Authentication Frame. */
 	u2MinPayloadLen = (AUTH_ALGORITHM_NUM_FIELD_LEN +
 			   AUTH_TRANSACTION_SEQENCE_NUM_FIELD_LEN + STATUS_CODE_FIELD_LEN);
-	if ((prSwRfb->u2PacketLen - prSwRfb->u2HeaderLen) < u2MinPayloadLen) {
+	if (prSwRfb->u2HeaderLen > prSwRfb->u2PacketLen ||
+	    prSwRfb->u2PacketLen - prSwRfb->u2HeaderLen < u2MinPayloadLen) {
 		DBGLOG(SAA, WARN, "Rx Auth payload: len[%u] < min expected len[%u]\n",
 				   (prSwRfb->u2PacketLen - prSwRfb->u2HeaderLen), u2MinPayloadLen);
 		DBGLOG(SAA, WARN, "=== Dump Rx Auth ===\n");
 		DBGLOG_MEM8(SAA, WARN, prAuthFrame, prSwRfb->u2PacketLen);
+		return WLAN_STATUS_SUCCESS;
+	}
+	/* SAE commit and confirm use sequences 1 and 2; never dispatch to AAA. */
+	if (prAuthFrame->u2AuthAlgNum == AUTH_ALGORITHM_NUM_SAE) {
+		P_STA_RECORD_T sta = prAdapter->rWifiVar.rAisFsmInfo.prTargetStaRec;
+
+		if (sta && sta->fgIsInUse && sta->eAuthAssocState == SAA_STATE_EXTERNAL_AUTH &&
+		    EQUAL_MAC_ADDR(prAuthFrame->aucSrcAddr, sta->aucMacAddr) &&
+		    EQUAL_MAC_ADDR(prAuthFrame->aucBSSID, sta->aucMacAddr) &&
+		    EQUAL_MAC_ADDR(prAuthFrame->aucDestAddr, prAdapter->prAisBssInfo->aucOwnMacAddr))
+			kalIndicateRxMgmtFrame(prAdapter->prGlueInfo, prSwRfb);
 		return WLAN_STATUS_SUCCESS;
 	}
 	/* 4 <3> Parse the Fixed Fields of Authentication Frame Body. */

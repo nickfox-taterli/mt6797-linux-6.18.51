@@ -811,6 +811,14 @@ struct _GLUE_INFO_T {
 	/* semaphore for ioctl */
 	struct semaphore ioctl_sem;
 
+	/* SAE is performed by userspace; legacy firmware still handles CCMP. */
+	BOOLEAN fgSae;
+	BOOLEAN fgExternalAuthPending;
+	struct cfg80211_external_auth_params rExternalAuth;
+	UINT_8 aucSaeRsnxe[18];
+	UINT_8 ucSaeRsnxeLen;
+	BOOLEAN fgSaePmkid;
+	UINT_8 aucSaePmkid[16];
 	UINT_64 u8Cookie;
 
 	ULONG ulFlag;		/* GLUE_FLAG_XXX */

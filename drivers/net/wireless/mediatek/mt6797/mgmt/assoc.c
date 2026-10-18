@@ -493,7 +493,7 @@ APPEND_VAR_IE_ENTRY_T txAssocReqIETable[] = {
 	,			/* 127 */
 	{(ELEM_HDR_LEN + ELEM_MAX_LEN_WMM_INFO), NULL, mqmGenerateWmmInfoIE}
 	,			/* 221 */
-	{(ELEM_HDR_LEN + ELEM_MAX_LEN_RSN), NULL, rsnGenerateRSNIE}
+	{(ELEM_HDR_LEN + ELEM_MAX_LEN_RSN + 18), NULL, rsnGenerateRSNIE}
 	,			/* 48 */
 #if CFG_SUPPORT_802_11AC
 	{(ELEM_HDR_LEN + ELEM_MAX_LEN_VHT_CAP), NULL, rlmReqGenerateVhtCapIE}

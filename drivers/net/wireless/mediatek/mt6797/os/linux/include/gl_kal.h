@@ -1317,6 +1317,8 @@ kalIndicateMgmtTxStatus(IN P_GLUE_INFO_T prGlueInfo,
 			IN UINT_64 u8Cookie, IN BOOLEAN fgIsAck, IN PUINT_8 pucFrameBuf, IN UINT_32 u4FrameLen);
 
 VOID kalIndicateRxMgmtFrame(IN P_GLUE_INFO_T prGlueInfo, IN P_SW_RFB_T prSwRfb);
+int kalExternalAuthRequest(P_GLUE_INFO_T glue, P_STA_RECORD_T sta);
+void kalExternalAuthAbort(P_GLUE_INFO_T glue, P_STA_RECORD_T sta);
 
 /*----------------------------------------------------------------------------*/
 /* Routines in interface - ehpi/sdio.c                                                       */

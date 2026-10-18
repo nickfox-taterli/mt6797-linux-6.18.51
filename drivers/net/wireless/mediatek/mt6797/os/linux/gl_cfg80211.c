@@ -726,9 +726,51 @@ static UINT_8 wepBuf[48];
  *         others:  failure
  */
 /*----------------------------------------------------------------------------*/
+static int mtk_sae_validate_connect(const struct cfg80211_connect_params *sme)
+{
+	/* No firmware SAE offload: require the standard userspace exchange. */
+	if (sme->auth_type == NL80211_AUTHTYPE_SAE ||
+	    (sme->crypto.n_akm_suites && sme->crypto.akm_suites[0] == WLAN_AKM_SUITE_SAE)) {
+		if (!mtk_sae_external_auth || !(sme->flags & CONNECT_REQ_EXTERNAL_AUTH_SUPPORT))
+			return -EOPNOTSUPP;
+		if (sme->auth_type != NL80211_AUTHTYPE_SAE ||
+		    sme->crypto.n_akm_suites != 1 || sme->crypto.akm_suites[0] != WLAN_AKM_SUITE_SAE ||
+		    sme->mfp != NL80211_MFP_REQUIRED ||
+		    sme->crypto.wpa_versions != NL80211_WPA_VERSION_2 ||
+		    sme->crypto.n_ciphers_pairwise != 1 ||
+		    sme->crypto.ciphers_pairwise[0] != WLAN_CIPHER_SUITE_CCMP ||
+		    sme->crypto.cipher_group != WLAN_CIPHER_SUITE_CCMP)
+			return -EINVAL;
+	}
+	return 0;
+}
+
+static int mtk_sae_copy_rsnxe(P_GLUE_INFO_T glue, const u8 *ies, size_t length)
+{
+	glue->ucSaeRsnxeLen = 0;
+	while (length) {
+		size_t size;
+
+		if (length < 2 || ies[1] > length - 2)
+			return -EINVAL;
+		size = ies[1] + 2;
+		if (ies[0] == WLAN_EID_RSNX) {
+			if (glue->ucSaeRsnxeLen || ies[1] < 1 ||
+			    size > sizeof(glue->aucSaeRsnxe) || (ies[2] & 0xf) + 1 != ies[1])
+				return -EINVAL;
+			memcpy(glue->aucSaeRsnxe, ies, size);
+			glue->ucSaeRsnxeLen = size;
+		}
+		ies += size;
+		length -= size;
+	}
+	return 0;
+}
+
 int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cfg80211_connect_params *sme)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
+	int error;
 	WLAN_STATUS rStatus;
 	UINT_32 u4BufLen;
 	ENUM_PARAM_ENCRYPTION_STATUS_T eEncStatus;
@@ -742,6 +784,15 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
+
+	error = mtk_sae_validate_connect(sme);
+	if (error)
+		return error;
+	prGlueInfo->fgSae = sme->auth_type == NL80211_AUTHTYPE_SAE;
+	prGlueInfo->fgSaePmkid = FALSE;
+	prGlueInfo->ucSaeRsnxeLen = 0;
+	if (prGlueInfo->fgSae && mtk_sae_copy_rsnxe(prGlueInfo, sme->ie, sme->ie_len))
+		return -EINVAL;
 
 	if (prGlueInfo->prAdapter->rWifiVar.rConnSettings.eOPMode > NET_TYPE_AUTO_SWITCH)
 		eOpMode = NET_TYPE_AUTO_SWITCH;
@@ -882,6 +933,11 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 			case WLAN_AKM_SUITE_8021X_SHA256:
 				eAuthMode = AUTH_MODE_WPA2;
 				u4AkmSuite = RSN_AKM_SUITE_802_1X_SHA256;
+				break;
+			case WLAN_AKM_SUITE_SAE:
+				/* Firmware ABI stays RSN/CCMP; host selects SAE in RSNE. */
+				eAuthMode = AUTH_MODE_WPA2_PSK;
+				u4AkmSuite = RSN_AKM_SUITE_SAE;
 				break;
 			case WLAN_AKM_SUITE_PSK_SHA256:
 				eAuthMode = AUTH_MODE_WPA2_PSK;
@@ -2932,4 +2988,32 @@ void mtk_cfg80211_update_mgmt_frame_registrations(struct wiphy *wiphy,
 				      !!(types & BIT(MAC_FRAME_PROBE_REQ >> 4)));
 	mtk_cfg80211_mgmt_frame_register(wiphy, wdev, MAC_FRAME_ACTION,
 				      !!(types & BIT(MAC_FRAME_ACTION >> 4)));
+}
+
+int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *ndev,
+		struct cfg80211_external_auth_params *params)
+{
+	P_GLUE_INFO_T glue = wiphy_priv(wiphy);
+	MSG_EXTERNAL_AUTH_T *msg;
+
+	if (!mtk_sae_external_auth || ndev != glue->prDevHandler)
+		return -EOPNOTSUPP;
+	if (!glue->u4ReadyFlag || test_bit(GLUE_FLAG_HALT_BIT, &glue->ulFlag))
+		return -ENODEV;
+	if (params->ssid.ssid_len > sizeof(msg->ssid))
+		return -EINVAL;
+	msg = cnmMemAlloc(glue->prAdapter, RAM_TYPE_MSG, sizeof(*msg));
+	if (!msg)
+		return -ENOMEM;
+	memset(msg, 0, sizeof(*msg));
+	msg->rMsgHdr.eMsgId = MID_OID_SAA_EXTERNAL_AUTH;
+	memcpy(msg->bssid, params->bssid, MAC_ADDR_LEN);
+	msg->ssid_len = params->ssid.ssid_len;
+	memcpy(msg->ssid, params->ssid.ssid, msg->ssid_len);
+	msg->status = params->status;
+	msg->has_pmkid = params->pmkid != NULL;
+	if (params->pmkid)
+		memcpy(msg->pmkid, params->pmkid, sizeof(msg->pmkid));
+	mboxSendMsg(glue->prAdapter, MBOX_ID_0, &msg->rMsgHdr, MSG_SEND_METHOD_BUF);
+	return 0;
 }

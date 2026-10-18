@@ -68,6 +68,10 @@
 
 #include "gl_os.h"
 
+extern bool mtk_sae_external_auth;
+int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *ndev,
+		struct cfg80211_external_auth_params *params);
+
 /*******************************************************************************
 *                              C O N S T A N T S
 ********************************************************************************
