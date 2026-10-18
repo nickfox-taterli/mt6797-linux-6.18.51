@@ -853,11 +853,15 @@ static int mt6797_btif_probe(struct platform_device *pdev)
 	ret = btif_dma_probe(pdev, btif);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "BTIF DMA setup failed\n");
+	btif->dma_mode = of_property_read_bool(pdev->dev.of_node, "mediatek,use-dma");
+	if (btif->dma_mode && !btif->rx_dma.buffer)
+		return -EINVAL;
 	platform_set_drvdata(pdev, btif);
 	mutex_lock(&mt6797_btif_singleton_lock);
 	mt6797_btif_singleton = btif;
 	mutex_unlock(&mt6797_btif_singleton_lock);
-	dev_info(&pdev->dev, "MT6797 BTIF transport ready (PIO%s; STP client required)\n",
+	dev_info(&pdev->dev, "MT6797 BTIF transport ready (%s%s; STP client required)\n",
+		 btif->dma_mode ? "DMA" : "PIO",
 		 btif->rx_dma.buffer ? ", DMA/VFIFO available" : "");
 	return 0;
 }

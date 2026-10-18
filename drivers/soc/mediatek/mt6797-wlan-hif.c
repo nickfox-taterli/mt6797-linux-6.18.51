@@ -699,6 +699,9 @@ static int mt6797_wlan_hif_probe(struct platform_device *pdev)
 		if (!hif->dma_buffer)
 			return -ENOMEM;
 	}
+	hif->dma_enabled = of_property_read_bool(pdev->dev.of_node, "mediatek,use-dma");
+	if (hif->dma_enabled && !hif->dma_buffer)
+		return -EINVAL;
 	mutex_init(&hif->lock);
 
 	mutex_lock(&mt6797_wlan_hif_singleton_lock);

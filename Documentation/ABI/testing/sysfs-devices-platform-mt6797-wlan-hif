@@ -14,3 +14,9 @@ Description:
 		A DMA timeout fails the current session; it never retries an
 		incomplete packet through PIO. This interface is for bring-up
 		and does not establish WLAN firmware or data-plane readiness.
+
+                The X20 storage DT selects DMA at probe with the optional
+                mediatek,use-dma boolean on the WLAN HIF and BTIF nodes.
+                An absent property retains PIO for diagnostic DTs. Selecting
+                DMA requires a successfully allocated hardware DMA buffer;
+                the existing sysfs controls remain available while unclaimed.

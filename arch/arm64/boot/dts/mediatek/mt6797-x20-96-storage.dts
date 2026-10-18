@@ -8,6 +8,15 @@
 	mediatek,defer-registration;
 };
 
+/* Accepted together with normal data, shared recovery and PSM clock gating. */
+&btif {
+	mediatek,use-dma;
+};
+
+&wifi_hif {
+	mediatek,use-dma;
+};
+
 &pmic {
 	regulators {
 		mt6351_vemc: ldo_vemc {
