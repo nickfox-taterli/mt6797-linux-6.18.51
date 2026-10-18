@@ -28,6 +28,15 @@
 };
 
 &mmc1 {
+	/* GPIO67 follows its bias with and without a card on this board.
+	 * Poll the removable SD card until a working detection signal is known.
+	 */
+	/delete-property/ cd-gpios;
+	broken-cd;
+	no-sdio;
+	no-mmc;
+	disable-wp;
+
 	/* BSP SDR104 target; the 384 MHz parent yields 192 MHz actual. */
 	max-frequency = <200000000>;
 	sd-uhs-sdr12;
@@ -41,6 +50,7 @@
 
 /* Board BSP drive encodings 6/3/4 correspond to 14/8/10 mA. */
 &mmc1_pins_default {
+	/delete-node/ pins-cd;
 	pins-cmd {
 		drive-strength = <14>;
 		mediatek,tdsel = <12>;
@@ -56,6 +66,7 @@
 };
 
 &mmc1_pins_uhs {
+	/delete-node/ pins-cd;
 	pins-cmd {
 		drive-strength = <8>;
 		mediatek,tdsel = <12>;

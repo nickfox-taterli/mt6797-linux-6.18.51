@@ -1937,11 +1937,21 @@ static void msdc_recheck_sdio_irq(struct msdc_host *host)
 
 static void msdc_track_cmd_data(struct msdc_host *host, struct mmc_command *cmd)
 {
-	if (host->error &&
-	    ((!mmc_op_tuning(cmd->opcode) && !host->hs400_tuning) ||
-	     cmd->error == -ETIMEDOUT))
-		dev_warn(host->dev, "%s: cmd=%d arg=%08X; host->error=0x%08X\n",
-			 __func__, cmd->opcode, cmd->arg, host->error);
+	struct mmc_host *mmc = mmc_from_priv(host);
+
+	if (!host->error)
+		return;
+	/* Enumeration probes and failed tuning taps are expected. In particular,
+	 * a polled removable slot must not warn continuously while it is empty.
+	 * Keep active-card command/data errors visible, including timeouts.
+	 */
+	if (!mmc->card || mmc_op_tuning(cmd->opcode) || host->hs400_tuning)
+		dev_dbg(host->dev, "probe/tuning cmd=%d arg=%08X error=%08X\n",
+			cmd->opcode, cmd->arg, host->error);
+	else
+		dev_warn_ratelimited(host->dev,
+			"cmd=%d arg=%08X error=%08X\n",
+			cmd->opcode, cmd->arg, host->error);
 }
 
 static void msdc_request_done(struct msdc_host *host, struct mmc_request *mrq)
@@ -2316,8 +2326,9 @@ static void msdc_data_xfer_done(struct msdc_host *host, u32 events,
 				data->error = -EIO;
 
 			if (host->dev_comp->vendor_timing_init &&
+			    !mmc_op_tuning(mrq->cmd->opcode) && !host->hs400_tuning &&
 			    (events & (MSDC_INT_DATCRCERR | MSDC_INT_DATTMO)))
-				dev_err(host->dev,
+				dev_err_ratelimited(host->dev,
 					"MT6797 data diag: cmd=%d events=%08x actual=%u "
 					"cfg=%08x iocon=%08x pad0=%08x pad1=%08x pb0=%08x "
 					"pb1=%08x pb2=%08x emmc50=%08x\n",
