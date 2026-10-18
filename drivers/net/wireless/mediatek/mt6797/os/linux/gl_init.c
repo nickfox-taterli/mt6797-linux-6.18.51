@@ -2747,6 +2747,19 @@ bailout:
 			       prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling);
 		}
 
+#if CFG_SUPPORT_802_11AC
+		/* Match the on-air 1SS MCS map and the loaded feature policy. */
+		wiphy_lock(prWdev->wiphy);
+		memset(&mtk_band_5ghz.vht_cap, 0, sizeof(mtk_band_5ghz.vht_cap));
+		if (prAdapter->fgEnable5GBand &&
+		    IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucStaVht)) {
+			mtk_band_5ghz.vht_cap.vht_supported = true;
+			mtk_band_5ghz.vht_cap.cap = rlmGetVhtCapInfo(prAdapter, TRUE);
+			mtk_band_5ghz.vht_cap.vht_mcs.rx_mcs_map = cpu_to_le16(VHT_MCS_MAP_1SS);
+			mtk_band_5ghz.vht_cap.vht_mcs.tx_mcs_map = cpu_to_le16(VHT_MCS_MAP_1SS);
+		}
+		wiphy_unlock(prWdev->wiphy);
+#endif
 		if (FALSE == prAdapter->fgEnable5GBand)
 			prWdev->wiphy->bands[NL80211_BAND_5GHZ] = NULL;
 

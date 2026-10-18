@@ -1175,11 +1175,35 @@ VOID rlmRspGenerateVhtOpIE(P_ADAPTER_T prAdapter, P_MSDU_INFO_T prMsduInfo)
 * \return none
 */
 /*----------------------------------------------------------------------------*/
+UINT_32 rlmGetVhtCapInfo(P_ADAPTER_T prAdapter, BOOLEAN beamformee)
+{
+	UINT_32 cap = VHT_CAP_INFO_DEFAULT_VAL;
+
+	if (beamformee && IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucStaVhtBfee)) {
+		cap |= FIELD_VHT_CAP_INFO_BF;
+		if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucStaVhtMuBfee))
+			cap |= VHT_CAP_INFO_MU_BEAMFOMEE_CAPABLE;
+	}
+
+	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxShortGI))
+		cap |= VHT_CAP_INFO_SHORT_GI_80;
+
+	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxLdpc))
+		cap |= VHT_CAP_INFO_RX_LDPC;
+
+	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxStbc))
+		cap |= VHT_CAP_INFO_RX_STBC_ONE_STREAM;
+
+	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucTxStbc))
+		cap |= VHT_CAP_INFO_TX_STBC;
+
+	return cap;
+}
+
 static VOID rlmFillVhtCapIE(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, P_MSDU_INFO_T prMsduInfo)
 {
 	P_IE_VHT_CAP_T prVhtCap;
 	P_VHT_SUPPORTED_MCS_FIELD prVhtSupportedMcsSet;
-	UINT_8 i;
 
 	ASSERT(prAdapter);
 	ASSERT(prBssInfo);
@@ -1190,37 +1214,14 @@ static VOID rlmFillVhtCapIE(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, P_MSD
 
 	prVhtCap->ucId = ELEM_ID_VHT_CAP;
 	prVhtCap->ucLength = sizeof(IE_VHT_CAP_T) - ELEM_HDR_LEN;
-	prVhtCap->u4VhtCapInfo = VHT_CAP_INFO_DEFAULT_VAL;
-
-	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucStaVhtBfee)) {
-		prVhtCap->u4VhtCapInfo |= FIELD_VHT_CAP_INFO_BF;
-		if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucStaVhtMuBfee))
-			prVhtCap->u4VhtCapInfo |= VHT_CAP_INFO_MU_BEAMFOMEE_CAPABLE;
-	}
-
-	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxShortGI))
-		prVhtCap->u4VhtCapInfo |= VHT_CAP_INFO_SHORT_GI_80;
-
-	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxLdpc))
-		prVhtCap->u4VhtCapInfo |= VHT_CAP_INFO_RX_LDPC;
-
-	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucRxStbc))
-		prVhtCap->u4VhtCapInfo |= VHT_CAP_INFO_RX_STBC_ONE_STREAM;
-
-	if (IS_FEATURE_ENABLED(prAdapter->rWifiVar.ucTxStbc))
-		prVhtCap->u4VhtCapInfo |= VHT_CAP_INFO_TX_STBC;
-
+	prVhtCap->u4VhtCapInfo = rlmGetVhtCapInfo(prAdapter, TRUE);
 	/*set MCS map */
 	prVhtSupportedMcsSet = &prVhtCap->rVhtSupportedMcsSet;
 	kalMemZero((PVOID) prVhtSupportedMcsSet, sizeof(VHT_SUPPORTED_MCS_FIELD));
 
-	for (i = 0; i < 8; i++) {
-		prVhtSupportedMcsSet->u2RxMcsMap |= BITS(2 * i, (2 * i + 1));
-		prVhtSupportedMcsSet->u2TxMcsMap |= BITS(2 * i, (2 * i + 1));
-	}
-
-	prVhtSupportedMcsSet->u2RxMcsMap &= (VHT_CAP_INFO_MCS_MAP_MCS9 << VHT_CAP_INFO_MCS_1SS_OFFSET);
-	prVhtSupportedMcsSet->u2TxMcsMap &= (VHT_CAP_INFO_MCS_MAP_MCS9 << VHT_CAP_INFO_MCS_1SS_OFFSET);
+	/* MT6797 is 1SS. Keep streams 2..8 explicitly unsupported. */
+	prVhtSupportedMcsSet->u2RxMcsMap = VHT_MCS_MAP_1SS;
+	prVhtSupportedMcsSet->u2TxMcsMap = VHT_MCS_MAP_1SS;
 	prVhtSupportedMcsSet->u2RxHighestSupportedDataRate = VHT_CAP_INFO_DEFAULT_HIGHEST_DATA_RATE;
 	prVhtSupportedMcsSet->u2TxHighestSupportedDataRate = VHT_CAP_INFO_DEFAULT_HIGHEST_DATA_RATE;
 
@@ -2468,7 +2469,6 @@ UINT_32 rlmFillVhtCapIEByAdapter(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, 
 {
 	P_IE_VHT_CAP_T prVhtCap;
 	P_VHT_SUPPORTED_MCS_FIELD prVhtSupportedMcsSet;
-	UINT_8 i;
 
 	ASSERT(prAdapter);
 	ASSERT(prBssInfo);
@@ -2493,13 +2493,9 @@ UINT_32 rlmFillVhtCapIEByAdapter(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, 
 	prVhtSupportedMcsSet = &prVhtCap->rVhtSupportedMcsSet;
 	kalMemZero((PVOID) prVhtSupportedMcsSet, sizeof(VHT_SUPPORTED_MCS_FIELD));
 
-	for (i = 0; i < 8; i++) {
-		prVhtSupportedMcsSet->u2RxMcsMap |= BITS(2 * i, (2 * i + 1));
-		prVhtSupportedMcsSet->u2TxMcsMap |= BITS(2 * i, (2 * i + 1));
-	}
-
-	prVhtSupportedMcsSet->u2RxMcsMap &= (VHT_CAP_INFO_MCS_MAP_MCS9 << VHT_CAP_INFO_MCS_1SS_OFFSET);
-	prVhtSupportedMcsSet->u2TxMcsMap &= (VHT_CAP_INFO_MCS_MAP_MCS9 << VHT_CAP_INFO_MCS_1SS_OFFSET);
+	/* MT6797 is 1SS. Keep streams 2..8 explicitly unsupported. */
+	prVhtSupportedMcsSet->u2RxMcsMap = VHT_MCS_MAP_1SS;
+	prVhtSupportedMcsSet->u2TxMcsMap = VHT_MCS_MAP_1SS;
 	prVhtSupportedMcsSet->u2RxHighestSupportedDataRate = VHT_CAP_INFO_DEFAULT_HIGHEST_DATA_RATE;
 	prVhtSupportedMcsSet->u2TxHighestSupportedDataRate = VHT_CAP_INFO_DEFAULT_HIGHEST_DATA_RATE;
 

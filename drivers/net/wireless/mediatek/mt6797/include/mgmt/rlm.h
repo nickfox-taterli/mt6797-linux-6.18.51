@@ -301,6 +301,8 @@ extern UINT_16 g_u2DumpIndex;
 	(VHT_CAP_INFO_MAX_MPDU_LEN_3K | \
 	 (AMPDU_PARAM_MAX_AMPDU_LEN_1024K << VHT_CAP_INFO_MAX_AMPDU_LENGTH_OFFSET))
 
+#define VHT_MCS_MAP_1SS ((UINT_16)(0xfffc | VHT_CAP_INFO_MCS_MAP_MCS9))
+
 #define VHT_CAP_INFO_DEFAULT_HIGHEST_DATA_RATE			0
 #endif
 /*******************************************************************************
@@ -407,6 +409,8 @@ UINT_32 rlmFillVhtCapIEByAdapter(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInfo, 
 #endif
 
 #if CFG_SUPPORT_802_11AC
+UINT_32 rlmGetVhtCapInfo(P_ADAPTER_T prAdapter, BOOLEAN beamformee);
+
 VOID rlmReqGenerateVhtCapIE(P_ADAPTER_T prAdapter, P_MSDU_INFO_T prMsduInfo);
 
 VOID rlmRspGenerateVhtCapIE(P_ADAPTER_T prAdapter, P_MSDU_INFO_T prMsduInfo);
