@@ -244,17 +244,20 @@
 	/*
 	 * MT6797 ConSys host transport.  This is a two-wire BTIF peripheral,
 	 * not a 16550-compatible console UART; STP/WMT owns its byte stream.
-	 * Keep it disabled until the PIO transport and ConSys power owner are
-	 * present.  AP-DMA is intentionally left out of this first resource
-	 * description; T1 starts with PIO and can add it when its ownership is
-	 * proven.
+	 * The dedicated AP-DMA TX/RX VFIFOs belong to this transport, with
+	 * separate IRQs. ConSys power and STP ownership remain above BTIF.
 	 */
 	btif: btif@1100c000 {
 		compatible = "mediatek,mt6797-btif";
-		reg = <0 0x1100c000 0 0x1000>;
-		interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>;
-		clocks = <&infrasys CLK_INFRA_BTIF>;
-		clock-names = "btif";
+		reg = <0 0x1100c000 0 0x1000>,
+		      <0 0x11000a00 0 0x80>,
+		      <0 0x11000a80 0 0x80>;
+		reg-names = "btif", "tx-dma", "rx-dma";
+		interrupts = <GIC_SPI 130 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 116 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 117 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_BTIF>, <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "btif", "dma";
 		status = "disabled";
 	};
 
