@@ -3441,7 +3441,7 @@ static int msdc_mt6797_tune_data(struct mmc_host *mmc, u32 opcode)
 				pass[edge] |= BIT_ULL(delay);
 		}
 	}
-	ret = mt6797_autok_select(pass[0], pass[1], &result);
+	ret = mt6797_autok_select_data(pass[0], pass[1], &result);
 	if (ret)
 		return ret;
 	msdc_set_data_sample_edge(host, !result.edge);

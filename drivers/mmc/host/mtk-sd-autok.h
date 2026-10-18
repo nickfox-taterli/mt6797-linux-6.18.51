@@ -634,6 +634,22 @@ static int mt6797_autok_select(u64 rise, u64 fall, struct mt6797_autok_result *r
 	return 0;
 }
 
+static int mt6797_autok_select_data(u64 rise, u64 fall,
+		struct mt6797_autok_result *r)
+{
+	int ret = mt6797_autok_select(rise, fall, r);
+
+	if (ret)
+		return ret;
+	/* Keep the BSP edge/window choice, but balance the measured DAT margin.
+	 * Its extrapolated low-delay bias passed CMD19 yet produced real CMD18
+	 * CRCs on X20. The midpoint maximizes distance from both observed ends.
+	 */
+	r->delay = r->start + (r->width - 1) / 2;
+	mt6797_autok_window(r->edge ? fall : rise, r);
+	return 0;
+}
+
 static int mt6797_autok_select_ds(u32 pass, unsigned int cycle,
 		struct mt6797_autok_result *r, u8 *data_adjust)
 {
