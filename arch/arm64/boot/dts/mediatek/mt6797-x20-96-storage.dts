@@ -28,8 +28,8 @@
 };
 
 &mmc1 {
-	/* The present SL08G passes at 96 MHz actual; 192 MHz still retries reads. */
-	max-frequency = <104000000>;
+	/* BSP SDR104 target; the 384 MHz parent yields 192 MHz actual. */
+	max-frequency = <200000000>;
 	sd-uhs-sdr12;
 	sd-uhs-sdr25;
 	sd-uhs-sdr50;
