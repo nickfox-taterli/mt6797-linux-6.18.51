@@ -1612,6 +1612,15 @@ static void msdc_new_tx_setting(struct msdc_host *host)
 	writel(val, host->top_base + LOOP_TEST_CONTROL);
 }
 
+/* Keep removable SD on the pre-AutoK, multi-card-tested SDR104 path.
+ * The new BSP window/latch/PAD1 policy is restricted to nonremovable MMC.
+ */
+static bool msdc_mt6797_mmc_autok(struct msdc_host *host)
+{
+	return host->dev_comp->vendor_timing_init &&
+	       (mmc_from_priv(host)->caps & MMC_CAP_NONREMOVABLE);
+}
+
 static void msdc_mt6797_hs400_timing_init(struct msdc_host *host);
 
 static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
@@ -1744,7 +1753,7 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 		}
 	}
 
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		writel(mmc->actual_clock <= 52000000 ? host->def_tune_para.pad_tune1 :
 		       host->saved_tune_para.pad_tune1,
 		       host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
@@ -2970,7 +2979,7 @@ static void msdc_init_hw(struct msdc_host *host)
 	if (host->dev_comp->vendor_timing_init)
 		msdc_mt6797_vendor_timing_init(host);
 
-	if (host->dev_comp->vendor_timing_init) {
+	if (msdc_mt6797_mmc_autok(host)) {
 		host->hs400_tuned = false;
 		host->def_tune_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 		host->saved_tune_para.pad_tune1 = host->def_tune_para.pad_tune1;
@@ -3464,7 +3473,7 @@ static int msdc_tune_response(struct mmc_host *mmc, u32 opcode)
 	int cmd_err;
 	int i, j;
 
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		return msdc_mt6797_tune_response(mmc, opcode, 0);
 
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200 ||
@@ -3609,7 +3618,7 @@ static int msdc_tune_data(struct mmc_host *mmc, u32 opcode)
 	u8 final_delay, final_maxlen;
 	int i, ret;
 
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		return msdc_mt6797_tune_data(mmc, opcode);
 
 	sdr_set_field(host->base + MSDC_PATCH_BIT, MSDC_INT_DAT_LATCH_CK_SEL,
@@ -3792,7 +3801,7 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 			 readl(host->base + EMMC50_CFG0));
 
 tune_done:
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		host->saved_tune_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	host->saved_tune_para.pad_tune = readl(host->base + tune_reg);
@@ -4774,7 +4783,7 @@ static void msdc_save_reg(struct msdc_host *host)
 {
 	u32 tune_reg = host->dev_comp->pad_tune_reg;
 
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		host->save_para.pad_tune1 = readl(host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	host->save_para.msdc_cfg = readl(host->base + MSDC_CFG);
 	host->save_para.iocon = readl(host->base + MSDC_IOCON);
@@ -4815,7 +4824,7 @@ static void msdc_restore_reg(struct msdc_host *host)
 		sdr_set_bits(host->base + MSDC_NEW_RX_CFG, MSDC_NEW_RX_PATH_SEL);
 	}
 
-	if (host->dev_comp->vendor_timing_init)
+	if (msdc_mt6797_mmc_autok(host))
 		writel(host->save_para.pad_tune1, host->base + tune_reg + TUNING_REG2_FIXED_OFFEST);
 	writel(host->save_para.msdc_cfg, host->base + MSDC_CFG);
 	writel(host->save_para.iocon, host->base + MSDC_IOCON);
