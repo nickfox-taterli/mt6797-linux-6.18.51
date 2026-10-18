@@ -113,11 +113,7 @@ static int mt6797_wlan_hif_dma_transfer(struct mt6797_wlan_hif *hif,
 		memcpy(hif->dma_buffer, buffer, length);
 		memset(hif->dma_buffer + length, 0, count - length);
 	}
-	/* MT6797 HIF channel: incrementing bus, 4/4 burst, TX=0 / RX=1.
-	 * SRC2/DST2 bit 0 is set on both ends by the MT6797 BSP, including the
-	 * peripheral end.  Preserve that channel-specific programming here rather
-	 * than infer ordinary upper address bits from its register names.
-	 */
+	/* MT6797 HIF channel: incrementing bus, 4/4 burst, TX=0 / RX=1. */
 	con = readl(hif->dma_base + HIF_DMA_CON);
 	con &= ~(GENMASK(17, 16) | BIT(1) | BIT(0));
 	con |= BIT(31) | (3 << 16) | !write;
@@ -127,17 +123,34 @@ static int mt6797_wlan_hif_dma_transfer(struct mt6797_wlan_hif *hif,
 	writel(write ? hif->data_phys : lower_32_bits(hif->dma_address),
 	       hif->dma_base + HIF_DMA_DST);
 	writel(count, hif->dma_base + HIF_DMA_LEN);
-	writel(BIT(0), hif->dma_base + HIF_DMA_SRC2);
-	writel(BIT(0), hif->dma_base + HIF_DMA_DST2);
+	/* Register Table Part 1, pp.418-419: bit 0 is address bit 32 on
+	 * both memory and FIFO sides. The BSP's forced 1 assumes its 4G
+	 * address layout; this driver's DMA API and HIF resource are 32-bit.
+	 */
+	writel(write ? upper_32_bits(hif->dma_address) : upper_32_bits(hif->data_phys),
+	       hif->dma_base + HIF_DMA_SRC2);
+	writel(write ? upper_32_bits(hif->data_phys) : upper_32_bits(hif->dma_address),
+	       hif->dma_base + HIF_DMA_DST2);
 	writel(0, hif->dma_base + HIF_DMA_FLAG);
 	dma_wmb();
 	writel(BIT(0), hif->dma_base + HIF_DMA_INT_EN);
 	writel(BIT(0), hif->dma_base + HIF_DMA_EN);
-	ret = readl_poll_timeout(hif->dma_base + HIF_DMA_FLAG, value,
-				 value & BIT(0), 10, 100000);
-	if (!ret)
-		ret = readl_poll_timeout(hif->dma_base + HIF_DMA_EN, value,
-					 !(value & BIT(0)), 10, 10000);
+	/* Normal FIFO transfers finish in microseconds. Without high-resolution
+	 * timers even a 10-us sleep costs a scheduler tick per transfer. Keep
+	 * that fast path bounded and retain sleeping polls for a slow engine.
+	 */
+	ret = readl_poll_timeout_atomic(hif->dma_base + HIF_DMA_FLAG, value,
+					value & BIT(0), 1, 2000);
+	if (ret)
+		ret = readl_poll_timeout(hif->dma_base + HIF_DMA_FLAG, value,
+					 value & BIT(0), 10, 100000);
+	if (!ret) {
+		ret = readl_poll_timeout_atomic(hif->dma_base + HIF_DMA_EN, value,
+						!(value & BIT(0)), 1, 100);
+		if (ret)
+			ret = readl_poll_timeout(hif->dma_base + HIF_DMA_EN, value,
+						 !(value & BIT(0)), 10, 10000);
+	}
 	writel(0, hif->dma_base + HIF_DMA_INT_EN);
 	writel(0, hif->dma_base + HIF_DMA_FLAG);
 	if (ret) {
@@ -389,21 +402,12 @@ int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
 	size_t count, position, valid;
 	u32 command, value;
 	u8 tail[4];
+	bool dma;
 	int ret;
 
 	if (!buffer || !length || port > CMD53_ADDR_MASK || (port & 3) ||
 	    length > 511 * 512)
 		return -EINVAL;
-	count = ALIGN(length, 4);
-	command = (port << CMD53_ADDR_SHIFT) | (CMD53_FUNC_WIFI << CMD53_FUNC_SHIFT);
-	if (count >= 512) {
-		count = ALIGN(count, 512);
-		command |= BIT(27) | (count / 512);
-	} else {
-		command |= count;
-	}
-	if (write)
-		command |= BIT(31);
 	ret = mt6797_wlan_hif_lock_client(client, &hif);
 	if (ret)
 		return ret;
@@ -411,10 +415,26 @@ int mt6797_wlan_hif_transfer(struct device *client, u32 port, bool write,
 		ret = -EIO;
 		goto out;
 	}
+	dma = hif->dma_enabled && ((write && port == 0x34) ||
+				 (!write && (port == 0x50 || port == 0x54)));
+	count = ALIGN(length, 4);
+	command = (port << CMD53_ADDR_SHIFT) | (CMD53_FUNC_WIFI << CMD53_FUNC_SHIFT);
+	if (count >= 512) {
+		count = ALIGN(count, 512);
+		command |= BIT(27) | (count / 512);
+	} else {
+		/* BSP RX byte-mode DMA requires 8-byte FIFO reads. A byte
+		 * count of 512 is encoded as zero in CMD53's 9-bit count.
+		 */
+		if (dma && !write)
+			count = ALIGN(count, 8);
+		command |= count & GENMASK(8, 0);
+	}
+	if (write)
+		command |= BIT(31);
 	writel(command, hif->base + MT6797_WLAN_HIF_CMD_SETUP);
 	/* Match the BSP: only WLAN packet FIFO ports use AP-DMA. */
-	if (hif->dma_enabled && ((write && port == 0x34) ||
-				       (!write && (port == 0x50 || port == 0x54)))) {
+	if (dma) {
 		ret = mt6797_wlan_hif_dma_transfer(hif, write, buffer, length, count);
 		goto out;
 	}
