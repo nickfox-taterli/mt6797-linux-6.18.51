@@ -20,6 +20,7 @@
 #include <linux/io.h>
 #include <linux/thermal.h>
 #include <linux/reset.h>
+#include <linux/soc/mediatek/mt6797-thermal-eem.h>
 #include <linux/types.h>
 
 #include "../thermal_hwmon.h"
@@ -308,7 +309,11 @@ struct thermal_bank_cfg {
 struct mtk_thermal_bank {
 	struct mtk_thermal *mt;
 	int id;
+	unsigned long flags;
 };
+
+DEFINE_SPINLOCK(mt6797_thermal_eem_lock);
+EXPORT_SYMBOL_GPL(mt6797_thermal_eem_lock);
 
 struct mtk_thermal_data {
 	s32 num_banks;
@@ -842,7 +847,10 @@ static void mtk_thermal_get_bank(struct mtk_thermal_bank *bank)
 	u32 val;
 
 	if (mt->conf->need_switch_bank) {
-		mutex_lock(&mt->lock);
+		if (mt->conf->version == MTK_THERMAL_MT6797)
+			spin_lock_irqsave(&mt6797_thermal_eem_lock, bank->flags);
+		else
+			mutex_lock(&mt->lock);
 
 		val = readl(mt->thermal_base + PTPCORESEL);
 		val &= ~0xf;
@@ -861,8 +869,13 @@ static void mtk_thermal_put_bank(struct mtk_thermal_bank *bank)
 {
 	struct mtk_thermal *mt = bank->mt;
 
-	if (mt->conf->need_switch_bank)
-		mutex_unlock(&mt->lock);
+	if (mt->conf->need_switch_bank) {
+		if (mt->conf->version == MTK_THERMAL_MT6797)
+			spin_unlock_irqrestore(&mt6797_thermal_eem_lock,
+					       bank->flags);
+		else
+			mutex_unlock(&mt->lock);
+	}
 }
 
 /**
