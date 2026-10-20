@@ -52,6 +52,7 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
  * Several controls are shared by a group of pads, hence the fixed ranges.
  */
 static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
+	PIN_FIELD_BASE(57, 60, 2, 0x000, 0x10, 8, 1),
 	PIN_FIELD_BASE(65, 67, 3, 0x010, 0x10, 12, 1),
 	PIN_FIELD_BASE(114, 125, 2, 0x020, 0x10, 0, 1),
 	PIN_FIELD_BASE(129, 134, 2, 0x020, 0x10, 25, 1),
@@ -59,6 +60,8 @@ static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
+	PIN_FIELD_BASE(57, 58, 2, 0x050, 0x10, 3, 1),
+	PINS_FIELD_BASE(59, 60, 2, 0x050, 0x10, 5, 1),
 	/* GPIO65..68 share this bit; GPIO68 is not exposed by this work. */
 	PINS_FIELD_BASE(65, 67, 3, 0x030, 0x10, 27, 1),
 	PINS_FIELD_BASE(114, 117, 2, 0x060, 0x10, 0, 1),
@@ -74,11 +77,13 @@ static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pd_range[] = {
+	PIN_FIELD_BASE(57, 60, 2, 0x130, 0x10, 2, 1),
 	PIN_FIELD_BASE(65, 67, 3, 0x0c0, 0x10, 12, 1),
 	PIN_FIELD_BASE(238, 241, 2, 0x130, 0x10, 27, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pu_range[] = {
+	PIN_FIELD_BASE(57, 60, 2, 0x160, 0x10, 0, 1),
 	PIN_FIELD_BASE(65, 67, 3, 0x0e0, 0x10, 12, 1),
 };
 
@@ -126,6 +131,7 @@ static const struct mtk_pin_field_calc mt6797_pin_rdsel_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
+	PINS_FIELD_BASE(57, 60, 2, 0x190, 0x10, 6, 2),
 	PINS_FIELD_BASE(114, 117, 2, 0x1a0, 0x10, 0, 3),
 	PINS_FIELD_BASE(118, 121, 2, 0x1a0, 0x10, 3, 3),
 	PIN_FIELD_BASE(122, 122, 2, 0x1a0, 0x10, 6, 3),
@@ -137,6 +143,7 @@ static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
 };
 
 static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
+	[57 ... 60] = MTK_PULL_PU_PD_TYPE,
 	[65 ... 67] = MTK_PULL_PU_PD_TYPE,
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
 	[129 ... 134] = MTK_PULL_PUPD_R1R0_TYPE,
@@ -171,8 +178,16 @@ static const unsigned int mt6797_debounce_time[] = {
 	128, 256, 512, 1024, 16384, 32768, 65536, 131072, 262144, 524288, 0
 };
 
+static void mt6797_eint_sync_write(u32 value, void __iomem *reg)
+{
+	/* BSP mt_reg_sync_writel() completes writes before the polarity delay. */
+	writel(value, reg);
+	/* Match the BSP write-completion barrier before touching EINT state. */
+	mb();
+}
+
 /* Preserve irq-mt-eic.c's RAW_STA sampling after selecting the EINT mux. */
-static int mt6797_eint_get_level(struct mtk_eint *eint, unsigned int eint_num)
+static int mt6797_eint_get_raw_level(struct mtk_eint *eint, unsigned int eint_num)
 {
 	const struct mtk_eint_regs *regs = eint->regs;
 	unsigned int idx = eint->pins[eint_num].index;
@@ -184,44 +199,70 @@ static int mt6797_eint_get_level(struct mtk_eint *eint, unsigned int eint_num)
 	pol = readl(base + regs->pol) & bit;
 	sens = readl(base + regs->sens) & bit;
 	if (!masked)
-		writel(bit, base + regs->mask_set);
+		mt6797_eint_sync_write(bit, base + regs->mask_set);
 
-	writel(bit, base + regs->pol_set);
-	writel(bit, base + regs->ack);
-	writel(bit, base + regs->sens_set);
-	writel(bit, base + regs->ack);
+	mt6797_eint_sync_write(bit, base + regs->pol_set);
+	/* BSP mt_eint_set_polarity(): longest hardware latency is 250 ns. */
+	ndelay(300);
+	mt6797_eint_sync_write(bit, base + regs->ack);
+	mt6797_eint_sync_write(bit, base + regs->sens_set);
+	mt6797_eint_sync_write(bit, base + regs->ack);
 	level = !!(readl(base + 0xa00) & bit);
 
-	writel(bit, base + (pol ? regs->pol_set : regs->pol_clr));
-	writel(bit, base + regs->ack);
-	writel(bit, base + (sens ? regs->sens_set : regs->sens_clr));
-	writel(bit, base + regs->ack);
+	mt6797_eint_sync_write(bit, base + (pol ? regs->pol_set : regs->pol_clr));
+	ndelay(300);
+	mt6797_eint_sync_write(bit, base + regs->ack);
+	mt6797_eint_sync_write(bit, base + (sens ? regs->sens_set : regs->sens_clr));
+	mt6797_eint_sync_write(bit, base + regs->ack);
 	if (!masked)
-		writel(bit, base + regs->mask_clr);
+		mt6797_eint_sync_write(bit, base + regs->mask_clr);
 
 	return level;
+}
+
+/* GPIO DI avoids changing/acknowledging a live physical edge to sample it. */
+static int mt6797_eint_get_level(struct mtk_eint *eint, unsigned int eint_num)
+{
+	int level = eint->gpio_xlate->get_gpio_state(eint->pctl, eint_num);
+
+	if (level >= 0)
+		return level;
+	return mt6797_eint_get_raw_level(eint, eint_num);
 }
 
 static int mt6797_eint_flip_edge(struct mtk_eint *eint, unsigned int eint_num)
 {
 	const struct mtk_eint_regs *regs = eint->regs;
-	unsigned int idx = eint->pins[eint_num].index;
+	unsigned int idx = eint->pins[eint_num].index, retries = 0;
 	void __iomem *base = eint->base[eint->pins[eint_num].instance] +
 			     (idx / 32) * 4;
 	u32 bit = BIT(idx % 32), masked;
-	int level = mt6797_eint_get_level(eint, eint_num);
+	int level, next;
 
 	masked = readl(base + regs->mask) & bit;
 	if (!masked)
-		writel(bit, base + regs->mask_set);
-	writel(bit, base + (level ? regs->pol_clr : regs->pol_set));
-	writel(bit, base + regs->ack);
-	writel(bit, base + regs->sens_clr);
-	writel(bit, base + regs->ack);
+		mt6797_eint_sync_write(bit, base + regs->mask_set);
+	/*
+	 * RAW_STA sampling acknowledges pending edges while restoring state.
+	 * The final check must use pad DI, without clearing a newly arrived edge.
+	 */
+	next = eint->gpio_xlate->get_gpio_state(eint->pctl, eint_num);
+	do {
+		level = next;
+		mt6797_eint_sync_write(bit, base + (level ? regs->pol_clr : regs->pol_set));
+		ndelay(300);
+		mt6797_eint_sync_write(bit, base + regs->ack);
+		/* Opposite level remains pending even if a contact changes at ACK. */
+		mt6797_eint_sync_write(bit, base + regs->sens_set);
+		mt6797_eint_sync_write(bit, base + regs->ack);
+		next = eint->gpio_xlate->get_gpio_state(eint->pctl, eint_num);
+	} while (level != next && ++retries < 32);
+	if (level != next)
+		mt6797_eint_sync_write(bit, base + regs->soft_set);
 	if (!masked)
-		writel(bit, base + regs->mask_clr);
+		mt6797_eint_sync_write(bit, base + regs->mask_clr);
 
-	return level;
+	return next;
 }
 
 /* Caller masks the line and restores its mask after this BSP sequence. */
@@ -257,6 +298,8 @@ static const struct mtk_eint_hw mt6797_eint_hw = {
 	.ap_num = 192,
 	.db_cnt = 16,
 	.db_time = mt6797_debounce_time,
+	.polarity_delay_ns = 300,
+	.dual_edge_level = true,
 	.get_level = mt6797_eint_get_level,
 	.flip_edge = mt6797_eint_flip_edge,
 	.set_debounce = mt6797_eint_set_debounce,

@@ -92,6 +92,9 @@ static unsigned int mtk_eint_can_en_debounce(struct mtk_eint *eint,
 	else
 		sens = MTK_EINT_EDGE_SENSITIVE;
 
+	if (eint->pins[eint_num].dual_edge)
+		return 0;
+
 	if (eint->pins[eint_num].debounce && sens != MTK_EINT_EDGE_SENSITIVE)
 		return 1;
 	else
@@ -219,13 +222,24 @@ static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 		writel(mask, reg);
 	}
 
-	if (type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_EDGE_FALLING)) {
+	if (eint->hw->polarity_delay_ns) {
+		/* Complete the polarity write before the BSP hardware settling time. */
+		mb();
+		ndelay(eint->hw->polarity_delay_ns);
+	}
+
+	if ((type & IRQ_TYPE_EDGE_BOTH) &&
+	    !(eint->pins[d->hwirq].dual_edge && eint->hw->dual_edge_level)) {
 		reg = mtk_eint_get_offset(eint, d->hwirq, eint->regs->sens_clr);
 		writel(mask, reg);
 	} else {
 		reg = mtk_eint_get_offset(eint, d->hwirq, eint->regs->sens_set);
 		writel(mask, reg);
 	}
+
+	if (eint->pins[d->hwirq].dual_edge && eint->hw->dual_edge_level &&
+	    eint->hw->set_debounce)
+		eint->hw->set_debounce(eint, d->hwirq, 0);
 
 	mtk_eint_ack(d);
 	if (!masked)

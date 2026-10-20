@@ -41,6 +41,8 @@ struct mtk_eint_hw {
 	unsigned int	ap_num;
 	unsigned int	db_cnt;
 	const unsigned int *db_time;
+	unsigned int polarity_delay_ns;
+	bool dual_edge_level;
 	int (*get_level)(struct mtk_eint *eint, unsigned int eint_num);
 	int (*flip_edge)(struct mtk_eint *eint, unsigned int eint_num);
 	void (*set_debounce)(struct mtk_eint *eint, unsigned int eint_num,
