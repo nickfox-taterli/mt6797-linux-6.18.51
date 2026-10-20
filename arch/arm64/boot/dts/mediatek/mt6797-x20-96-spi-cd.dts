@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Use the validated physical card-detect EINT with standard MMC debounce. */
+/dts-v1/;
+
+#include "mt6797-x20-96-spi.dts"
+
+&mmc1_pins_default {
+	pins-cd {
+		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&mmc1_pins_uhs {
+	pins-cd {
+		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&mmc1 {
+	/delete-property/ broken-cd;
+	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
+	/* EINT hardware filtering is level-only; keep MMC's 200 ms software filter. */
+	cd-debounce-delay-ms = <0>;
+};
