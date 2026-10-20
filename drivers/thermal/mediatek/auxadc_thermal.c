@@ -27,6 +27,7 @@
 /* AUXADC Registers */
 #define AUXADC_CON1_SET_V	0x008
 #define AUXADC_CON1_CLR_V	0x00c
+#define AUXADC_CON0_V		0x000
 #define AUXADC_CON2_V		0x010
 #define AUXADC_DATA(channel)	(0x14 + (channel) * 4)
 
@@ -182,6 +183,7 @@ enum mtk_thermal_version {
 	MTK_THERMAL_V1 = 1,
 	MTK_THERMAL_V2,
 	MTK_THERMAL_V3,
+	MTK_THERMAL_MT6797,
 };
 
 /* MT2701 thermal sensors */
@@ -394,6 +396,17 @@ static const int mt8173_vts_index[MT8173_NUM_SENSORS] = {
 	VTS1, VTS2, VTS3, VTS4, VTSABB
 };
 
+/* BSP bank order: BIG, GPU, SOC, CPU-L, CPU-LL, CCI. */
+static const int mt6797_bank_data[][2] = {
+	{ 0 }, { 3 }, { 1, 2 }, { 1 }, { 1 }, { 1 },
+};
+
+static const int mt6797_vts_index[] = {
+	VTS1, VTS2, VTS3, VTS4, VTSABB,
+};
+
+static const int mt6797_tc_offset[] = { 0x0 };
+
 /* MT2701 thermal sensor data */
 static const int mt2701_bank_data[MT2701_NUM_SENSORS] = {
 	MT2701_TS1, MT2701_TS2, MT2701_TSABB
@@ -509,6 +522,28 @@ static const struct mtk_thermal_data mt8173_thermal_data = {
 	.adcpnp = mt8173_adcpnp,
 	.sensor_mux_values = mt8173_mux_values,
 	.version = MTK_THERMAL_V1,
+};
+
+static const struct mtk_thermal_data mt6797_thermal_data = {
+	.auxadc_channel = 11,
+	.num_banks = ARRAY_SIZE(mt6797_bank_data),
+	.num_sensors = ARRAY_SIZE(mt6797_vts_index),
+	.vts_index = mt6797_vts_index,
+	.num_controller = 1,
+	.controller_offset = mt6797_tc_offset,
+	.need_switch_bank = true,
+	.bank_data = {
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[0] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[1] },
+		{ .num_sensors = 2, .sensors = mt6797_bank_data[2] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[3] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[4] },
+		{ .num_sensors = 1, .sensors = mt6797_bank_data[5] },
+	},
+	.msr = mt8173_msr,
+	.adcpnp = mt8173_adcpnp,
+	.sensor_mux_values = mt8173_mux_values,
+	.version = MTK_THERMAL_MT6797,
 };
 
 /*
@@ -724,6 +759,30 @@ static int raw_to_mcelsius_v1(struct mtk_thermal *mt, int sensno, s32 raw)
 	return mt->degc_cali * 500 - tmp;
 }
 
+/* MT6797 uses the V1 fuse layout but also calibrates ADC offset and slope. */
+static int raw_to_mcelsius_mt6797(struct mtk_thermal *mt, int sensno, s32 raw)
+{
+	s64 room, sample, delta;
+	int gain, offset, slope;
+
+	if (!raw)
+		return 0;
+
+	raw &= 0xfff;
+	gain = 10000 + (mt->adc_ge - 512) * 10000 / 4096;
+	offset = mt->adc_oe - 512;
+	slope = 1663 + (mt->o_slope_sign ? -mt->o_slope * 10 :
+					      mt->o_slope * 10);
+	room = div_s64((s64)(mt->vts[sensno] + 3350 - offset) * 10000,
+		       4096);
+	room = div_s64(room * 10000, gain);
+	sample = div_s64((s64)(raw - offset) * 10000, 4096);
+	sample = div_s64(sample * 10000, gain);
+	delta = div_s64((sample - room) * 15, 18);
+
+	return mt->degc_cali * 500 - div_s64(delta * 100000, slope);
+}
+
 static int raw_to_mcelsius_v2(struct mtk_thermal *mt, int sensno, s32 raw)
 {
 	s32 format_1;
@@ -894,11 +953,14 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	 * sen interval is 429 * 46.540us = 19.96ms
 	 */
 	writel(TEMP_MONCTL2_FILTER_INTERVAL(1) |
-			TEMP_MONCTL2_SENSOR_INTERVAL(429),
+			TEMP_MONCTL2_SENSOR_INTERVAL(
+				mt->conf->version == MTK_THERMAL_MT6797 &&
+				num == 0 ? 46 : 429),
 			controller_base + TEMP_MONCTL2);
 
 	/* poll is set to 10u */
-	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(768),
+	writel(TEMP_AHBPOLL_ADC_POLL_INTERVAL(
+		mt->conf->version == MTK_THERMAL_MT6797 ? 781 : 768),
 	       controller_base + TEMP_AHBPOLL);
 
 	/* temperature sampling control, 1 sample */
@@ -930,7 +992,8 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	writel(auxadc_phys_base + AUXADC_CON1_CLR_V,
 	       controller_base + TEMP_ADCMUXADDR);
 
-	if (mt->conf->version == MTK_THERMAL_V1) {
+	if (mt->conf->version == MTK_THERMAL_V1 ||
+	    mt->conf->version == MTK_THERMAL_MT6797) {
 		/* AHB address for pnp sensor mux selection */
 		writel(apmixed_phys_base + APMIXED_SYS_TS_CON1,
 		       controller_base + TEMP_PNPMUXADDR);
@@ -1034,6 +1097,33 @@ static int mtk_thermal_extract_efuse_v1(struct mtk_thermal *mt, u32 *buf)
 	return 0;
 }
 
+static int mtk_thermal_extract_efuse_mt6797(struct mtk_thermal *mt, u32 *buf)
+{
+	int ret = mtk_thermal_extract_efuse_v1(mt, buf);
+
+	if (ret)
+		return ret;
+
+	mt->adc_oe = (buf[1] >> 12) & 0x3ff;
+	mt->o_slope_sign = (buf[0] >> 7) & 1;
+	mt->o_slope = (buf[0] >> 26) & 0x3f;
+	if (!(buf[1] & BIT(9)))
+		mt->o_slope = 0;
+
+	/* The BSP substitutes defaults for individual bad calibration fields. */
+	if (mt->adc_ge < 265 || mt->adc_ge > 758)
+		mt->adc_ge = 512;
+	if (mt->adc_oe < 265 || mt->adc_oe > 758)
+		mt->adc_oe = 512;
+	if (mt->degc_cali < 1 || mt->degc_cali > 63)
+		mt->degc_cali = 40;
+	for (int i = 0; i < mt->conf->num_sensors; i++)
+		if (mt->vts[i] < -8 || mt->vts[i] > 484)
+			mt->vts[i] = 260;
+
+	return 0;
+}
+
 static int mtk_thermal_extract_efuse_v2(struct mtk_thermal *mt, u32 *buf)
 {
 	if (!CALIB_BUF1_VALID_V2(buf[1]))
@@ -1110,6 +1200,9 @@ static int mtk_thermal_get_calibration_data(struct device *dev,
 	case MTK_THERMAL_V1:
 		ret = mtk_thermal_extract_efuse_v1(mt, buf);
 		break;
+	case MTK_THERMAL_MT6797:
+		ret = mtk_thermal_extract_efuse_mt6797(mt, buf);
+		break;
 	case MTK_THERMAL_V2:
 		ret = mtk_thermal_extract_efuse_v2(mt, buf);
 		break;
@@ -1133,6 +1226,10 @@ out:
 }
 
 static const struct of_device_id mtk_thermal_of_match[] = {
+	{
+		.compatible = "mediatek,mt6797-thermal",
+		.data = &mt6797_thermal_data,
+	},
 	{
 		.compatible = "mediatek,mt8173-thermal",
 		.data = (void *)&mt8173_thermal_data,
@@ -1270,10 +1367,18 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 
 	mtk_thermal_turn_on_buffer(mt, apmixed_base);
 
-	if (mt->conf->version != MTK_THERMAL_V1)
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		/* BSP clears immediate and auto channel 11 before bank setup. */
+		writel(readl(auxadc_base + AUXADC_CON0_V) & ~BIT(11),
+		       auxadc_base + AUXADC_CON0_V);
+		writel(BIT(11), auxadc_base + AUXADC_CON1_CLR_V);
+	} else if (mt->conf->version != MTK_THERMAL_V1) {
 		mtk_thermal_release_periodic_ts(mt, auxadc_base);
+	}
 
-	if (mt->conf->version == MTK_THERMAL_V1)
+	if (mt->conf->version == MTK_THERMAL_MT6797)
+		mt->raw_to_mcelsius = raw_to_mcelsius_mt6797;
+	else if (mt->conf->version == MTK_THERMAL_V1)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v1;
 	else if (mt->conf->version == MTK_THERMAL_V2)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v2;
@@ -1284,6 +1389,8 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		for (i = 0; i < mt->conf->num_banks; i++)
 			mtk_thermal_init_bank(mt, i, apmixed_phys_base,
 					      auxadc_phys_base, ctrl_id);
+	if (mt->conf->version == MTK_THERMAL_MT6797)
+		writel(BIT(11), auxadc_base + AUXADC_CON1_SET_V);
 
 	tzdev = devm_thermal_of_zone_register(&pdev->dev, 0, mt,
 					      &mtk_thermal_ops);

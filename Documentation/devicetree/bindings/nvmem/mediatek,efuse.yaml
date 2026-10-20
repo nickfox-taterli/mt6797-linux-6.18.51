@@ -47,6 +47,7 @@ properties:
               - mediatek,mt7986-efuse
               - mediatek,mt7988-efuse
               - mediatek,mt8173-efuse
+              - mediatek,mt6797-efuse
               - mediatek,mt8183-efuse
               - mediatek,mt8192-efuse
               - mediatek,mt8195-efuse

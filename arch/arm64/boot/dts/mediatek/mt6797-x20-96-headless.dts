@@ -12,6 +12,7 @@
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/regulator/dlg,da9211-regulator.h>
+#include <dt-bindings/thermal/thermal.h>
 #include "mt6797.dtsi"
 
 / {
@@ -43,6 +44,60 @@
 		stdout-path = "serial0:921600n8";
 		/* Loader overrides this for initramfs rescue; fallback is eMMC. */
 		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000 root=PARTUUID=8273e1ab-846f-4468-b999-ee2ea8e50a16 rootwait loglevel=8 printk.time=1";
+	};
+
+	thermal-zones {
+		cpu-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <250>;
+			thermal-sensors = <&thermal>;
+
+			trips {
+				big_warm: big-warm {
+					temperature = <80000>;
+					hysteresis = <3000>;
+					type = "passive";
+				};
+
+				soc_warm: soc-warm {
+					temperature = <90000>;
+					hysteresis = <3000>;
+					type = "passive";
+				};
+
+				soc_hot: soc-hot {
+					temperature = <95000>;
+					hysteresis = <3000>;
+					type = "passive";
+				};
+
+				soc_critical: soc-critical {
+					temperature = <120000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				big-warm-map {
+					trip = <&big_warm>;
+					cooling-device = <&cpu8 5 5>;
+				};
+
+				soc-warm-map {
+					trip = <&soc_warm>;
+					cooling-device = <&cpu8 8 8>,
+							 <&cpu0 2 THERMAL_NO_LIMIT>,
+							 <&cpu4 2 THERMAL_NO_LIMIT>;
+				};
+
+				soc-hot-map {
+					trip = <&soc_hot>;
+					cooling-device = <&cpu0 5 THERMAL_NO_LIMIT>,
+							 <&cpu4 5 THERMAL_NO_LIMIT>;
+				};
+			};
+		};
 	};
 
 	fastboot-reboot {
@@ -159,6 +214,14 @@
 &cpu7 { operating-points-v2 = <&cluster1_opp>; cpu-supply = <&vproc1_reg>; };
 &cpu8 { operating-points-v2 = <&cluster2_opp>; cpu-supply = <&vproc2_reg>; };
 &cpu9 { operating-points-v2 = <&cluster2_opp>; cpu-supply = <&vproc2_reg>; };
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	status = "okay";
+};
 
 &uart0 {
 	status = "okay";

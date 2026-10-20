@@ -805,7 +805,7 @@ static void mt6797_cpufreq_exit(struct cpufreq_policy *policy)
 
 static struct cpufreq_driver mt6797_cpufreq_driver = {
 	.name = "mt6797-cpufreq",
-	.flags = CPUFREQ_HAVE_GOVERNOR_PER_POLICY,
+	.flags = CPUFREQ_HAVE_GOVERNOR_PER_POLICY | CPUFREQ_IS_COOLING_DEV,
 	.verify = cpufreq_generic_frequency_table_verify,
 	.target_index = mt6797_cpufreq_target_index,
 	.get = mt6797_cpufreq_get,
