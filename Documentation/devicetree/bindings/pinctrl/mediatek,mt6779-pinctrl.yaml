@@ -90,15 +90,17 @@ allOf:
       properties:
         reg:
           minItems: 5
-          maxItems: 5
+          maxItems: 6
 
         reg-names:
+          minItems: 5
           items:
             - const: gpio
             - const: iocfgl
             - const: iocfgb
             - const: iocfgr
             - const: iocfgt
+            - const: eint
   - if:
       properties:
         reg-names:
@@ -111,12 +113,12 @@ allOf:
         - "#interrupt-cells"
 
 patternProperties:
-  '-[0-9]*$':
+  '^(?!pinctrl-).*(-[0-9]+|-pins)$':
     type: object
     additionalProperties: false
 
     patternProperties:
-      '-pins*$':
+      '^([a-z0-9-]+-pins|pins-[a-z0-9-]+)$':
         type: object
         description:
           A pinctrl node should contain at least one subnodes representing the
@@ -152,7 +154,17 @@ patternProperties:
           input-schmitt-disable: true
 
           drive-strength:
-            enum: [2, 4, 8, 12, 16]
+            enum: [2, 4, 6, 8, 10, 12, 14, 16]
+
+          mediatek,tdsel:
+            description: Raw pad output delay selection.
+            $ref: /schemas/types.yaml#/definitions/uint32
+            maximum: 15
+
+          mediatek,rdsel:
+            description: Raw pad input delay selection.
+            $ref: /schemas/types.yaml#/definitions/uint32
+            maximum: 63
 
           slew-rate:
             enum: [0, 1]
