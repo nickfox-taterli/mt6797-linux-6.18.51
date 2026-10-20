@@ -33,12 +33,18 @@ struct mtk_eint_regs {
 	unsigned int	dbnc_clr;
 };
 
+struct mtk_eint;
+
 struct mtk_eint_hw {
 	u8		port_mask;
 	u8		ports;
 	unsigned int	ap_num;
 	unsigned int	db_cnt;
 	const unsigned int *db_time;
+	int (*get_level)(struct mtk_eint *eint, unsigned int eint_num);
+	int (*flip_edge)(struct mtk_eint *eint, unsigned int eint_num);
+	void (*set_debounce)(struct mtk_eint *eint, unsigned int eint_num,
+			     unsigned int debounce);
 };
 
 struct mtk_eint_pin {
@@ -52,8 +58,6 @@ struct mtk_eint_pin {
 extern const unsigned int debounce_time_mt2701[];
 extern const unsigned int debounce_time_mt6765[];
 extern const unsigned int debounce_time_mt6795[];
-
-struct mtk_eint;
 
 struct mtk_eint_xt {
 	int (*get_gpio_n)(void *data, unsigned long eint_n,

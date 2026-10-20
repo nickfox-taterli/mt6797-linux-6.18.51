@@ -98,6 +98,14 @@ static unsigned int mtk_eint_can_en_debounce(struct mtk_eint *eint,
 		return 0;
 }
 
+static int mtk_eint_get_level(struct mtk_eint *eint, unsigned int hwirq)
+{
+	if (eint->hw->get_level)
+		return eint->hw->get_level(eint, hwirq);
+
+	return eint->gpio_xlate->get_gpio_state(eint->pctl, hwirq);
+}
+
 static int mtk_eint_flip_edge(struct mtk_eint *eint, int hwirq)
 {
 	int start_level, curr_level;
@@ -106,7 +114,10 @@ static int mtk_eint_flip_edge(struct mtk_eint *eint, int hwirq)
 	unsigned int port = (eint->pins[hwirq].index >> 5) & eint->hw->port_mask;
 	void __iomem *reg = eint->base[eint->pins[hwirq].instance] + (port << 2);
 
-	curr_level = eint->gpio_xlate->get_gpio_state(eint->pctl, hwirq);
+	if (eint->hw->flip_edge)
+		return eint->hw->flip_edge(eint, hwirq);
+
+	curr_level = mtk_eint_get_level(eint, hwirq);
 
 	do {
 		start_level = curr_level;
@@ -116,8 +127,7 @@ static int mtk_eint_flip_edge(struct mtk_eint *eint, int hwirq)
 			reg_offset = eint->regs->pol_set;
 		writel(mask, reg + reg_offset);
 
-		curr_level = eint->gpio_xlate->get_gpio_state(eint->pctl,
-							      hwirq);
+		curr_level = mtk_eint_get_level(eint, hwirq);
 	} while (start_level != curr_level);
 
 	return start_level;
@@ -389,9 +399,7 @@ static void mtk_eint_irq_handler(struct irq_desc *desc)
 								  eint->regs->soft_clr);
 					writel(mask, reg);
 
-					start_level =
-					eint->gpio_xlate->get_gpio_state(eint->pctl,
-									 eint_num);
+					start_level = mtk_eint_get_level(eint, eint_num);
 				}
 
 				generic_handle_domain_irq(eint->domain, eint_num);
@@ -454,8 +462,15 @@ int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 	set_offset = (idx / 4) * 4 + eint->regs->dbnc_set;
 	clr_offset = (idx / 4) * 4 + eint->regs->dbnc_clr;
 
-	if (!mtk_eint_can_en_debounce(eint, eint_num))
-		return -EINVAL;
+	if (!mtk_eint_can_en_debounce(eint, eint_num)) {
+		/*
+		 * A SoC-specific disable may also clear a previous level filter
+		 * after the consumer has switched to edge triggering.
+		 */
+		if (debounce || !eint->hw->set_debounce ||
+		    !eint->pins[eint_num].debounce)
+			return -EINVAL;
+	}
 
 	dbnc = eint->num_db_time;
 	for (i = 0; i < eint->num_db_time; i++) {
@@ -470,6 +485,13 @@ int mtk_eint_set_debounce(struct mtk_eint *eint, unsigned long eint_num,
 		unmask = 1;
 	} else {
 		unmask = 0;
+	}
+
+	if (eint->hw->set_debounce) {
+		eint->hw->set_debounce(eint, eint_num, debounce);
+		if (unmask)
+			mtk_eint_unmask(d);
+		return 0;
 	}
 
 	clr_bit = 0xff << eint_offset;
@@ -527,7 +549,7 @@ int mtk_eint_do_init(struct mtk_eint *eint, struct mtk_eint_pin *eint_pin)
 		}
 	} else {
 		size = eint->hw->ap_num * sizeof(struct mtk_eint_pin);
-		eint->pins = devm_kmalloc(eint->dev, size, GFP_KERNEL);
+		eint->pins = devm_kzalloc(eint->dev, size, GFP_KERNEL);
 		if (!eint->pins)
 			goto err_pins;
 

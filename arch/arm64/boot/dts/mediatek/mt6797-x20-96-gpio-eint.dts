@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* STM32 GPIO/EINT candidate; not the installed canonical storage input. */
+/dts-v1/;
+
+#include "mt6797-x20-96-storage.dts"
+
+&pio {
+	pinctrl-names = "default";
+	pinctrl-0 = <&stm32_gpio_eint_pins>;
+
+	stm32_gpio_eint_pins: stm32-gpio-eint-0 {
+		io-pins {
+			pinmux = <MT6797_GPIO65__FUNC_GPIO65>,
+				 <MT6797_GPIO66__FUNC_GPIO66>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};

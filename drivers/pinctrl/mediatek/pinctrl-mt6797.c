@@ -10,6 +10,8 @@
  *
  */
 
+#include <linux/delay.h>
+
 #include "pinctrl-mtk-mt6797.h"
 #include "pinctrl-paris.h"
 
@@ -50,13 +52,14 @@ static const struct mtk_pin_field_calc mt6797_pin_do_range[] = {
  * Several controls are shared by a group of pads, hence the fixed ranges.
  */
 static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
-	PIN_FIELD_BASE(67, 67, 3, 0x010, 0x10, 14, 1),
+	PIN_FIELD_BASE(65, 67, 3, 0x010, 0x10, 12, 1),
 	PIN_FIELD_BASE(114, 125, 2, 0x020, 0x10, 0, 1),
 	PIN_FIELD_BASE(129, 134, 2, 0x020, 0x10, 25, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
-	PIN_FIELD_BASE(67, 67, 3, 0x030, 0x10, 27, 1),
+	/* GPIO65..68 share this bit; GPIO68 is not exposed by this work. */
+	PINS_FIELD_BASE(65, 67, 3, 0x030, 0x10, 27, 1),
 	PINS_FIELD_BASE(114, 117, 2, 0x060, 0x10, 0, 1),
 	PINS_FIELD_BASE(118, 121, 2, 0x060, 0x10, 1, 1),
 	PIN_FIELD_BASE(122, 122, 2, 0x060, 0x10, 2, 1),
@@ -68,11 +71,11 @@ static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pd_range[] = {
-	PIN_FIELD_BASE(67, 67, 3, 0x0c0, 0x10, 14, 1),
+	PIN_FIELD_BASE(65, 67, 3, 0x0c0, 0x10, 12, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pu_range[] = {
-	PIN_FIELD_BASE(67, 67, 3, 0x0e0, 0x10, 14, 1),
+	PIN_FIELD_BASE(65, 67, 3, 0x0e0, 0x10, 12, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pupd_range[] = {
@@ -130,7 +133,7 @@ static const struct mtk_pin_field_calc mt6797_pin_drv_range[] = {
 };
 
 static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
-	[67] = MTK_PULL_PU_PD_TYPE,
+	[65 ... 67] = MTK_PULL_PU_PD_TYPE,
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
 	[129 ... 134] = MTK_PULL_PUPD_R1R0_TYPE,
 };
@@ -157,11 +160,108 @@ static const char * const mt6797_pinctrl_register_base_names[] = {
 	"gpio", "iocfgl", "iocfgb", "iocfgr", "iocfgt",
 };
 
+/* Board BSP mt6797.dtsi: exact debounce periods in microseconds. */
+static const unsigned int mt6797_debounce_time[] = {
+	128, 256, 512, 1024, 16384, 32768, 65536, 131072, 262144, 524288, 0
+};
+
+/* Preserve irq-mt-eic.c's RAW_STA sampling after selecting the EINT mux. */
+static int mt6797_eint_get_level(struct mtk_eint *eint, unsigned int eint_num)
+{
+	const struct mtk_eint_regs *regs = eint->regs;
+	unsigned int idx = eint->pins[eint_num].index;
+	u32 bit = BIT(idx % 32), masked, pol, sens, level;
+	void __iomem *base = eint->base[eint->pins[eint_num].instance] +
+			     (idx / 32) * 4;
+
+	masked = readl(base + regs->mask) & bit;
+	pol = readl(base + regs->pol) & bit;
+	sens = readl(base + regs->sens) & bit;
+	if (!masked)
+		writel(bit, base + regs->mask_set);
+
+	writel(bit, base + regs->pol_set);
+	writel(bit, base + regs->ack);
+	writel(bit, base + regs->sens_set);
+	writel(bit, base + regs->ack);
+	level = !!(readl(base + 0xa00) & bit);
+
+	writel(bit, base + (pol ? regs->pol_set : regs->pol_clr));
+	writel(bit, base + regs->ack);
+	writel(bit, base + (sens ? regs->sens_set : regs->sens_clr));
+	writel(bit, base + regs->ack);
+	if (!masked)
+		writel(bit, base + regs->mask_clr);
+
+	return level;
+}
+
+static int mt6797_eint_flip_edge(struct mtk_eint *eint, unsigned int eint_num)
+{
+	const struct mtk_eint_regs *regs = eint->regs;
+	unsigned int idx = eint->pins[eint_num].index;
+	void __iomem *base = eint->base[eint->pins[eint_num].instance] +
+			     (idx / 32) * 4;
+	u32 bit = BIT(idx % 32), masked;
+	int level = mt6797_eint_get_level(eint, eint_num);
+
+	masked = readl(base + regs->mask) & bit;
+	if (!masked)
+		writel(bit, base + regs->mask_set);
+	writel(bit, base + (level ? regs->pol_clr : regs->pol_set));
+	writel(bit, base + regs->ack);
+	writel(bit, base + regs->sens_clr);
+	writel(bit, base + regs->ack);
+	if (!masked)
+		writel(bit, base + regs->mask_clr);
+
+	return level;
+}
+
+/* Caller masks the line and restores its mask after this BSP sequence. */
+static void mt6797_eint_set_debounce(struct mtk_eint *eint,
+				    unsigned int eint_num, unsigned int debounce)
+{
+	const struct mtk_eint_regs *regs = eint->regs;
+	unsigned int idx = eint->pins[eint_num].index;
+	unsigned int shift = (idx % 4) * 8, setting;
+	void __iomem *base = eint->base[eint->pins[eint_num].instance] +
+			     (idx / 4) * 4;
+
+	writel(0xffU << shift, base + regs->dbnc_clr);
+	/* Standard GPIO debounce=0 disables the hardware filter. */
+	if (!debounce)
+		return;
+
+	for (setting = 0; setting < ARRAY_SIZE(mt6797_debounce_time) - 2;
+	     setting++)
+		if (debounce <= mt6797_debounce_time[setting])
+			break;
+
+	/* BSP saturates requests above 524288 us at the last valid encoding. */
+	writel(((setting << 4) | BIT(0)) << shift, base + regs->dbnc_set);
+	udelay(500);
+	writel(BIT(1) << shift, base + regs->dbnc_set);
+	udelay(500);
+}
+
+static const struct mtk_eint_hw mt6797_eint_hw = {
+	.port_mask = 7,
+	.ports = 6,
+	.ap_num = 192,
+	.db_cnt = 16,
+	.db_time = mt6797_debounce_time,
+	.get_level = mt6797_eint_get_level,
+	.flip_edge = mt6797_eint_flip_edge,
+	.set_debounce = mt6797_eint_set_debounce,
+};
+
 static const struct mtk_pin_soc mt6797_data = {
 	.reg_cal = mt6797_reg_cals,
 	.pins = mtk_pins_mt6797,
 	.npins = ARRAY_SIZE(mtk_pins_mt6797),
 	.ngrps = ARRAY_SIZE(mtk_pins_mt6797),
+	.eint_hw = &mt6797_eint_hw,
 	.gpio_m = 0,
 	.ies_present = true,
 	.base_names = mt6797_pinctrl_register_base_names,

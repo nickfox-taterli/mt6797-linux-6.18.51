@@ -642,7 +642,7 @@ static const struct mtk_pin_desc mtk_pins_mt6797[] = {
 	),
 	MTK_PIN(
 		65, "GPIO65",
-		MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
+		MTK_EINT_FUNCTION(1, 4),
 		DRV_GRP3,
 		MTK_FUNCTION(0, "GPIO65"),
 		MTK_FUNCTION(1, "EINT4"),
@@ -654,7 +654,7 @@ static const struct mtk_pin_desc mtk_pins_mt6797[] = {
 	),
 	MTK_PIN(
 		66, "GPIO66",
-		MTK_EINT_FUNCTION(NO_EINT_SUPPORT, NO_EINT_SUPPORT),
+		MTK_EINT_FUNCTION(1, 5),
 		DRV_GRP3,
 		MTK_FUNCTION(0, "GPIO66"),
 		MTK_FUNCTION(1, "EINT5"),
