@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+
+#include "mt6797-x20-96-io-i2c5.dts"
+
+&i2c5 {
+	clock-frequency = <100000>;
+};

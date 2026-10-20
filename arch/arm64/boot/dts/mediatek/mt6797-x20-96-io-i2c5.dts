@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Keep the validated SPI and TF card-detect setup; enable the second external I2C bus. */
+/dts-v1/;
+
+#include "mt6797-x20-96-spi-cd.dts"
+
+&i2c5_pins_a {
+	pins-bus {
+		input-enable;
+		input-schmitt-enable;
+		bias-disable;
+	};
+};
+
+&i2c5 {
+	compatible = "mediatek,mt6797-i2c";
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&i2c5_pins_a>;
+	pinctrl-1 = <&i2c5_gpio_pins>;
+	scl-gpios = <&pio 241 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&pio 240 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&pio {
+	i2c5_gpio_pins: i2c5-gpio-recovery-pins {
+		pins-bus {
+			pinmux = <MT6797_GPIO240__FUNC_GPIO240>,
+				 <MT6797_GPIO241__FUNC_GPIO241>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};
