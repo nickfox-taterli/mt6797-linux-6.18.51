@@ -361,9 +361,10 @@ static const struct i2c_adapter_quirks mt7622_i2c_quirks = {
 
 /* BSP: 16-bit primary/AUX lengths; APPM (I2C6) alone uses packed lengths. */
 static const struct i2c_adapter_quirks mt6797_i2c_quirks = {
-	.flags = I2C_AQ_COMB_WRITE_THEN_READ | I2C_AQ_NO_ZERO_LEN,
-	.max_num_msgs = 1,
-	.max_write_len = 65532,
+	.flags = I2C_AQ_NO_ZERO_LEN,
+	/* A ten-bit read expands to two hardware messages. */
+	.max_num_msgs = 127,
+	.max_write_len = 65531,
 	.max_read_len = 65532,
 	.max_comb_1st_msg_len = 65532,
 	.max_comb_2nd_msg_len = 65532,
@@ -373,6 +374,7 @@ static const struct mtk_i2c_compatible mt6797_compat = {
 	.quirks = &mt6797_i2c_quirks,
 	.regs = mt_i2c_regs_v1,
 	.dcm = 1,
+	.auto_restart = 1,
 	.aux_len_reg = 1,
 	.bsp_timing = 1,
 	.max_dma_support = 32,
@@ -601,6 +603,14 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 		udelay(10);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
 		mtk_i2c_writew(i2c, I2C_CHN_CLR_FLAG, OFFSET_SOFTRESET);
+	} else if (i2c->dev_comp->bsp_timing) {
+		writel(I2C_DMA_WARM_RST, i2c->pdmabase + OFFSET_RST);
+		udelay(50);
+		writel(I2C_DMA_HARD_RST, i2c->pdmabase + OFFSET_RST);
+		udelay(5);
+		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
+		udelay(5);
+		mtk_i2c_writew(i2c, I2C_SOFT_RST, OFFSET_SOFTRESET);
 	} else {
 		writel(I2C_DMA_HARD_RST, i2c->pdmabase + OFFSET_RST);
 		udelay(50);
@@ -1078,6 +1088,11 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	u8 *dma_wr_buf = NULL;
 	dma_addr_t rpaddr = 0;
 	dma_addr_t wpaddr = 0;
+	bool use_dma = !i2c->dev_comp->bsp_timing || msgs->len > 8 ||
+		(i2c->op == I2C_MASTER_WRRD && (msgs + 1)->len > 8);
+	bool success;
+	u32 dma_en;
+	int i, err = 0;
 	int ret;
 
 	i2c->irq_stat = 0;
@@ -1111,11 +1126,17 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	control_reg = mtk_i2c_readw(i2c, OFFSET_CONTROL) &
 			~(I2C_CONTROL_DIR_CHANGE | I2C_CONTROL_RS);
-	if ((i2c->speed_hz > I2C_MAX_FAST_MODE_PLUS_FREQ) || (left_num >= 1))
+	if ((i2c->speed_hz > (i2c->dev_comp->bsp_timing ?
+		I2C_MAX_FAST_MODE_FREQ : I2C_MAX_FAST_MODE_PLUS_FREQ)) ||
+	    left_num >= 1)
 		control_reg |= I2C_CONTROL_RS;
 
 	if (i2c->op == I2C_MASTER_WRRD)
 		control_reg |= I2C_CONTROL_DIR_CHANGE | I2C_CONTROL_RS;
+	if (use_dma)
+		control_reg |= I2C_CONTROL_DMA_EN;
+	else
+		control_reg &= ~I2C_CONTROL_DMA_EN;
 
 	mtk_i2c_writew(i2c, control_reg, OFFSET_CONTROL);
 
@@ -1152,6 +1173,14 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 		dma_sync = I2C_DMA_SKIP_CONFIG | I2C_DMA_ASYNC_MODE;
 		if (i2c->op == I2C_MASTER_WRRD)
 			dma_sync |= I2C_DMA_DIR_CHANGE;
+	}
+
+	/* BSP uses the eight-byte FIFO for short messages. */
+	if (!use_dma) {
+		if (i2c->op != I2C_MASTER_RD)
+			for (i = 0; i < msgs->len; i++)
+				mtk_i2c_writew(i2c, msgs->buf[i], OFFSET_DATA_PORT);
+		goto start;
 	}
 
 	/* Prepare buffer data to start transfer */
@@ -1256,6 +1285,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	writel(I2C_DMA_START_EN, i2c->pdmabase + OFFSET_EN);
 
+start:
 	if (!i2c->auto_restart) {
 		start_reg = I2C_TRANSAC_START;
 	} else {
@@ -1272,25 +1302,59 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	mtk_i2c_writew(i2c, ~(restart_flag | I2C_HS_NACKERR | I2C_ACKERR |
 			    I2C_ARB_LOST | I2C_TRANSAC_COMP), OFFSET_INTR_MASK);
 
+	if (ret == 0)
+		err = -ETIMEDOUT;
+	else if (i2c->irq_stat & I2C_ARB_LOST)
+		err = -EAGAIN;
+	else if (i2c->irq_stat & (I2C_HS_NACKERR | I2C_ACKERR))
+		err = -ENXIO;
+
+	if (i2c->dev_comp->bsp_timing) {
+		/* Quiesce APDMA before unmapping, including timeout/NACK exits. */
+		if (use_dma && !err &&
+		    readl_poll_timeout(i2c->pdmabase + OFFSET_EN, dma_en,
+				       !(dma_en & I2C_DMA_START_EN), 5, 50))
+			err = -EIO;
+		if (err)
+			mtk_i2c_init_hw(i2c);
+	}
+	success = !err;
+	if (!use_dma) {
+		struct i2c_msg *rd = i2c->op == I2C_MASTER_WRRD ? msgs + 1 : msgs;
+
+		if (success && i2c->op != I2C_MASTER_WR) {
+			if (((mtk_i2c_readw(i2c, OFFSET_FIFO_STAT) >> 4) & 0xf) != rd->len) {
+				mtk_i2c_init_hw(i2c);
+				return -EIO;
+			}
+			for (i = 0; i < rd->len; i++)
+				rd->buf[i] = mtk_i2c_readw(i2c, OFFSET_DATA_PORT);
+		}
+		return err;
+	}
+
 	if (i2c->op == I2C_MASTER_WR) {
 		dma_unmap_single(i2c->dev, wpaddr,
 				 msgs->len, DMA_TO_DEVICE);
 
-		i2c_put_dma_safe_msg_buf(dma_wr_buf, msgs, true);
+		i2c_put_dma_safe_msg_buf(dma_wr_buf, msgs, success);
 	} else if (i2c->op == I2C_MASTER_RD) {
 		dma_unmap_single(i2c->dev, rpaddr,
 				 msgs->len, DMA_FROM_DEVICE);
 
-		i2c_put_dma_safe_msg_buf(dma_rd_buf, msgs, true);
+		i2c_put_dma_safe_msg_buf(dma_rd_buf, msgs, success);
 	} else {
 		dma_unmap_single(i2c->dev, wpaddr, msgs->len,
 				 DMA_TO_DEVICE);
 		dma_unmap_single(i2c->dev, rpaddr, (msgs + 1)->len,
 				 DMA_FROM_DEVICE);
 
-		i2c_put_dma_safe_msg_buf(dma_wr_buf, msgs, true);
-		i2c_put_dma_safe_msg_buf(dma_rd_buf, (msgs + 1), true);
+		i2c_put_dma_safe_msg_buf(dma_wr_buf, msgs, success);
+		i2c_put_dma_safe_msg_buf(dma_rd_buf, (msgs + 1), success);
 	}
+
+	if (i2c->dev_comp->bsp_timing)
+		return err;
 
 	if (ret == 0) {
 		dev_dbg(i2c->dev, "addr: %x, transfer timeout\n", msgs->addr);
@@ -1327,7 +1391,7 @@ static int mtk_i2c_check_bus(struct i2c_adapter *adap)
 	return 0;
 }
 
-static int mtk_i2c_transfer(struct i2c_adapter *adap,
+static int mtk_i2c_xfer(struct i2c_adapter *adap,
 			    struct i2c_msg msgs[], int num)
 {
 	int ret;
@@ -1355,7 +1419,8 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 	}
 
 	if (i2c->auto_restart && num >= 2 &&
-		i2c->speed_hz > I2C_MAX_FAST_MODE_PLUS_FREQ)
+	    i2c->speed_hz > (i2c->dev_comp->bsp_timing ?
+		I2C_MAX_FAST_MODE_FREQ : I2C_MAX_FAST_MODE_PLUS_FREQ))
 		/* ignore the first restart irq after the master code,
 		 * otherwise the first transfer will be discarded.
 		 */
@@ -1381,7 +1446,6 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 			left_num--;
 		}
 
-		/* always use DMA mode. */
 		ret = mtk_i2c_do_transfer(i2c, msgs, num, left_num);
 		if (ret < 0)
 			goto err_exit;
@@ -1396,6 +1460,74 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 
 err_exit:
 	clk_bulk_disable(I2C_MT65XX_CLK_MAX, i2c->clocks);
+	return ret;
+}
+
+/* The address register sends eight bits; ten-bit addresses use a data prefix. */
+static int mtk_i2c_transfer(struct i2c_adapter *adap,
+			  struct i2c_msg msgs[], int num)
+{
+	struct mtk_i2c *i2c = i2c_get_adapdata(adap);
+	struct i2c_msg *wire;
+	u8 **prefix;
+	bool ten = false;
+	int i, count = 0, ret;
+
+	if (i2c->dev_comp != &mt6797_compat)
+		return mtk_i2c_xfer(adap, msgs, num);
+	for (i = 0; i < num; i++) {
+		if (msgs[i].flags & ~(I2C_M_RD | I2C_M_TEN | I2C_M_DMA_SAFE))
+			return -EOPNOTSUPP;
+		if (msgs[i].addr > ((msgs[i].flags & I2C_M_TEN) ? 0x3ff : 0x7f))
+			return -EINVAL;
+		ten |= !!(msgs[i].flags & I2C_M_TEN);
+	}
+	if (!ten)
+		return mtk_i2c_xfer(adap, msgs, num);
+	wire = kcalloc(num * 2, sizeof(*wire), GFP_KERNEL);
+	prefix = kcalloc(num, sizeof(*prefix), GFP_KERNEL);
+	if (!wire || !prefix) {
+		ret = -ENOMEM;
+		goto free;
+	}
+	for (i = 0; i < num; i++) {
+		struct i2c_msg msg = msgs[i];
+
+		if (!(msg.flags & I2C_M_TEN)) {
+			wire[count++] = msg;
+			continue;
+		}
+		prefix[i] = kmalloc((msg.flags & I2C_M_RD) ? 1 : msg.len + 1,
+				    GFP_KERNEL);
+		if (!prefix[i]) {
+			ret = -ENOMEM;
+			goto free;
+		}
+		prefix[i][0] = msg.addr & 0xff;
+		msg.addr = 0x78 | (msg.addr >> 8);
+		msg.flags &= ~I2C_M_TEN;
+		if (msg.flags & I2C_M_RD) {
+			wire[count++] = (struct i2c_msg) {
+				.addr = msg.addr, .len = 1, .buf = prefix[i],
+			};
+			wire[count++] = msg;
+		} else {
+			memcpy(prefix[i] + 1, msg.buf, msg.len);
+			msg.buf = prefix[i];
+			msg.flags &= ~I2C_M_DMA_SAFE;
+			msg.len++;
+			wire[count++] = msg;
+		}
+	}
+	ret = mtk_i2c_xfer(adap, wire, count);
+	if (ret == count)
+		ret = num;
+free:
+	if (prefix)
+		for (i = 0; i < num; i++)
+			kfree(prefix[i]);
+	kfree(prefix);
+	kfree(wire);
 	return ret;
 }
 
@@ -1421,7 +1553,7 @@ static irqreturn_t mtk_i2c_irq(int irqno, void *dev_id)
 		mtk_i2c_writew(i2c, I2C_RS_MUL_CNFG | I2C_RS_MUL_TRIG |
 				    I2C_TRANSAC_START, OFFSET_START);
 	} else {
-		if (i2c->irq_stat & (I2C_TRANSAC_COMP | restart_flag))
+		if (i2c->irq_stat & (I2C_TRANSAC_COMP | restart_flag | I2C_ARB_LOST))
 			complete(&i2c->msg_complete);
 	}
 
@@ -1430,8 +1562,11 @@ static irqreturn_t mtk_i2c_irq(int irqno, void *dev_id)
 
 static u32 mtk_i2c_functionality(struct i2c_adapter *adap)
 {
+	struct mtk_i2c *i2c = i2c_get_adapdata(adap);
+	u32 ten = i2c->dev_comp == &mt6797_compat ? I2C_FUNC_10BIT_ADDR : 0;
+
 	if (i2c_check_quirks(adap, I2C_AQ_NO_ZERO_LEN))
-		return I2C_FUNC_I2C |
+		return I2C_FUNC_I2C | ten |
 			(I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
 	else
 		return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL;
@@ -1563,7 +1698,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Unsupported I2C frequency\n");
 
-	if (i2c->dev_comp->max_dma_support > 32) {
+	if (i2c->dev_comp->max_dma_support > 32 || i2c->dev_comp->bsp_timing) {
 		ret = dma_set_mask(&pdev->dev,
 				DMA_BIT_MASK(i2c->dev_comp->max_dma_support));
 		if (ret) {
