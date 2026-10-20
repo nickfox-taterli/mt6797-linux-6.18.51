@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Established storage/wireless baseline plus the STM32 GPIO/EINT and I2C4. */
+/dts-v1/;
+
+#include "mt6797-x20-96-gpio-eint.dts"
+
+&i2c4_pins_a {
+	pins-bus {
+		input-enable;
+		input-schmitt-enable;
+		bias-disable;
+	};
+};
+
+&i2c4 {
+	compatible = "mediatek,mt6797-i2c";
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&i2c4_pins_a>;
+	pinctrl-1 = <&i2c4_gpio_pins>;
+	scl-gpios = <&pio 239 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&pio 238 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&pio {
+	i2c4_gpio_pins: i2c4-gpio-recovery-pins {
+		pins-bus {
+			pinmux = <MT6797_GPIO238__FUNC_GPIO238>,
+				 <MT6797_GPIO239__FUNC_GPIO239>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};

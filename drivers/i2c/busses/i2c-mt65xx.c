@@ -267,6 +267,7 @@ struct mtk_i2c_compatible {
 	unsigned char dma_sync: 1;
 	unsigned char ltiming_adjust: 1;
 	unsigned char apdma_sync: 1;
+	unsigned char bsp_timing: 1;
 	unsigned char max_dma_support;
 };
 
@@ -288,6 +289,7 @@ struct mtk_i2c {
 	struct device *dev;
 	struct completion msg_complete;
 	struct i2c_timings timing_info;
+	struct i2c_bus_recovery_info recovery;
 
 	/* set in i2c probe */
 	void __iomem *base;		/* i2c base addr */
@@ -355,6 +357,33 @@ static const struct i2c_adapter_quirks mt6577_i2c_quirks = {
 
 static const struct i2c_adapter_quirks mt7622_i2c_quirks = {
 	.max_num_msgs = 255,
+};
+
+/* BSP: 16-bit primary/AUX lengths; APPM (I2C6) alone uses packed lengths. */
+static const struct i2c_adapter_quirks mt6797_i2c_quirks = {
+	.flags = I2C_AQ_COMB_WRITE_THEN_READ | I2C_AQ_NO_ZERO_LEN,
+	.max_num_msgs = 1,
+	.max_write_len = 65532,
+	.max_read_len = 65532,
+	.max_comb_1st_msg_len = 65532,
+	.max_comb_2nd_msg_len = 65532,
+};
+
+static const struct mtk_i2c_compatible mt6797_compat = {
+	.quirks = &mt6797_i2c_quirks,
+	.regs = mt_i2c_regs_v1,
+	.dcm = 1,
+	.aux_len_reg = 1,
+	.bsp_timing = 1,
+	.max_dma_support = 32,
+};
+
+static const struct mtk_i2c_compatible mt6797_appm_compat = {
+	.quirks = &mt6577_i2c_quirks,
+	.regs = mt_i2c_regs_v1,
+	.dcm = 1,
+	.bsp_timing = 1,
+	.max_dma_support = 32,
 };
 
 static const struct i2c_adapter_quirks mt8183_i2c_quirks = {
@@ -525,6 +554,7 @@ static const struct of_device_id mtk_i2c_of_match[] = {
 	{ .compatible = "mediatek,mt2712-i2c", .data = &mt2712_compat },
 	{ .compatible = "mediatek,mt6577-i2c", .data = &mt6577_compat },
 	{ .compatible = "mediatek,mt6589-i2c", .data = &mt6589_compat },
+	{ .compatible = "mediatek,mt6797-i2c", .data = &mt6797_compat },
 	{ .compatible = "mediatek,mt7622-i2c", .data = &mt7622_compat },
 	{ .compatible = "mediatek,mt7981-i2c", .data = &mt7981_compat },
 	{ .compatible = "mediatek,mt7986-i2c", .data = &mt7986_compat },
@@ -868,7 +898,46 @@ static int mtk_i2c_calculate_speed(struct mtk_i2c *i2c, unsigned int clk_src,
 	return 0;
 }
 
-static void mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
+/* Preserve mt6797/i2c.c's exhaustive kHz search and first-best tie breaking. */
+static int mt6797_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
+{
+	unsigned int hclk = parent_clk / i2c->clk_src_div / 1000;
+	unsigned int khz = i2c->speed_hz / 1000;
+	unsigned int max_step, sample, step, best_sample = 0, best_step = 0;
+	unsigned int sclk, diff, min_diff = hclk;
+	bool hs = i2c->speed_hz > I2C_MAX_FAST_MODE_FREQ;
+
+	if (!khz || !hclk || i2c->speed_hz > I2C_MAX_HIGH_SPEED_MODE_FREQ)
+		return -EINVAL;
+	max_step = hs ? MAX_HS_STEP_CNT_DIV : MAX_STEP_CNT_DIV;
+	for (sample = 1; sample <= MAX_SAMPLE_CNT_DIV; sample++) {
+		for (step = 1; step <= max_step; step++) {
+			sclk = (hclk >> 1) / (sample * step);
+			if (sclk > khz)
+				continue;
+			diff = khz - sclk;
+			if (diff < min_diff) {
+				min_diff = diff;
+				best_sample = sample;
+				best_step = step;
+			}
+		}
+	}
+	if (!best_sample || !best_step)
+		return -EINVAL;
+	if (hs) {
+		/* BSP master-code phase: sample=0, step=16. */
+		i2c->timing_reg = 16;
+		i2c->high_speed_reg = 1 | ((best_sample - 1) << 12) |
+				     ((best_step - 1) << 8);
+	} else {
+		i2c->timing_reg = ((best_sample - 1) << 8) | (best_step - 1);
+		i2c->high_speed_reg = 0;
+	}
+	return 0;
+}
+
+static int mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 {
 	unsigned int clk_src;
 	unsigned int step_cnt;
@@ -879,6 +948,9 @@ static void mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 	unsigned int clk_div;
 	unsigned int max_clk_div;
 	int ret;
+
+	if (i2c->dev_comp->bsp_timing)
+		return mt6797_i2c_set_speed(i2c, parent_clk);
 
 	target_speed = i2c->speed_hz;
 	parent_clk /= i2c->clk_src_div;
@@ -938,6 +1010,7 @@ static void mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 
 		break;
 	}
+	return clk_div <= max_clk_div ? 0 : -EINVAL;
 }
 
 static void i2c_dump_register(struct mtk_i2c *i2c)
@@ -1235,6 +1308,25 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	return 0;
 }
 
+/* A held-low SDA otherwise looks like ACK plus valid all-zero DMA data. */
+static int mtk_i2c_check_bus(struct i2c_adapter *adap)
+{
+	struct i2c_bus_recovery_info *bri = adap->bus_recovery_info;
+	int scl, sda;
+
+	if (!bri || !bri->get_scl || !bri->get_sda)
+		return 0;
+	scl = bri->get_scl(adap);
+	if (scl < 0)
+		return scl;
+	sda = bri->get_sda(adap);
+	if (sda < 0)
+		return sda;
+	if (!scl || !sda)
+		return i2c_recover_bus(adap);
+	return 0;
+}
+
 static int mtk_i2c_transfer(struct i2c_adapter *adap,
 			    struct i2c_msg msgs[], int num)
 {
@@ -1242,6 +1334,10 @@ static int mtk_i2c_transfer(struct i2c_adapter *adap,
 	int left_num = num;
 	bool write_then_read_en = false;
 	struct mtk_i2c *i2c = i2c_get_adapdata(adap);
+
+	ret = mtk_i2c_check_bus(adap);
+	if (ret)
+		return ret;
 
 	ret = clk_bulk_enable(I2C_MT65XX_CLK_MAX, i2c->clocks);
 	if (ret)
@@ -1375,12 +1471,13 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	int ret = 0;
 	struct mtk_i2c *i2c;
 	int i, irq, speed_clk;
+	struct resource *res;
 
 	i2c = devm_kzalloc(&pdev->dev, sizeof(*i2c), GFP_KERNEL);
 	if (!i2c)
 		return -ENOMEM;
 
-	i2c->base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	i2c->base = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(i2c->base))
 		return PTR_ERR(i2c->base);
 
@@ -1395,6 +1492,9 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	init_completion(&i2c->msg_complete);
 
 	i2c->dev_comp = of_device_get_match_data(&pdev->dev);
+	/* BSP packs APPM's 8-bit TX and 5-bit RX length into one register. */
+	if (i2c->dev_comp == &mt6797_compat && res->start == 0x1100e000)
+		i2c->dev_comp = &mt6797_appm_compat;
 	i2c->adap.dev.of_node = pdev->dev.of_node;
 	i2c->dev = &pdev->dev;
 	i2c->adap.dev.parent = &pdev->dev;
@@ -1403,6 +1503,8 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	i2c->adap.quirks = i2c->dev_comp->quirks;
 	i2c->adap.timeout = 2 * HZ;
 	i2c->adap.retries = 1;
+	if (of_property_present(pdev->dev.of_node, "scl-gpios"))
+		i2c->adap.bus_recovery_info = &i2c->recovery;
 	i2c->adap.bus_regulator = devm_regulator_get_optional(&pdev->dev, "vbus");
 	if (IS_ERR(i2c->adap.bus_regulator)) {
 		if (PTR_ERR(i2c->adap.bus_regulator) == -ENODEV)
@@ -1457,7 +1559,9 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 
 	strscpy(i2c->adap.name, I2C_DRV_NAME, sizeof(i2c->adap.name));
 
-	mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
+	ret = mtk_i2c_set_speed(i2c, clk_get_rate(i2c->clocks[speed_clk].clk));
+	if (ret)
+		return dev_err_probe(&pdev->dev, ret, "Unsupported I2C frequency\n");
 
 	if (i2c->dev_comp->max_dma_support > 32) {
 		ret = dma_set_mask(&pdev->dev,

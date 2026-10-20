@@ -55,6 +55,7 @@ static const struct mtk_pin_field_calc mt6797_pin_ies_range[] = {
 	PIN_FIELD_BASE(65, 67, 3, 0x010, 0x10, 12, 1),
 	PIN_FIELD_BASE(114, 125, 2, 0x020, 0x10, 0, 1),
 	PIN_FIELD_BASE(129, 134, 2, 0x020, 0x10, 25, 1),
+	PIN_FIELD_BASE(238, 241, 2, 0x010, 0x10, 4, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
@@ -68,10 +69,13 @@ static const struct mtk_pin_field_calc mt6797_pin_smt_range[] = {
 	PINS_FIELD_BASE(129, 129, 3, 0x030, 0x10, 0, 1),
 	PINS_FIELD_BASE(130, 133, 3, 0x030, 0x10, 1, 1),
 	PINS_FIELD_BASE(134, 134, 3, 0x030, 0x10, 2, 1),
+	PINS_FIELD_BASE(238, 239, 2, 0x050, 0x10, 13, 1),
+	PINS_FIELD_BASE(240, 241, 2, 0x050, 0x10, 14, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pd_range[] = {
 	PIN_FIELD_BASE(65, 67, 3, 0x0c0, 0x10, 12, 1),
+	PIN_FIELD_BASE(238, 241, 2, 0x130, 0x10, 27, 1),
 };
 
 static const struct mtk_pin_field_calc mt6797_pin_pu_range[] = {
@@ -136,6 +140,8 @@ static const unsigned int mt6797_pull_type[ARRAY_SIZE(mtk_pins_mt6797)] = {
 	[65 ... 67] = MTK_PULL_PU_PD_TYPE,
 	[114 ... 125] = MTK_PULL_PUPD_R1R0_TYPE,
 	[129 ... 134] = MTK_PULL_PUPD_R1R0_TYPE,
+	/* I2C4/5 pads have only a programmable pull-down in the BSP. */
+	[238 ... 241] = MTK_PULL_PD_TYPE,
 };
 
 static const struct mtk_pin_reg_calc mt6797_reg_cals[PINCTRL_PIN_REG_MAX] = {
