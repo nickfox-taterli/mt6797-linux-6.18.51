@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Established native baseline plus the external STM32 SPI test peer. */
+/* MT6797 SPI controller and pin configuration for X20-96. */
 /dts-v1/;
 
 #include "mt6797-x20-96-i2c.dts"
@@ -14,24 +14,15 @@
 		clock-names = "parent-clk", "sel-clk", "spi-clk";
 		mediatek,pad-select = <0>;
 		pinctrl-names = "default";
-		pinctrl-0 = <&stm32_spi_pins>;
+		pinctrl-0 = <&spi0_pins>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		/* Bind spidev through driver_override for this laboratory endpoint. */
-		stm32@0 {
-			compatible = "st,stm32l452re-test";
-			reg = <0>;
-			spi-max-frequency = <12000000>;
-			spi-cs-setup-delay-ns = <2000>;
-			spi-cs-hold-delay-ns = <2000>;
-			spi-cs-inactive-delay-ns = <1000>;
-		};
 	};
 };
 
 &pio {
-	stm32_spi_pins: stm32-spi-pins {
+	spi0_pins: spi0-pins {
 		pins-bus {
 			pinmux = <MT6797_GPIO57__FUNC_SPI0_CLK>,
 				 <MT6797_GPIO58__FUNC_SPI0_MI>,

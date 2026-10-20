@@ -479,7 +479,7 @@ static int mtk_spi_hw_init(struct spi_controller *host,
 
 	/* set hw cs timing */
 	if (mdata->dev_comp == &mt6797_compat) {
-		/* Preserve BSP defaults unless the client supplies a longer delay. */
+		/* Keep minimum controller timing; per-device delays may extend it. */
 		writel((2 << SPI_ADJUST_CFG0_CS_SETUP_OFFSET) | 2,
 		       mdata->base + SPI_CFG0_REG);
 		reg_val = readl(mdata->base + SPI_CFG1_REG);

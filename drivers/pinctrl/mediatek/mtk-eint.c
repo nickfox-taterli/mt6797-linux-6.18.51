@@ -223,7 +223,7 @@ static int mtk_eint_set_type(struct irq_data *d, unsigned int type)
 	}
 
 	if (eint->hw->polarity_delay_ns) {
-		/* Complete the polarity write before the BSP hardware settling time. */
+		/* Let the polarity update settle before changing sensitivity. */
 		mb();
 		ndelay(eint->hw->polarity_delay_ns);
 	}

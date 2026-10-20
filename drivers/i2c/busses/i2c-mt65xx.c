@@ -267,7 +267,7 @@ struct mtk_i2c_compatible {
 	unsigned char dma_sync: 1;
 	unsigned char ltiming_adjust: 1;
 	unsigned char apdma_sync: 1;
-	unsigned char bsp_timing: 1;
+	unsigned char is_mt6797: 1;
 	unsigned char max_dma_support;
 };
 
@@ -359,7 +359,7 @@ static const struct i2c_adapter_quirks mt7622_i2c_quirks = {
 	.max_num_msgs = 255,
 };
 
-/* BSP: 16-bit primary/AUX lengths; APPM (I2C6) alone uses packed lengths. */
+/* MT6797 uses separate 16-bit TX/AUX lengths; I2C6 packs 8-bit TX/5-bit RX. */
 static const struct i2c_adapter_quirks mt6797_i2c_quirks = {
 	.flags = I2C_AQ_NO_ZERO_LEN,
 	/* A ten-bit read expands to two hardware messages. */
@@ -376,7 +376,7 @@ static const struct mtk_i2c_compatible mt6797_compat = {
 	.dcm = 1,
 	.auto_restart = 1,
 	.aux_len_reg = 1,
-	.bsp_timing = 1,
+	.is_mt6797 = 1,
 	.max_dma_support = 32,
 };
 
@@ -384,7 +384,7 @@ static const struct mtk_i2c_compatible mt6797_appm_compat = {
 	.quirks = &mt6577_i2c_quirks,
 	.regs = mt_i2c_regs_v1,
 	.dcm = 1,
-	.bsp_timing = 1,
+	.is_mt6797 = 1,
 	.max_dma_support = 32,
 };
 
@@ -603,7 +603,7 @@ static void mtk_i2c_init_hw(struct mtk_i2c *i2c)
 		udelay(10);
 		writel(I2C_DMA_CLR_FLAG, i2c->pdmabase + OFFSET_RST);
 		mtk_i2c_writew(i2c, I2C_CHN_CLR_FLAG, OFFSET_SOFTRESET);
-	} else if (i2c->dev_comp->bsp_timing) {
+	} else if (i2c->dev_comp->is_mt6797) {
 		writel(I2C_DMA_WARM_RST, i2c->pdmabase + OFFSET_RST);
 		udelay(50);
 		writel(I2C_DMA_HARD_RST, i2c->pdmabase + OFFSET_RST);
@@ -936,7 +936,7 @@ static int mt6797_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 	if (!best_sample || !best_step)
 		return -EINVAL;
 	if (hs) {
-		/* BSP master-code phase: sample=0, step=16. */
+		/* The high-speed master-code phase uses sample=0 and step=16. */
 		i2c->timing_reg = 16;
 		i2c->high_speed_reg = 1 | ((best_sample - 1) << 12) |
 				     ((best_step - 1) << 8);
@@ -959,7 +959,7 @@ static int mtk_i2c_set_speed(struct mtk_i2c *i2c, unsigned int parent_clk)
 	unsigned int max_clk_div;
 	int ret;
 
-	if (i2c->dev_comp->bsp_timing)
+	if (i2c->dev_comp->is_mt6797)
 		return mt6797_i2c_set_speed(i2c, parent_clk);
 
 	target_speed = i2c->speed_hz;
@@ -1088,7 +1088,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 	u8 *dma_wr_buf = NULL;
 	dma_addr_t rpaddr = 0;
 	dma_addr_t wpaddr = 0;
-	bool use_dma = !i2c->dev_comp->bsp_timing || msgs->len > 8 ||
+	bool use_dma = !i2c->dev_comp->is_mt6797 || msgs->len > 8 ||
 		(i2c->op == I2C_MASTER_WRRD && (msgs + 1)->len > 8);
 	bool success;
 	u32 dma_en;
@@ -1126,7 +1126,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 
 	control_reg = mtk_i2c_readw(i2c, OFFSET_CONTROL) &
 			~(I2C_CONTROL_DIR_CHANGE | I2C_CONTROL_RS);
-	if ((i2c->speed_hz > (i2c->dev_comp->bsp_timing ?
+	if ((i2c->speed_hz > (i2c->dev_comp->is_mt6797 ?
 		I2C_MAX_FAST_MODE_FREQ : I2C_MAX_FAST_MODE_PLUS_FREQ)) ||
 	    left_num >= 1)
 		control_reg |= I2C_CONTROL_RS;
@@ -1175,7 +1175,7 @@ static int mtk_i2c_do_transfer(struct mtk_i2c *i2c, struct i2c_msg *msgs,
 			dma_sync |= I2C_DMA_DIR_CHANGE;
 	}
 
-	/* BSP uses the eight-byte FIFO for short messages. */
+	/* Short messages use the controller's eight-byte hardware FIFO. */
 	if (!use_dma) {
 		if (i2c->op != I2C_MASTER_RD)
 			for (i = 0; i < msgs->len; i++)
@@ -1309,7 +1309,7 @@ start:
 	else if (i2c->irq_stat & (I2C_HS_NACKERR | I2C_ACKERR))
 		err = -ENXIO;
 
-	if (i2c->dev_comp->bsp_timing) {
+	if (i2c->dev_comp->is_mt6797) {
 		/* Quiesce APDMA before unmapping, including timeout/NACK exits. */
 		if (use_dma && !err &&
 		    readl_poll_timeout(i2c->pdmabase + OFFSET_EN, dma_en,
@@ -1353,7 +1353,7 @@ start:
 		i2c_put_dma_safe_msg_buf(dma_rd_buf, (msgs + 1), success);
 	}
 
-	if (i2c->dev_comp->bsp_timing)
+	if (i2c->dev_comp->is_mt6797)
 		return err;
 
 	if (ret == 0) {
@@ -1419,7 +1419,7 @@ static int mtk_i2c_xfer(struct i2c_adapter *adap,
 	}
 
 	if (i2c->auto_restart && num >= 2 &&
-	    i2c->speed_hz > (i2c->dev_comp->bsp_timing ?
+	    i2c->speed_hz > (i2c->dev_comp->is_mt6797 ?
 		I2C_MAX_FAST_MODE_FREQ : I2C_MAX_FAST_MODE_PLUS_FREQ))
 		/* ignore the first restart irq after the master code,
 		 * otherwise the first transfer will be discarded.
@@ -1627,7 +1627,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	init_completion(&i2c->msg_complete);
 
 	i2c->dev_comp = of_device_get_match_data(&pdev->dev);
-	/* BSP packs APPM's 8-bit TX and 5-bit RX length into one register. */
+	/* APPM packs the 8-bit TX and 5-bit RX lengths into one register. */
 	if (i2c->dev_comp == &mt6797_compat && res->start == 0x1100e000)
 		i2c->dev_comp = &mt6797_appm_compat;
 	i2c->adap.dev.of_node = pdev->dev.of_node;
@@ -1698,7 +1698,7 @@ static int mtk_i2c_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Unsupported I2C frequency\n");
 
-	if (i2c->dev_comp->max_dma_support > 32 || i2c->dev_comp->bsp_timing) {
+	if (i2c->dev_comp->max_dma_support > 32 || i2c->dev_comp->is_mt6797) {
 		ret = dma_set_mask(&pdev->dev,
 				DMA_BIT_MASK(i2c->dev_comp->max_dma_support));
 		if (ret) {
