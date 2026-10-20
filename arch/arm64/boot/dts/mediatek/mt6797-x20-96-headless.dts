@@ -11,6 +11,7 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/regulator/dlg,da9211-regulator.h>
 #include "mt6797.dtsi"
 
 / {
@@ -141,8 +142,9 @@
 		compatible = "mediatek,mt6797-cpufreq";
 		reg = <0 0x1001a000 0 0x1000>,
 		      <0 0x10000000 0 0x1000>,
-		      <0 0x11015000 0 0x1000>;
-		reg-names = "mcumixed", "topckgen", "semaphore";
+		      <0 0x11015000 0 0x1000>,
+		      <0 0x10001000 0 0x1000>;
+		reg-names = "mcumixed", "topckgen", "semaphore", "infracfg";
 		status = "okay";
 	};
 };
@@ -186,6 +188,9 @@
 				regulator-name = "vproc1";
 				regulator-min-microvolt = <780000>;
 				regulator-max-microvolt = <1200000>;
+				regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+				regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+						   DA9211_BUCK_MODE_AUTO>;
 				regulator-always-on;
 			};
 
@@ -193,6 +198,9 @@
 				regulator-name = "vproc2";
 				regulator-min-microvolt = <800000>;
 				regulator-max-microvolt = <1180000>;
+				regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+				regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+						   DA9211_BUCK_MODE_AUTO>;
 				regulator-always-on;
 			};
 		};
