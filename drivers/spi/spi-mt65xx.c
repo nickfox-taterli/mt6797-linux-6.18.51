@@ -196,6 +196,13 @@ static const struct mtk_spi_compatible mt6765_compat = {
 	.dma_ext = true,
 };
 
+/* MT6797 register table 3.7: CFG2 SCK counts, CFG0 16-bit CS counts. */
+static const struct mtk_spi_compatible mt6797_compat = {
+	.need_pad_sel = true,
+	.must_tx = true,
+	.enhance_timing = true,
+};
+
 static const struct mtk_spi_compatible mt7622_compat = {
 	.must_tx = true,
 	.enhance_timing = true,
@@ -253,6 +260,9 @@ static const struct of_device_id mtk_spi_of_match[] = {
 	{ .compatible = "mediatek,mt6765-spi",
 		.data = (void *)&mt6765_compat,
 	},
+	{ .compatible = "mediatek,mt6797-spi",
+		.data = (void *)&mt6797_compat,
+	},
 	{ .compatible = "mediatek,mt6991-spi",
 		.data = (void *)&mt6991_compat,
 	},
@@ -308,17 +318,21 @@ static int mtk_spi_set_hw_cs_timing(struct spi_device *spi)
 	delay = spi_delay_to_ns(cs_setup, NULL);
 	if (delay < 0)
 		return delay;
-	setup = (delay * DIV_ROUND_UP(mdata->spi_clk_hz, 1000000)) / 1000;
+	setup = DIV_ROUND_UP_ULL((u64)delay * mdata->spi_clk_hz, NSEC_PER_SEC);
 
 	delay = spi_delay_to_ns(cs_hold, NULL);
 	if (delay < 0)
 		return delay;
-	hold = (delay * DIV_ROUND_UP(mdata->spi_clk_hz, 1000000)) / 1000;
+	hold = DIV_ROUND_UP_ULL((u64)delay * mdata->spi_clk_hz, NSEC_PER_SEC);
 
 	delay = spi_delay_to_ns(cs_inactive, NULL);
 	if (delay < 0)
 		return delay;
-	inactive = (delay * DIV_ROUND_UP(mdata->spi_clk_hz, 1000000)) / 1000;
+	inactive = DIV_ROUND_UP_ULL((u64)delay * mdata->spi_clk_hz, NSEC_PER_SEC);
+
+	if (mdata->dev_comp == &mt6797_compat &&
+	    (setup > 0x10000 || hold > 0x10000 || inactive > 0x100))
+		return -ERANGE;
 
 	if (hold || setup) {
 		reg_val = readl(mdata->base + SPI_CFG0_REG);
@@ -464,8 +478,15 @@ static int mtk_spi_hw_init(struct spi_controller *host,
 	}
 
 	/* set hw cs timing */
-	mtk_spi_set_hw_cs_timing(spi);
-	return 0;
+	if (mdata->dev_comp == &mt6797_compat) {
+		/* Preserve BSP defaults unless the client supplies a longer delay. */
+		writel((2 << SPI_ADJUST_CFG0_CS_SETUP_OFFSET) | 2,
+		       mdata->base + SPI_CFG0_REG);
+		reg_val = readl(mdata->base + SPI_CFG1_REG);
+		reg_val = (reg_val & ~SPI_CFG1_CS_IDLE_MASK) | 1;
+		writel(reg_val, mdata->base + SPI_CFG1_REG);
+	}
+	return mtk_spi_set_hw_cs_timing(spi);
 }
 
 static int mtk_spi_prepare_message(struct spi_controller *host,
@@ -676,9 +697,9 @@ static int mtk_spi_fifo_transfer(struct spi_controller *host,
 	mtk_spi_setup_packet(host);
 
 	if (xfer->tx_buf) {
-		cnt = xfer->len / 4;
+		cnt = mdata->xfer_len / 4;
 		iowrite32_rep(mdata->base + SPI_TX_DATA_REG, xfer->tx_buf, cnt);
-		remainder = xfer->len % 4;
+		remainder = mdata->xfer_len % 4;
 		if (remainder > 0) {
 			reg_val = 0;
 			memcpy(&reg_val, xfer->tx_buf + (cnt * 4), remainder);
@@ -789,12 +810,35 @@ static int mtk_spi_setup(struct spi_device *spi)
 	return 0;
 }
 
+/* The SPI core invokes this before it unmaps an aborted message's DMA. */
+static void mtk_spi_handle_err(struct spi_controller *host,
+			       struct spi_message *msg)
+{
+	struct mtk_spi *mdata = spi_controller_get_devdata(host);
+	int irq = platform_get_irq(to_platform_device(host->dev.parent), 0);
+	u32 cmd;
+
+	disable_irq(irq);
+	cmd = readl(mdata->base + SPI_CMD_REG);
+	cmd &= ~(SPI_CMD_RX_DMA | SPI_CMD_TX_DMA | SPI_CMD_FINISH_IE |
+		 SPI_CMD_PAUSE_IE | SPI_CMD_PAUSE_EN);
+	writel(cmd, mdata->base + SPI_CMD_REG);
+	mtk_spi_reset(mdata);
+	readl(mdata->base + SPI_STATUS0_REG);
+	mdata->state = MTK_SPI_IDLE;
+	mdata->cur_transfer = NULL;
+	enable_irq(irq);
+}
+
 static irqreturn_t mtk_spi_interrupt_thread(int irq, void *dev_id)
 {
 	u32 cmd, reg_val, cnt, remainder, len;
 	struct spi_controller *host = dev_id;
 	struct mtk_spi *mdata = spi_controller_get_devdata(host);
 	struct spi_transfer *xfer = mdata->cur_transfer;
+
+	if (!xfer)
+		return IRQ_HANDLED;
 
 	if (!host->can_dma(host, NULL, xfer)) {
 		if (xfer->rx_buf) {
@@ -886,6 +930,8 @@ static irqreturn_t mtk_spi_interrupt(int irq, void *dev_id)
 	u32 reg_val;
 
 	reg_val = readl(mdata->base + SPI_STATUS0_REG);
+	if (!(reg_val & (BIT(0) | MTK_SPI_PAUSE_INT_STATUS)))
+		return IRQ_NONE;
 	if (reg_val & MTK_SPI_PAUSE_INT_STATUS)
 		mdata->state = MTK_SPI_PAUSED;
 	else
@@ -1287,6 +1333,12 @@ static int mtk_spi_probe(struct platform_device *pdev)
 	}
 
 	mdata->spi_clk_hz = clk_get_rate(mdata->spi_clk);
+	if (mdata->dev_comp == &mt6797_compat) {
+		host->bits_per_word_mask = SPI_BPW_MASK(8);
+		host->min_speed_hz = DIV_ROUND_UP(mdata->spi_clk_hz, 2 * 0x10000);
+		host->max_speed_hz = mdata->spi_clk_hz / 2;
+		host->handle_err = mtk_spi_handle_err;
+	}
 
 	if (mdata->dev_comp->no_need_unprepare) {
 		clk_disable(mdata->spi_clk);
@@ -1357,6 +1409,10 @@ static void mtk_spi_remove(struct platform_device *pdev)
 		 * unpreparing.
 		 */
 		mtk_spi_reset(mdata);
+		if (mdata->dev_comp == &mt6797_compat) {
+			clk_disable_unprepare(mdata->spi_clk);
+			clk_disable_unprepare(mdata->spi_hclk);
+		}
 
 		if (mdata->dev_comp->no_need_unprepare) {
 			clk_unprepare(mdata->spi_clk);
