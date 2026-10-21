@@ -396,11 +396,10 @@ static int mt6797_dcm_probe(struct platform_device *pdev)
 	ret = devm_add_action_or_reset(dev, dcm_put_supplier, &supplier->dev);
 	if (ret)
 		return ret;
+	if (!device_link_add(dev, &supplier->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
+		return -ENOMEM;
 	if (!device_is_bound(&supplier->dev))
 		return -EPROBE_DEFER;
-	if (!device_link_add(dev, &supplier->dev,
-			     DL_FLAG_AUTOREMOVE_CONSUMER | DL_FLAG_AUTOPROBE_CONSUMER))
-		return -ENOMEM;
 	dcm->cpufreq = &supplier->dev;
 	dcm->infra = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,infracfg");
 	if (IS_ERR(dcm->infra))
