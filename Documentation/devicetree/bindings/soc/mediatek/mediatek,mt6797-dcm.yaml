@@ -14,7 +14,8 @@ description: |
   in the shared INFRACFG syscon and the static MCUSYS fields via firmware.
   ARMCORE DCM shares MCUMIXED access with the CPUFreq supplier, including
   its software lock, hardware semaphore and register bridge workarounds.
-  CPU sync DCM and memory clock controls are managed separately.
+  MEM/DFS_MEM fields use their latched APB configuration sequences. CPU sync
+  DCM is managed by CPUFreq; DRAM PLLs and DDR PHY are not configured here.
 
 properties:
   compatible:
