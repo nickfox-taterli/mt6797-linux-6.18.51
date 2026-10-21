@@ -2,10 +2,15 @@ What:           /sys/bus/platform/devices/dcm/state
 Date:           October 2026
 Contact:        X20 board port
 Description:
-                Read the AXI clock rate, actual and initial INFRACFG DCM
+                Read the AXI clock rate, actual and initial INFRACFG/MCUSYS DCM
                 registers, verified BSP enable states and transition count.
                 Root may write "infra 0", "infra 1", "peri 0" or "peri 1"
                 to apply the corresponding BSP disable/enable sequence.
+                "l2 0/1", "cci 0/1", "fabric 0/1" and "adb400 0/1" control
+                the four static MCUSYS groups. "mcusys 0/1" applies all four
+                in BSP order. Each command requires a literal 0 or 1.
+                These writes exclude concurrent CPU hotplug and verify the
+                register fields via firmware. Failed transitions roll back.
                 Invalid commands return EINVAL without changing registers.
                 The shared TOP_DCMCTL ratio enable stays set while bound.
                 Removing the driver restores its original register fields.

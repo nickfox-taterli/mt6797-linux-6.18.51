@@ -2,11 +2,13 @@
 /*
  * Copyright (C) 2015 MediaTek Inc.
  *
- * MT6797 INFRA/PERI DCM. Register masks, presets and enable/disable values
- * follow the BSP mt_dcm.c. Linux owns only these always-on bus registers;
+ * MT6797 INFRA/PERI and static MCUSYS DCM. Register masks, presets and values
+ * follow the BSP mt_dcm.c. Linux owns only these always-on registers;
  * CPU sync DCM remains with cpufreq, and memory/DDR DCM is not touched.
  */
+#include <linux/arm-smccc.h>
 #include <linux/clk.h>
+#include <linux/cpu.h>
 #include <linux/err.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
@@ -38,10 +40,17 @@
 #define PERI_PRESET_MASK		GENMASK(14, 5)
 #define PERI_PRESET		((0x10 << 5) | (1 << 10))
 
+#define MT6797_SIP_OCP_WRITE	0xc200035e
+#define MT6797_SIP_OCP_READ	0xc200035f
+
 /* A probe-only option permits independent real-board qualification. */
 static bool enable = true;
 module_param(enable, bool, 0444);
 MODULE_PARM_DESC(enable, "Apply BSP INFRA/PERI defaults at probe");
+
+static bool mcusys = true;
+module_param(mcusys, bool, 0444);
+MODULE_PARM_DESC(mcusys, "Apply BSP static MCUSYS defaults at probe");
 
 static const struct {
 	u32 reg;
@@ -53,14 +62,67 @@ static const struct {
 	{ INFRA_MISC_2, INFRA_MISC_MASK },
 };
 
+/*
+ * BSP dcm_mcusys_little(), in its original order. All four are AO registers.
+ * The subsequent BSP sync DCM step belongs to cpufreq, which updates its
+ * divider on each frequency transition; do not replace that with a fixed /4.
+ */
+static const struct {
+	const char *name;
+	u32 address;
+	u32 mask;
+} mcu_owned[] = {
+	{ "l2",     0x10220648, BIT(0) },
+	{ "cci",    0x10220660, BIT(8) },
+	{ "fabric", 0x10220668, GENMASK(11, 0) | GENMASK(21, 16) },
+	{ "adb400", 0x10220740, GENMASK(7, 0) },
+};
+
 struct mt6797_dcm {
 	struct device *dev;
 	struct regmap *infra;
 	struct clk *axi;
 	struct mutex lock;
 	u32 saved[ARRAY_SIZE(owned)];
+	u32 mcu_saved[ARRAY_SIZE(mcu_owned)];
 	unsigned long changes;
 };
+
+static int mcu_read(u32 address, u32 *value)
+{
+	struct arm_smccc_res res;
+
+	/* Existing MT6797 firmware whitelists aligned MCUCFG reads/writes. */
+	arm_smccc_smc(MT6797_SIP_OCP_READ, address, 0, 0, 0, 0, 0, 0, &res);
+	if ((long)res.a0 < 0)
+		return -EIO;
+	*value = res.a0;
+	return 0;
+}
+
+static int mcu_update(struct mt6797_dcm *dcm, unsigned int i, u32 value)
+{
+	struct arm_smccc_res res;
+	u32 old, actual, address = mcu_owned[i].address, mask = mcu_owned[i].mask;
+	int ret;
+
+	ret = mcu_read(address, &old);
+	if (ret)
+		return ret;
+	value = (old & ~mask) | (value & mask);
+	arm_smccc_smc(MT6797_SIP_OCP_WRITE, address, value, 0, 0, 0, 0, 0, &res);
+	if (res.a0)
+		return -EIO;
+	ret = mcu_read(address, &actual);
+	if (ret)
+		return ret;
+	if ((actual & mask) != (value & mask)) {
+		dev_err(dcm->dev, "MCUSYS DCM readback mismatch at %#x: %#x expected=%#x\n",
+			address, actual, value);
+		return -EIO;
+	}
+	return 0;
+}
 
 static int dcm_update(struct mt6797_dcm *dcm, u32 reg, u32 mask, u32 value)
 {
@@ -86,10 +148,47 @@ static void dcm_restore(void *arg)
 {
 	struct mt6797_dcm *dcm = arg;
 
+	cpus_read_lock();
+	mutex_lock(&dcm->lock);
+	for (int i = ARRAY_SIZE(mcu_owned) - 1; i >= 0; i--)
+		if (mcu_update(dcm, i, dcm->mcu_saved[i]))
+			dev_err(dcm->dev, "failed to restore MCUSYS DCM %s\n", mcu_owned[i].name);
 	/* Restore before releasing the clock/syscon suppliers, including errors. */
 	for (int i = ARRAY_SIZE(owned) - 1; i >= 0; i--)
 		if (dcm_update(dcm, owned[i].reg, owned[i].mask, dcm->saved[i]))
 			dev_err(dcm->dev, "failed to restore DCM register %#x\n", owned[i].reg);
+	mutex_unlock(&dcm->lock);
+	cpus_read_unlock();
+}
+
+/* Caller holds cpus_read_lock and dcm->lock: no hotplug during the sequence. */
+static int mcu_set(struct mt6797_dcm *dcm, unsigned int selection, bool on)
+{
+	u32 old[ARRAY_SIZE(mcu_owned)];
+	int ret;
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++) {
+		if (!(selection & BIT(i)))
+			continue;
+		ret = mcu_read(mcu_owned[i].address, &old[i]);
+		if (ret)
+			return ret;
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++) {
+		if (!(selection & BIT(i)))
+			continue;
+		ret = mcu_update(dcm, i, on ? mcu_owned[i].mask : 0);
+		if (ret) {
+			/* Include the failed write; it may already have reached hardware. */
+			for (int j = i; j >= 0; j--)
+				if ((selection & BIT(j)) && mcu_update(dcm, j, old[j]))
+					dev_err(dcm->dev, "MCUSYS DCM rollback failed: %s\n",
+						mcu_owned[j].name);
+			return ret;
+		}
+	}
+	dcm->changes++;
+	return 0;
 }
 
 /* Caller serializes preset + configuration, as in the BSP dcm_lock. */
@@ -150,12 +249,20 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 {
 	struct mt6797_dcm *dcm = dev_get_drvdata(dev);
 	u32 value[ARRAY_SIZE(owned)];
+	u32 mcu[ARRAY_SIZE(mcu_owned)];
 	int ret;
 	ssize_t len;
 
 	mutex_lock(&dcm->lock);
 	for (unsigned int i = 0; i < ARRAY_SIZE(owned); i++) {
 		ret = regmap_read(dcm->infra, owned[i].reg, &value[i]);
+		if (ret) {
+			len = ret;
+			goto out;
+		}
+	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++) {
+		ret = mcu_read(mcu_owned[i].address, &mcu[i]);
 		if (ret) {
 			len = ret;
 			goto out;
@@ -171,6 +278,10 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 			 !!(value[0] & BIT(0)) && (value[1] & INFRA_MASK) == INFRA_ON &&
 			 !(value[3] & INFRA_MISC_MASK),
 			 !!(value[0] & BIT(0)) && (value[2] & PERI_MASK) == PERI_ON);
+	for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++)
+		len += sysfs_emit_at(buf, len, "%s=%08x initial_%s=%08x %s_enabled=%u\n",
+			mcu_owned[i].name, mcu[i], mcu_owned[i].name, dcm->mcu_saved[i],
+			mcu_owned[i].name, (mcu[i] & mcu_owned[i].mask) == mcu_owned[i].mask);
 out:
 	mutex_unlock(&dcm->lock);
 	return len;
@@ -180,7 +291,9 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 			   const char *buf, size_t count)
 {
 	struct mt6797_dcm *dcm = dev_get_drvdata(dev);
-	bool peri, on;
+	unsigned int selection = 0;
+	bool peri = false, on = false;
+	char command[24];
 	int ret;
 
 	if (sysfs_streq(buf, "infra 1")) {
@@ -191,12 +304,27 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 		peri = true; on = true;
 	} else if (sysfs_streq(buf, "peri 0")) {
 		peri = true; on = false;
+	} else if (sysfs_streq(buf, "mcusys 1") || sysfs_streq(buf, "mcusys 0")) {
+		selection = GENMASK(ARRAY_SIZE(mcu_owned) - 1, 0);
+		on = sysfs_streq(buf, "mcusys 1");
 	} else {
-		return -EINVAL;
+		for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++) {
+			for (unsigned int v = 0; v <= 1; v++) {
+				snprintf(command, sizeof(command), "%s %u", mcu_owned[i].name, v);
+				if (sysfs_streq(buf, command)) {
+					selection = BIT(i);
+					on = v;
+				}
+			}
+		}
+		if (!selection)
+			return -EINVAL;
 	}
+	cpus_read_lock();
 	mutex_lock(&dcm->lock);
-	ret = dcm_set(dcm, peri, on);
+	ret = selection ? mcu_set(dcm, selection, on) : dcm_set(dcm, peri, on);
 	mutex_unlock(&dcm->lock);
+	cpus_read_unlock();
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_RW(state);
@@ -227,18 +355,29 @@ static int mt6797_dcm_probe(struct platform_device *pdev)
 		if (ret)
 			return ret;
 	}
+	for (unsigned int i = 0; i < ARRAY_SIZE(mcu_owned); i++) {
+		ret = mcu_read(mcu_owned[i].address, &dcm->mcu_saved[i]);
+		if (ret)
+			return dev_err_probe(dev, ret, "MCUSYS secure read unavailable\n");
+	}
 	ret = devm_add_action_or_reset(dev, dcm_restore, dcm);
 	if (ret)
 		return ret;
+	cpus_read_lock();
+	mutex_lock(&dcm->lock);
 	if (enable) {
 		ret = dcm_set(dcm, false, true);
 		if (!ret)
 			ret = dcm_set(dcm, true, true);
-		if (ret)
-			return dev_err_probe(dev, ret, "failed to apply BSP bus DCM\n");
 	}
-	dev_info(dev, "BSP INFRA/PERI DCM %s, AXI=%lu Hz\n",
-		 enable ? "enabled" : "probe only", clk_get_rate(dcm->axi));
+	if (!ret && mcusys)
+		ret = mcu_set(dcm, GENMASK(ARRAY_SIZE(mcu_owned) - 1, 0), true);
+	mutex_unlock(&dcm->lock);
+	cpus_read_unlock();
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to apply BSP DCM\n");
+	dev_info(dev, "BSP INFRA/PERI=%u static MCUSYS=%u, AXI=%lu Hz\n",
+		 enable, mcusys, clk_get_rate(dcm->axi));
 	return 0;
 }
 
@@ -256,5 +395,5 @@ static struct platform_driver mt6797_dcm_driver = {
 	},
 };
 module_platform_driver(mt6797_dcm_driver);
-MODULE_DESCRIPTION("MT6797 BSP INFRA/PERI dynamic clock management");
+MODULE_DESCRIPTION("MT6797 BSP INFRA/PERI and static MCUSYS dynamic clock management");
 MODULE_LICENSE("GPL");
