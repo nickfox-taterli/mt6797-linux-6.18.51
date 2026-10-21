@@ -106,6 +106,14 @@ config THERMAL_DEFAULT_GOV_STEP_WISE
 	  Use the step_wise governor as default. This throttles the
 	  devices one step at a time.
 
+config THERMAL_DEFAULT_GOV_TRIP_HOLD
+	bool "trip_hold"
+	select THERMAL_GOV_TRIP_HOLD
+	help
+	  Apply each active trip's minimum cooling state immediately. Release
+	  its cooling floor after two continuous seconds below the hysteresis
+	  boundary. Cooling maps must specify adequate floors for the platform.
+
 config THERMAL_DEFAULT_GOV_FAIR_SHARE
 	bool "fair_share"
 	select THERMAL_GOV_FAIR_SHARE
@@ -151,6 +159,14 @@ config THERMAL_GOV_STEP_WISE
 	help
 	  Enable this to manage platform thermals using a simple linear
 	  governor.
+
+config THERMAL_GOV_TRIP_HOLD
+	bool "Trip cooling floors with delayed recovery"
+	help
+	  Use each active trip's minimum cooling state, retaining its floor until
+	  two continuous seconds below the hysteresis boundary have elapsed.
+	  Higher temperature trips take effect immediately. Critical and hot
+	  trips are handled independently by the thermal core.
 
 config THERMAL_GOV_BANG_BANG
 	bool "Bang Bang thermal governor"

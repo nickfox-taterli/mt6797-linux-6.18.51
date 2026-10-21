@@ -171,6 +171,8 @@ DEFINE_GUARD(thermal_zone_reverse, struct thermal_zone_device *,
 /* Default Thermal Governor */
 #if defined(CONFIG_THERMAL_DEFAULT_GOV_STEP_WISE)
 #define DEFAULT_THERMAL_GOVERNOR       "step_wise"
+#elif defined(CONFIG_THERMAL_DEFAULT_GOV_TRIP_HOLD)
+#define DEFAULT_THERMAL_GOVERNOR       "trip_hold"
 #elif defined(CONFIG_THERMAL_DEFAULT_GOV_FAIR_SHARE)
 #define DEFAULT_THERMAL_GOVERNOR       "fair_share"
 #elif defined(CONFIG_THERMAL_DEFAULT_GOV_USER_SPACE)

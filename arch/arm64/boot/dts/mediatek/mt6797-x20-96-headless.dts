@@ -49,26 +49,38 @@
 
 	thermal-zones {
 		cpu-thermal {
-			polling-delay-passive = <250>;
-			polling-delay = <250>;
+			polling-delay-passive = <100>;
+			polling-delay = <100>;
 			thermal-sensors = <&thermal>;
 
 			trips {
 				big_warm: big-warm {
 					temperature = <120000>;
-					hysteresis = <3000>;
+					hysteresis = <5000>;
 					type = "passive";
 				};
 
 				soc_warm: soc-warm {
 					temperature = <135000>;
-					hysteresis = <3000>;
+					hysteresis = <10000>;
 					type = "passive";
 				};
 
 				soc_hot: soc-hot {
+					temperature = <140000>;
+					hysteresis = <10000>;
+					type = "passive";
+				};
+
+				soc_limit: soc-limit {
+					temperature = <143000>;
+					hysteresis = <13000>;
+					type = "passive";
+				};
+
+				soc_emergency: soc-emergency {
 					temperature = <145000>;
-					hysteresis = <3000>;
+					hysteresis = <15000>;
 					type = "passive";
 				};
 
@@ -104,6 +116,26 @@
 							 X20_LL_STATE_806000>,
 							 <&cpu4 X20_L_STATE_832000
 							 X20_L_STATE_832000>;
+				};
+
+				soc-limit-map {
+					trip = <&soc_limit>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1001000
+							 X20_BIG_STATE_1001000>,
+							 <&cpu0 X20_LL_STATE_559000
+							 X20_LL_STATE_559000>,
+							 <&cpu4 X20_L_STATE_650000
+							 X20_L_STATE_650000>;
+				};
+
+				soc-emergency-map {
+					trip = <&soc_emergency>;
+					cooling-device = <&cpu8 X20_BIG_STATE_338000
+							 X20_BIG_STATE_338000>,
+							 <&cpu0 X20_LL_STATE_221000
+							 X20_LL_STATE_221000>,
+							 <&cpu4 X20_L_STATE_325000
+							 X20_L_STATE_325000>;
 				};
 			};
 		};
