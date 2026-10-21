@@ -14,6 +14,7 @@
 #include <linux/bitops.h>
 #include <linux/cpu.h>
 #include <linux/cpufreq.h>
+#include <linux/cpuhotplug.h>
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -77,6 +78,7 @@ struct mt6797_cluster {
 	unsigned int current_uv;
 	bool vproc_owner;
 	bool opp_added;
+	bool active;
 };
 
 struct mt6797_cpufreq {
@@ -88,9 +90,16 @@ struct mt6797_cpufreq {
 	struct mutex lock;
 	struct mt6797_cluster cluster[3];
 	struct mt6797_cluster cci;
+	struct cpumask prepared_cpus;
+	int hp_state;
 };
 
 static struct mt6797_cpufreq *mt6797_data;
+
+/* Board experiment policy; keep historical OPPs for reproducibility. */
+static unsigned int big_max_khz = 2418000;
+module_param(big_max_khz, uint, 0444);
+MODULE_PARM_DESC(big_max_khz, "BIG policy ceiling in kHz (0: full DT table)");
 
 #define MT6797_METHOD(_khz, _pos, _clk) \
 	{ .khz = (_khz), .pos_div = (_pos), .clk_div = (_clk) }
@@ -177,6 +186,8 @@ mt6797_cci_target(struct mt6797_cpufreq *data,
 		unsigned int uv = cluster == changed ? target_uv :
 			cluster->current_uv;
 
+		if (!cluster->active)
+			continue;
 		max_khz = max(max_khz, khz);
 		if (i < 2)
 			required_uv = max(required_uv, uv);
@@ -501,6 +512,17 @@ static unsigned int mt6797_read_rate(struct mt6797_cpufreq *data,
 				      const struct mt6797_cluster *cluster)
 {
 	u32 ckdiv = readl_relaxed(data->mcumixed + MT6797_PLL_CKDIV);
+	u32 mux = readl_relaxed(data->mcumixed + MT6797_PLL_MUXSEL);
+
+	mux = (mux >> mt6797_mux_shift(cluster)) & 3;
+	if (!mux)
+		return 26000 / mt6797_ckdiv_ratio(
+			(ckdiv >> mt6797_ckdiv_shift(cluster)) & 0x1f);
+	if (mux != 1) {
+		dev_warn_ratelimited(data->dev, "cluster%u: unexpected clock mux %u\n",
+				     cluster->id, mux);
+		return 0;
+	}
 
 	ckdiv >>= mt6797_ckdiv_shift(cluster);
 	ckdiv &= 0x1f;
@@ -512,7 +534,7 @@ static unsigned int mt6797_read_rate(struct mt6797_cpufreq *data,
 
 		if (mt6797_smc_read(MT6797_B_PLL_CON0, &con0) ||
 		    mt6797_smc_read(MT6797_B_PLL_CON1, &con1))
-			return cluster->current_khz;
+			return 0;
 
 		pos_div = 1U << ((con0 >> 12) & 0x7);
 		freq = ((u64)(con1 & 0x7fffffff) * 26 * 1000) >> 24;
@@ -612,8 +634,7 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 	int ret;
 
 	if (old->khz == target->khz &&
-	    (cluster->id != 3 ||
-	     abs((int)mt6797_read_rate(data, cluster) - (int)target->khz) < 1000))
+	    abs((int)mt6797_read_rate(data, cluster) - (int)target->khz) < 1000)
 		return 0;
 
 	ret = mt6797_hw_semaphore_get(data);
@@ -654,7 +675,7 @@ static unsigned int mt6797_cpufreq_get(unsigned int cpu)
 		return 0;
 
 	mutex_lock(&mt6797_data->lock);
-	rate = mt6797_read_rate(mt6797_data, cluster);
+	rate = cluster->active ? mt6797_read_rate(mt6797_data, cluster) : 0;
 	mutex_unlock(&mt6797_data->lock);
 
 	return rate;
@@ -685,6 +706,10 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 
 	target = mt6797_method_for_rate(cluster, target_hz / 1000);
 	mutex_lock(&data->lock);
+	if (!cluster->active) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
 	old = mt6797_method_for_rate(cluster, cluster->current_khz);
 	old_cci = mt6797_method_for_rate(&data->cci, data->cci.current_khz);
 	old_vproc1 = regulator_get_voltage(data->cluster[0].vproc);
@@ -706,7 +731,7 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 		if (ret)
 			goto out_unlock;
 	}
-	if (vproc2_uv > old_vproc2) {
+	if (cluster->id == 2 && vproc2_uv > old_vproc2) {
 		ret = mt6797_set_voltages(data, &data->cluster[2], vproc2_uv);
 		if (ret)
 			goto out_unlock;
@@ -727,7 +752,7 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 		goto out_unlock;
 	}
 	data->cci.current_khz = target_cci->khz;
-	if (vproc2_uv < old_vproc2) {
+	if (cluster->id == 2 && vproc2_uv < old_vproc2) {
 		ret = mt6797_set_voltages(data, &data->cluster[2], vproc2_uv);
 		if (ret) {
 			dev_warn(data->dev,
@@ -756,6 +781,9 @@ static int mt6797_cpufreq_init(struct cpufreq_policy *policy)
 	struct mt6797_cluster *cluster = mt6797_cluster_for_cpu(policy->cpu);
 	struct mt6797_cpufreq *data = mt6797_data;
 	unsigned int latency;
+	struct dev_pm_opp *opp;
+	unsigned long hz;
+	unsigned int rate, uv;
 	int ret;
 
 	if (!cluster)
@@ -785,8 +813,38 @@ static int mt6797_cpufreq_init(struct cpufreq_policy *policy)
 	latency = dev_pm_opp_get_max_transition_latency(cluster->cpu_dev);
 	policy->cpuinfo.transition_latency = latency ? latency : 30000;
 	policy->dvfs_possible_from_any_cpu = true;
-	policy->cur = mt6797_read_rate(data, cluster);
-	return 0;
+	/* CPU_ON may have reset the PLL (BIG starts at 750/500 MHz). */
+	mutex_lock(&data->lock);
+	rate = mt6797_read_rate(data, cluster);
+	if (!rate) {
+		ret = -EIO;
+		goto out_unlock;
+	}
+	hz = (unsigned long)rate * 1000;
+	opp = dev_pm_opp_find_freq_ceil(cluster->cpu_dev, &hz);
+	if (IS_ERR(opp)) {
+		ret = PTR_ERR(opp);
+		goto out_unlock;
+	}
+	uv = dev_pm_opp_get_voltage(opp);
+	dev_pm_opp_put(opp);
+	/* Only the BIG SRAM LDO is reset by cluster power cycling. */
+	if (cluster->id == 2) {
+		int vproc = regulator_get_voltage(cluster->vproc);
+
+		ret = vproc < 0 ? vproc : mt6797_set_voltages(data, cluster, vproc);
+		if (ret)
+			goto out_unlock;
+	}
+	cluster->current_khz = rate;
+	cluster->current_uv = uv;
+	policy->cur = rate;
+	ret = 0;
+out_unlock:
+	mutex_unlock(&data->lock);
+	if (ret)
+		dev_pm_opp_free_cpufreq_table(cluster->cpu_dev, &cluster->freq_table);
+	return ret;
 }
 
 static void mt6797_cpufreq_exit(struct cpufreq_policy *policy)
@@ -797,16 +855,176 @@ static void mt6797_cpufreq_exit(struct cpufreq_policy *policy)
 		return;
 
 	dev_pm_opp_free_cpufreq_table(cluster->cpu_dev, &cluster->freq_table);
-	if (cluster->opp_added) {
-		dev_pm_opp_of_cpumask_remove_table(&cluster->cpus);
-		cluster->opp_added = false;
+	/* Keep OPPs available for the pre-CPU_ON voltage preparation. */
+}
+
+/* Caller holds data->lock; change CCI before reducing the shared rail. */
+static int mt6797_refresh_cci(struct mt6797_cpufreq *data)
+{
+	const struct mt6797_freq_method *old, *target;
+	unsigned int uv;
+	int previous, ret;
+
+	target = mt6797_cci_target(data, NULL, 0, 0, &uv);
+	previous = regulator_get_voltage(data->cluster[0].vproc);
+	if (previous < 0)
+		return previous;
+	if (uv > previous) {
+		ret = mt6797_set_voltages(data, &data->cluster[0], uv);
+		if (ret)
+			return ret;
 	}
+	old = mt6797_method_for_rate(&data->cci, data->cci.current_khz);
+	ret = mt6797_set_rate_locked(data, &data->cci, old, target);
+	if (ret)
+		return ret;
+	data->cci.current_khz = target->khz;
+	if (uv < previous)
+		return mt6797_set_voltages(data, &data->cluster[0], uv);
+	return 0;
+}
+
+static int mt6797_cpu_prepare(unsigned int cpu)
+{
+	struct mt6797_cluster *cluster = mt6797_cluster_for_cpu(cpu);
+	struct mt6797_cpufreq *data = mt6797_data;
+	struct dev_pm_opp *opp;
+	unsigned long hz = 0;
+	unsigned int uv = 0;
+	int ret = 0;
+
+	if (!cluster)
+		return 0;
+	mutex_lock(&data->lock);
+	if (cluster->active)
+		goto mark_prepared;
+
+	/* The first CPU must have power before PSCI CPU_ON.  Cover all manual
+	 * OPP voltages during the short reset-clock -> governor transition;
+	 * do not assume this experimental voltage table is monotonic.
+	 */
+	while (!IS_ERR(opp = dev_pm_opp_find_freq_ceil(cluster->cpu_dev, &hz))) {
+		if (cluster->id == 2 && big_max_khz && hz > big_max_khz * 1000UL) {
+			dev_pm_opp_put(opp);
+			break;
+		}
+		uv = max(uv, (unsigned int)dev_pm_opp_get_voltage(opp));
+		dev_pm_opp_put(opp);
+		hz++;
+	}
+	if (!uv) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (cluster->id == 2) {
+		/* Restore its reset SRAM LDO after CPU_ON, before changing PLL. */
+		ret = regulator_set_voltage(cluster->vproc, uv, uv);
+		udelay(25);
+	} else {
+		ret = mt6797_set_voltages(data, cluster, uv);
+	}
+	if (ret)
+		goto out;
+	cluster->active = true;
+	cluster->current_uv = uv;
+	ret = mt6797_refresh_cci(data);
+	if (ret) {
+		cluster->active = false;
+		/* Retaining raised rails on failure is intentional. */
+		goto out;
+	}
+	dev_info(data->dev, "cluster%u: prepared CPU%u, Vproc %uuV\n",
+		 cluster->id, cpu, uv);
+mark_prepared:
+	cpumask_set_cpu(cpu, &data->prepared_cpus);
+out:
+	mutex_unlock(&data->lock);
+	return ret;
+}
+
+static int mt6797_cpu_unprepare(unsigned int cpu)
+{
+	struct mt6797_cluster *cluster = mt6797_cluster_for_cpu(cpu);
+	struct mt6797_cpufreq *data = mt6797_data;
+	int ret;
+
+	if (!cluster)
+		return 0;
+	mutex_lock(&data->lock);
+	cpumask_clear_cpu(cpu, &data->prepared_cpus);
+	if (!cpumask_intersects(&cluster->cpus, &data->prepared_cpus)) {
+		/* BP teardown runs after the target's physical power-off, also
+		 * when a failed bring-up is rolled back by the hotplug core.
+		 */
+		cluster->active = false;
+		ret = mt6797_refresh_cci(data);
+		if (ret)
+			dev_warn(data->dev, "cluster%u: CCI/rail release failed: %d\n",
+				 cluster->id, ret);
+		dev_info(data->dev, "cluster%u: last CPU off, CCI %ukHz\n",
+			 cluster->id, data->cci.current_khz);
+	}
+	mutex_unlock(&data->lock);
+	/* A physically dead CPU cannot be resurrected by failing teardown. */
+	return 0;
+}
+
+static ssize_t runtime_state_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct mt6797_cpufreq *data = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	unsigned int i;
+
+	/* Serialize the hardware reads with the whole PSCI power transition. */
+	cpus_read_lock();
+	mutex_lock(&data->lock);
+	len += sysfs_emit_at(buf, len, "prepared_cpus=%*pbl mux=0x%x ckdiv=0x%x\n",
+			     cpumask_pr_args(&data->prepared_cpus),
+			     readl_relaxed(data->mcumixed + MT6797_PLL_MUXSEL),
+			     readl_relaxed(data->mcumixed + MT6797_PLL_CKDIV));
+	for (i = 0; i < ARRAY_SIZE(data->cluster); i++) {
+		struct mt6797_cluster *cluster = &data->cluster[i];
+		unsigned int vsram = 0;
+		int ret = cluster->active ? mt6797_vsram_read(data, cluster, &vsram) :
+			-ENODEV;
+
+		len += sysfs_emit_at(buf, len,
+			"cluster%u active=%u requested_khz=%u pll_khz=%u requested_uv=%u vproc_uv=%d vsram_uv=%u vsram_error=%d\n",
+			i, cluster->active, cluster->current_khz,
+			cluster->active ? mt6797_read_rate(data, cluster) : 0,
+			cluster->current_uv, regulator_get_voltage(cluster->vproc), vsram, ret);
+	}
+	len += sysfs_emit_at(buf, len, "cci requested_khz=%u pll_khz=%u\n",
+			     data->cci.current_khz, mt6797_read_rate(data, &data->cci));
+	mutex_unlock(&data->lock);
+	cpus_read_unlock();
+	return len;
+}
+static DEVICE_ATTR_RO(runtime_state);
+
+static struct attribute *mt6797_cpufreq_attrs[] = {
+	&dev_attr_runtime_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(mt6797_cpufreq);
+
+static int mt6797_cpufreq_verify(struct cpufreq_policy_data *policy)
+{
+	struct mt6797_cluster *cluster = mt6797_cluster_for_cpu(policy->cpu);
+	int ret = cpufreq_generic_frequency_table_verify(policy);
+
+	if (!ret && cluster && cluster->id == 2 && big_max_khz) {
+		cpufreq_verify_within_limits(policy, 0, big_max_khz);
+		ret = cpufreq_generic_frequency_table_verify(policy);
+	}
+	return ret;
 }
 
 static struct cpufreq_driver mt6797_cpufreq_driver = {
 	.name = "mt6797-cpufreq",
 	.flags = CPUFREQ_HAVE_GOVERNOR_PER_POLICY | CPUFREQ_IS_COOLING_DEV,
-	.verify = cpufreq_generic_frequency_table_verify,
+	.verify = mt6797_cpufreq_verify,
 	.target_index = mt6797_cpufreq_target_index,
 	.get = mt6797_cpufreq_get,
 	.init = mt6797_cpufreq_init,
@@ -889,6 +1107,11 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 			ret = -EPROBE_DEFER;
 			goto err_regulators;
 		}
+		ret = dev_pm_opp_of_cpumask_add_table(&cluster->cpus);
+		if (ret)
+			goto err_regulators;
+		cluster->opp_added = true;
+		cluster->active = cpumask_intersects(&cluster->cpus, cpu_online_mask);
 		if (i == 1) {
 			/* LL and L share DA9214 BUCKA/VPROC1. */
 			cluster->vproc = data->cluster[0].vproc;
@@ -956,16 +1179,31 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 
 	mt6797_data = data;
 	platform_set_drvdata(pdev, data);
+	cpus_read_lock();
+	cpumask_copy(&data->prepared_cpus, cpu_online_mask);
+	ret = cpuhp_setup_state_nocalls_cpuslocked(CPUHP_BP_PREPARE_DYN,
+						 "cpufreq/mt6797:prepare",
+						 mt6797_cpu_prepare,
+						 mt6797_cpu_unprepare);
+	cpus_read_unlock();
+	if (ret < 0)
+		goto err_data;
+	data->hp_state = ret;
 	ret = cpufreq_register_driver(&mt6797_cpufreq_driver);
 	if (ret) {
-		mt6797_data = NULL;
-		platform_set_drvdata(pdev, NULL);
-		goto err_regulators;
+		cpuhp_remove_state_nocalls(data->hp_state);
+		goto err_data;
 	}
 
 	return 0;
 
+err_data:
+	mt6797_data = NULL;
+	platform_set_drvdata(pdev, NULL);
 err_regulators:
+	for (unsigned int j = 0; j < ARRAY_SIZE(data->cluster); j++)
+		if (data->cluster[j].opp_added)
+			dev_pm_opp_of_cpumask_remove_table(&data->cluster[j].cpus);
 	while (i--) {
 		if (data->cluster[i].vproc && data->cluster[i].vproc_owner) {
 			regulator_disable(data->cluster[i].vproc);
@@ -981,8 +1219,11 @@ static void mt6797_cpufreq_remove(struct platform_device *pdev)
 	unsigned int i;
 
 	cpufreq_unregister_driver(&mt6797_cpufreq_driver);
+	cpuhp_remove_state_nocalls(data->hp_state);
 	mt6797_data = NULL;
 	for (i = 0; i < ARRAY_SIZE(data->cluster); i++) {
+		if (data->cluster[i].opp_added)
+			dev_pm_opp_of_cpumask_remove_table(&data->cluster[i].cpus);
 		if (data->cluster[i].vproc && data->cluster[i].vproc_owner) {
 			regulator_disable(data->cluster[i].vproc);
 			regulator_put(data->cluster[i].vproc);
@@ -1002,6 +1243,7 @@ static struct platform_driver mt6797_cpufreq_platform_driver = {
 	.driver = {
 		.name = "mt6797-cpufreq",
 		.of_match_table = mt6797_cpufreq_of_match,
+		.dev_groups = mt6797_cpufreq_groups,
 	},
 };
 module_platform_driver(mt6797_cpufreq_platform_driver);
