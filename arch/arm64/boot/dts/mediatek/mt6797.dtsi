@@ -159,6 +159,14 @@
 		#clock-cells = <1>;
 	};
 
+	dcm: dcm {
+		compatible = "mediatek,mt6797-dcm";
+		mediatek,infracfg = <&infrasys>;
+		clocks = <&topckgen CLK_TOP_MUX_AXI>;
+		clock-names = "axi";
+		status = "disabled";
+	};
+
 	pio: pinctrl@10005000 {
 		compatible = "mediatek,mt6797-pinctrl";
 		reg = <0 0x10005000 0 0x1000>,

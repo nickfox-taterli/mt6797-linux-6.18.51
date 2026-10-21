@@ -1,0 +1,12 @@
+What:           /sys/bus/platform/devices/dcm/state
+Date:           October 2026
+Contact:        X20 board port
+Description:
+                Read the AXI clock rate, actual and initial INFRACFG DCM
+                registers, verified BSP enable states and transition count.
+                Root may write "infra 0", "infra 1", "peri 0" or "peri 1"
+                to apply the corresponding BSP disable/enable sequence.
+                Invalid commands return EINVAL without changing registers.
+                The shared TOP_DCMCTL ratio enable stays set while bound.
+                Removing the driver restores its original register fields.
+                CPU sync DCM, PLLs, OPPs and memory DCM are not affected.

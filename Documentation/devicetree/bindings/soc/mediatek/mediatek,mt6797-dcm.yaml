@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-dcm.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 INFRA/PERI dynamic clock management
+
+maintainers:
+  - TaterLi <admin@taterli.com>
+
+description: |
+  Controls the infrastructure and peripheral bus dynamic clock gating fields
+  in the shared INFRACFG syscon. CPU sync DCM and memory clock controls are
+  managed separately.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-dcm
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: INFRACFG always-on syscon
+  clocks:
+    maxItems: 1
+  clock-names:
+    const: axi
+
+required:
+  - compatible
+  - mediatek,infracfg
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    dcm {
+        compatible = "mediatek,mt6797-dcm";
+        mediatek,infracfg = <&infracfg>;
+        clocks = <&topckgen 1>;
+        clock-names = "axi";
+    };

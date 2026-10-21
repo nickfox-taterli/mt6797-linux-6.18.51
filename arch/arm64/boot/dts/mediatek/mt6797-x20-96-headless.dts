@@ -16,6 +16,10 @@
 #include "mt6797-x20-96-cooling.h"
 #include "mt6797.dtsi"
 
+&dcm {
+	status = "okay";
+};
+
 / {
 	model = "X20-96 bare headless";
 	compatible = "archermind,x20-96", "mediatek,mt6797";

@@ -55,6 +55,15 @@ config MTK_PMIC_WRAP
 	  on different MediaTek SoCs. The PMIC wrapper is a proprietary
 	  hardware to connect the PMIC.
 
+config MTK_MT6797_DCM
+	tristate "MediaTek MT6797 INFRA/PERI dynamic clock management"
+	depends on ARCH_MEDIATEK && OF
+	select MFD_SYSCON
+	help
+	  Apply the MT6797 BSP always-on infrastructure and peripheral bus
+	  dynamic clock gating settings. CPU sync DCM is managed by cpufreq;
+	  DRAM, DDR PHY and memory clock control are not modified here.
+
 config MTK_REGULATOR_COUPLER
 	bool "MediaTek SoC Regulator Coupler" if COMPILE_TEST
 	default ARCH_MEDIATEK
