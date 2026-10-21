@@ -942,6 +942,61 @@ static const struct thermal_zone_device_ops mtk_thermal_ops = {
 	.get_temp = mtk_read_temp,
 };
 
+static ssize_t bank_temperatures_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	int i, temperature;
+
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		struct mtk_thermal_bank *bank = &mt->banks[i];
+
+		mtk_thermal_get_bank(bank);
+		temperature = mtk_thermal_bank_temperature(bank);
+		mtk_thermal_put_bank(bank);
+		len += sysfs_emit_at(buf, len, "bank%d=%d\n", i, temperature);
+	}
+	return len;
+}
+static DEVICE_ATTR_RO(bank_temperatures);
+
+static ssize_t eem_status_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	int i;
+
+	len += sysfs_emit_at(buf, len, "voltage_control=manual_opp\n");
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		struct mtk_thermal_bank *bank = &mt->banks[i];
+		u32 enable, status, vop30, vop74;
+
+		/* BSP mt_defptp.h: EEM shares the thermal bank selector. */
+		mtk_thermal_get_bank(bank);
+		enable = readl(mt->thermal_base + 0x238);
+		status = readl(mt->thermal_base + 0x254);
+		vop30 = readl(mt->thermal_base + 0x248);
+		vop74 = readl(mt->thermal_base + 0x24c);
+		mtk_thermal_put_bank(bank);
+		len += sysfs_emit_at(buf, len,
+			"bank%d eem_en=0x%08x intsts=0x%08x vop30=0x%08x vop74=0x%08x\n",
+			i, enable, status, vop30, vop74);
+	}
+	return len;
+}
+static DEVICE_ATTR_RO(eem_status);
+
+static struct attribute *mt6797_thermal_attrs[] = {
+	&dev_attr_bank_temperatures.attr,
+	&dev_attr_eem_status.attr,
+	NULL,
+};
+static const struct attribute_group mt6797_thermal_group = {
+	.attrs = mt6797_thermal_attrs,
+};
+
 static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 				  u32 apmixed_phys_base, u32 auxadc_phys_base,
 				  int ctrl_id)
@@ -1413,6 +1468,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	ret = devm_thermal_add_hwmon_sysfs(&pdev->dev, tzdev);
 	if (ret)
 		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		dev_set_drvdata(&pdev->dev, mt);
+		return devm_device_add_group(&pdev->dev, &mt6797_thermal_group);
+	}
 
 	return 0;
 }

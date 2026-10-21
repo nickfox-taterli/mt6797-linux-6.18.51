@@ -110,7 +110,25 @@ static int pmu_parse_irqs(struct arm_pmu *pmu)
 	if (num_irqs == 0) {
 		dev_warn(dev, "no irqs for PMU, sampling events not supported\n");
 		pmu->pmu.capabilities |= PERF_PMU_CAP_NO_INTERRUPT;
-		cpumask_setall(&pmu->supported_cpus);
+		if (pmu_has_irq_affinity(dev->of_node)) {
+			int count = of_count_phandle_with_args(dev->of_node,
+							      "interrupt-affinity", NULL);
+
+			if (count <= 0)
+				return -EINVAL;
+			for (i = 0; i < count; i++) {
+				int cpu = pmu_parse_irq_affinity(dev, i);
+
+				if (cpu < 0)
+					return cpu;
+				if (cpu < nr_cpu_ids)
+					cpumask_set_cpu(cpu, &pmu->supported_cpus);
+			}
+			if (cpumask_empty(&pmu->supported_cpus))
+				return -EINVAL;
+		} else {
+			cpumask_setall(&pmu->supported_cpus);
+		}
 		return 0;
 	}
 

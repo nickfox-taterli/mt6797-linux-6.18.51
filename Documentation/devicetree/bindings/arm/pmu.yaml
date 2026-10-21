@@ -107,6 +107,9 @@ properties:
       This property should be present when there is more than
       a single SPI.
 
+      When interrupts are absent, specifies the CPUs covered by
+      this PMU for counting events. Sampling remains unsupported.
+
   qcom,no-pc-write:
     type: boolean
     description:

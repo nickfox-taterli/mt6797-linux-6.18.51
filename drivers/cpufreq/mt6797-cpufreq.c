@@ -19,6 +19,7 @@
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/kernel.h>
 #include <linux/limits.h>
 #include <linux/math64.h>
@@ -33,6 +34,7 @@
 #define MT6797_SIP_IDVFS_PLL_SET_FREQ	0xC20003B8
 #define MT6797_SIP_IDVFS_SRAM_LDO_SET	0xC20003BF
 #define MT6797_SIP_OCP_READ		0xC200035F
+#define MT6797_SIP_OCP_WRITE		0xC200035E
 
 #define MT6797_PLL_LL_CON1		0x204
 #define MT6797_PLL_L_CON1		0x214
@@ -92,14 +94,22 @@ struct mt6797_cpufreq {
 	struct mt6797_cluster cci;
 	struct cpumask prepared_cpus;
 	int hp_state;
+	bool fhctl_ready;
+	unsigned long hops, hop_failures, dcm_updates;
 };
 
 static struct mt6797_cpufreq *mt6797_data;
 
-/* Board experiment policy; keep historical OPPs for reproducibility. */
-static unsigned int big_max_khz = 2418000;
+/* Board experiment policy; do not exceed the verified 2.405 GHz endpoint. */
+static unsigned int big_max_khz = 2405000;
 module_param(big_max_khz, uint, 0444);
 MODULE_PARM_DESC(big_max_khz, "BIG policy ceiling in kHz (0: full DT table)");
+
+/* BSP clock flows, validated independently before enabling at boot. */
+static bool fhctl = true;
+module_param(fhctl, bool, 0444);
+static bool sync_dcm = true;
+module_param(sync_dcm, bool, 0444);
 
 #define MT6797_METHOD(_khz, _pos, _clk) \
 	{ .khz = (_khz), .pos_div = (_pos), .clk_div = (_clk) }
@@ -120,14 +130,20 @@ static const struct mt6797_freq_method mt6797_l_methods[] = {
 	MT6797_METHOD(1703000, 1, 1), MT6797_METHOD(1625000, 1, 1),
 	MT6797_METHOD(1495000, 1, 1), MT6797_METHOD(1417000, 1, 1),
 	MT6797_METHOD(1274000, 1, 1), MT6797_METHOD(1209000, 1, 1),
-	MT6797_METHOD(1079000, 2, 1), MT6797_METHOD( 962000, 2, 1),
+	/* /2 requires a 2.158 GHz VCO that did not latch on this board. */
+	MT6797_METHOD(1079000, 1, 1), MT6797_METHOD( 962000, 2, 1),
 	MT6797_METHOD( 832000, 2, 1), MT6797_METHOD( 741000, 2, 1),
-	MT6797_METHOD( 650000, 2, 2), MT6797_METHOD( 559000, 2, 2),
+	MT6797_METHOD( 650000, 2, 1), MT6797_METHOD( 559000, 2, 1),
 	MT6797_METHOD( 468000, 2, 2), MT6797_METHOD( 325000, 2, 2),
 };
 
 static const struct mt6797_freq_method mt6797_b_methods[] = {
-	MT6797_METHOD(2249000, 1, 1), MT6797_METHOD(2197000, 1, 1),
+	/* Board experiment points, bounded by the verified 2.405 GHz endpoint. */
+	MT6797_METHOD(2405000, 1, 1),
+	MT6797_METHOD(2366000, 1, 1),
+	MT6797_METHOD(2314000, 1, 1),
+	MT6797_METHOD(2249000, 1, 1),
+	MT6797_METHOD(2197000, 1, 1),
 	MT6797_METHOD(2171000, 1, 1), MT6797_METHOD(2119000, 1, 1),
 	MT6797_METHOD(2093000, 1, 1), MT6797_METHOD(1989000, 1, 1),
 	MT6797_METHOD(1781000, 1, 1), MT6797_METHOD(1677000, 1, 1),
@@ -150,7 +166,7 @@ static const struct mt6797_freq_method mt6797_cci_methods[] = {
 
 /* The FY CCI OPPs share VPROC1 with LL and L. */
 static const unsigned int mt6797_cci_voltages[] = {
-	1200000, 1180000, 1150000, 1130000,
+	1180000, 1180000, 1150000, 1130000,
 	1090000, 1070000, 1020000, 1000000,
 	 970000,  940000,  900000,  880000,
 	 850000,  830000,  800000,  780000,
@@ -311,6 +327,147 @@ static void mt6797_hw_semaphore_put(struct mt6797_cpufreq *data)
 		writel_relaxed(1, data->semaphore + MT6797_SEMA3_M0);
 }
 
+/* Everest's MCUMIXED bridge needs consecutive reads and write readback.
+ * Keep the read pair uninterrupted, as the BSP does around MCU FHCTL.
+ * Caller owns the hardware semaphore and data->lock.
+ */
+static u32 mt6797_mcu_read(void __iomem *reg)
+{
+	unsigned long flags;
+	u32 value;
+	unsigned int i;
+
+	local_irq_save(flags);
+	ndelay(200);
+	for (i = 0; i < 3; i++) {
+		readl(reg);
+		value = readl(reg);
+		if (value)
+			break;
+	}
+	mb();
+	local_irq_restore(flags);
+	return value;
+}
+
+static int mt6797_mcu_write(void __iomem *reg, u32 value, u32 mask)
+{
+	unsigned int i;
+
+	for (i = 0; i < 4; i++) {
+		writel(value, reg);
+		ndelay(200);
+		if ((mt6797_mcu_read(reg) & mask) == (value & mask))
+			return 0;
+	}
+	pr_err_ratelimited("mt6797-cpufreq: MCU write failed value=%08x mask=%08x readback=%08x\n",
+			   value, mask, mt6797_mcu_read(reg));
+	return -EIO;
+}
+
+/* PLL0=LL, PLL1=L, PLL2=CCI. PLL3 is the shared backup, left untouched. */
+static int mt6797_fhctl_init(struct mt6797_cpufreq *data)
+{
+	void __iomem *base = data->mcumixed + 0xf00;
+	unsigned int id;
+	u32 value;
+	int ret;
+
+	if (data->fhctl_ready)
+		return 0;
+	if (mt6797_mcu_read(base) & 7)
+		return -EBUSY;
+	for (id = 0; id < 3; id++) {
+		void __iomem *cfg = base + 0x34 + 0x14 * id;
+
+		value = mt6797_mcu_read(base + 4) | BIT(id);
+		ret = mt6797_mcu_write(base + 4, value, U32_MAX);
+		if (ret)
+			return ret;
+		value = mt6797_mcu_read(base + 8) & ~BIT(id);
+		ret = mt6797_mcu_write(base + 8, value, U32_MAX);
+		if (!ret)
+			ret = mt6797_mcu_write(base + 8, value | BIT(id), U32_MAX);
+		if (!ret)
+			ret = mt6797_mcu_write(cfg, 0, U32_MAX);
+		if (!ret)
+			ret = mt6797_mcu_write(cfg + 4, 0, U32_MAX);
+		if (!ret)
+			ret = mt6797_mcu_write(cfg + 8, 0, GENMASK(20, 0));
+		if (ret)
+			return ret;
+	}
+	data->fhctl_ready = true;
+	return 0;
+}
+
+static int mt6797_set_hopping_pll(struct mt6797_cpufreq *data,
+				 const struct mt6797_cluster *cluster,
+				 const struct mt6797_freq_method *method)
+{
+	unsigned int id = cluster->id == 3 ? 2 : cluster->id;
+	void __iomem *base = data->mcumixed + 0xf00;
+	void __iomem *cfg = base + 0x34 + 0x14 * id;
+	void __iomem *con1 = data->mcumixed + 0x204 + id * 0x10;
+	u64 vco = (u64)method->khz * method->pos_div * method->clk_div;
+	u32 dds = div_u64((vco / 1000) << 14, 26);
+	u32 saved, hp, mon = 0;
+	unsigned int i;
+	int ret, cleanup;
+
+	if (id > 2 || cluster->id == 2 || dds > GENMASK(20, 0))
+		return -EINVAL;
+	ret = mt6797_fhctl_init(data);
+	if (ret)
+		return ret;
+	hp = mt6797_mcu_read(base);
+	if (hp & BIT(id))
+		return -EBUSY;
+	saved = mt6797_mcu_read(con1);
+	ret = mt6797_mcu_write(cfg, 0, U32_MAX);
+	if (!ret)
+		ret = mt6797_mcu_write(cfg + 8,
+				      (saved & GENMASK(20, 0)) | BIT(31), GENMASK(20, 0));
+	if (!ret)
+		ret = mt6797_mcu_write(cfg, BIT(2) | BIT(0), U32_MAX);
+	if (!ret)
+		ret = mt6797_mcu_write(base + 0xc, 0x6003c97, U32_MAX);
+	if (!ret)
+		ret = mt6797_mcu_write(base, hp | BIT(id), U32_MAX);
+	wmb();
+	if (!ret)
+		ret = mt6797_mcu_write(cfg + 0xc, dds | BIT(31), GENMASK(20, 0));
+	if (!ret) {
+		for (i = 0; i < 100; i++) {
+			mon = mt6797_mcu_read(cfg + 0x10) & GENMASK(20, 0);
+			if (mon == dds)
+				break;
+			udelay(10);
+		}
+		if (mon != dds)
+			ret = -ETIMEDOUT;
+	}
+	if (ret)
+		/* Stay parked until the caller restores the complete old method. */
+		mt6797_clock_switch(data, cluster, 2);
+	cleanup = mt6797_mcu_write(con1,
+				  ((ret ? saved : mon) & GENMASK(20, 0)) |
+				  (saved & ~GENMASK(20, 0)) | BIT(31), GENMASK(20, 0));
+	if (!ret)
+		ret = cleanup;
+	cleanup = mt6797_mcu_write(base, hp, U32_MAX);
+	if (!ret)
+		ret = cleanup;
+	cleanup = mt6797_mcu_write(cfg, 0, U32_MAX);
+	if (!ret)
+		ret = cleanup;
+	if (ret)
+		data->hop_failures++;
+	else
+		data->hops++;
+	return ret;
+}
+
 static unsigned int mt6797_calc_freq(u32 con1, u32 ckdiv)
 {
 	u64 freq;
@@ -353,6 +510,41 @@ static int mt6797_vsram_decode(u32 selector, unsigned int *uv)
 	default:
 		*uv = 900000 + (selector - 3) * MT6797_VSRAM_STEP_UV;
 	}
+	return 0;
+}
+
+static int mt6797_sync_dcm(struct mt6797_cpufreq *data,
+			   const struct mt6797_cluster *cluster, unsigned int khz)
+{
+	unsigned int div = min(khz / 70000, 31U);
+	u32 address = cluster->id == 2 ? 0x10222274 : 0x10220744;
+	unsigned int shift = cluster->id == 0 ? 8 : cluster->id == 1 ? 16 : 0;
+	u32 toggle = cluster->id == 2 ? BIT(1) : BIT(shift + 6);
+	u32 mask = cluster->id == 2 ? GENMASK(6, 2) : GENMASK(shift + 5, shift + 1);
+	u32 value, actual;
+	struct arm_smccc_res res;
+	int ret;
+
+	if (!sync_dcm)
+		return 0;
+	ret = mt6797_smc_read(address, &value);
+	if (ret)
+		return ret;
+	arm_smccc_smc(MT6797_SIP_OCP_WRITE, address, value & ~toggle,
+			0, 0, 0, 0, 0, &res);
+	if ((long)res.a0 < 0)
+		return (int)res.a0;
+	value = (value & ~(mask | toggle)) | toggle | BIT(shift) |
+		(div << (cluster->id == 2 ? 2 : shift + 1));
+	arm_smccc_smc(MT6797_SIP_OCP_WRITE, address, value, 0, 0, 0, 0, 0, &res);
+	if ((long)res.a0 < 0)
+		return (int)res.a0;
+	ret = mt6797_smc_read(address, &actual);
+	if (ret)
+		return ret;
+	if (actual != value)
+		return -EIO;
+	data->dcm_updates++;
 	return 0;
 }
 
@@ -640,6 +832,13 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 	ret = mt6797_hw_semaphore_get(data);
 	if (ret)
 		return ret;
+	/* BSP lowers sync DCM before downclocking; CCI uses divider zero. */
+	if (old->khz > target->khz) {
+		ret = mt6797_sync_dcm(data, cluster,
+					cluster->id == 3 ? 0 : target->khz);
+		if (ret)
+			goto out_semaphore;
+	}
 
 	/* This is the ordering used by the vendor set_cur_freq(). */
 	if (cluster->id != 2 && old->pos_div < target->pos_div) {
@@ -654,6 +853,14 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 		ret = mt6797_set_big_pll(target);
 		udelay(20);
 		mt6797_clock_switch(data, cluster, 1);
+	} else if (fhctl) {
+		ret = mt6797_set_hopping_pll(data, cluster, target);
+		if (ret) {
+			mt6797_set_direct_pll(data, cluster, old);
+			mt6797_set_clkdiv(data, cluster, old->clk_div);
+			mt6797_sync_dcm(data, cluster, old->khz);
+			goto out_semaphore;
+		}
 	} else {
 		ret = mt6797_set_direct_pll(data, cluster, target);
 	}
@@ -661,7 +868,14 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 		mt6797_set_clkdiv(data, cluster, target->clk_div);
 	if (!ret && cluster->id != 2 && old->pos_div > target->pos_div)
 		mt6797_set_posdiv(data, cluster, target->pos_div);
+	if (!ret && old->khz < target->khz) {
+		int dcm_ret = mt6797_sync_dcm(data, cluster, target->khz);
 
+		if (dcm_ret)
+			dev_warn_ratelimited(data->dev, "sync DCM update failed: %d\n", dcm_ret);
+	}
+
+out_semaphore:
 	mt6797_hw_semaphore_put(data);
 	return ret;
 }
@@ -839,7 +1053,7 @@ static int mt6797_cpufreq_init(struct cpufreq_policy *policy)
 	cluster->current_khz = rate;
 	cluster->current_uv = uv;
 	policy->cur = rate;
-	ret = 0;
+	ret = mt6797_sync_dcm(data, cluster, rate);
 out_unlock:
 	mutex_unlock(&data->lock);
 	if (ret)
@@ -856,6 +1070,14 @@ static void mt6797_cpufreq_exit(struct cpufreq_policy *policy)
 
 	dev_pm_opp_free_cpufreq_table(cluster->cpu_dev, &cluster->freq_table);
 	/* Keep OPPs available for the pre-CPU_ON voltage preparation. */
+}
+
+static int mt6797_cpufreq_offline(struct cpufreq_policy *policy)
+{
+	/* Retain the table and policy bounds for lightweight re-online. The BP
+	 * callback releases the shared rail only after physical power-down.
+	 */
+	return 0;
 }
 
 /* Caller holds data->lock; change CCI before reducing the shared rail. */
@@ -997,14 +1219,110 @@ static ssize_t runtime_state_show(struct device *dev,
 	}
 	len += sysfs_emit_at(buf, len, "cci requested_khz=%u pll_khz=%u\n",
 			     data->cci.current_khz, mt6797_read_rate(data, &data->cci));
+	{
+		u32 little = 0, big = 0;
+		int ll_err = mt6797_smc_read(0x10220744, &little);
+		int b_err = data->cluster[2].active ?
+			mt6797_smc_read(0x10222274, &big) : -ENODEV;
+
+		len += sysfs_emit_at(buf, len,
+			"clock_flow fhctl=%u ready=%u hops=%lu failures=%lu sync_dcm=%u updates=%lu little_dcm=0x%x error=%d big_dcm=0x%x error=%d\n",
+			fhctl, data->fhctl_ready, data->hops, data->hop_failures,
+			sync_dcm, data->dcm_updates, little, ll_err, big, b_err);
+	}
 	mutex_unlock(&data->lock);
 	cpus_read_unlock();
 	return len;
 }
 static DEVICE_ATTR_RO(runtime_state);
 
+/* BSP abist channels 34/35/36/37 measure the clock outputs after CKDIV.
+ * data->lock, the HW semaphore and cpus_read_lock exclude DVFS and PSCI
+ * meter users. Restore every writable control field even on timeout.
+ */
+static int mt6797_measure_rate(struct mt6797_cpufreq *data, unsigned int selector,
+			       unsigned int *khz)
+{
+	u32 arm_k1 = readl(data->mcumixed + 0x27c);
+	u32 mon_en = readl(data->mcumixed + 0x284);
+	u32 dbg = readl(data->topckgen + 0x10c);
+	u32 misc = readl(data->topckgen + 0x104);
+	u32 cal0 = readl(data->topckgen + 0x220);
+	u32 cal1 = readl(data->topckgen + 0x224);
+	u32 value;
+	int ret;
+
+	if (cal0 & BIT(4))
+		return -EBUSY;
+	writel(0, data->mcumixed + 0x27c);
+	writel(U32_MAX, data->mcumixed + 0x284);
+	writel((dbg & 0xffc0fffc) | (selector << 16), data->topckgen + 0x10c);
+	/* Divide GHz inputs before counting, retaining the 1024-cycle gate. */
+	writel((misc & 0x00ffffff) | 0x07000000, data->topckgen + 0x104);
+	writel(0x03ff0000, data->topckgen + 0x224);
+	writel(0x1000, data->topckgen + 0x220);
+	writel(0x1010, data->topckgen + 0x220);
+	ret = readl_poll_timeout_atomic(data->topckgen + 0x220, value,
+					!(value & BIT(4)), 1, 1000);
+	if (!ret)
+		*khz = div_u64((u64)(readl(data->topckgen + 0x224) & 0xffff) *
+				26000 * 8, 1024);
+	writel(0, data->topckgen + 0x220);
+	writel(cal1, data->topckgen + 0x224);
+	writel(dbg, data->topckgen + 0x10c);
+	writel(misc, data->topckgen + 0x104);
+	writel(mon_en, data->mcumixed + 0x284);
+	writel(arm_k1, data->mcumixed + 0x27c);
+	writel(cal0, data->topckgen + 0x220);
+	/* The meter result bits in CALI1 need not be writable. */
+	if (readl(data->mcumixed + 0x27c) != arm_k1 ||
+	    readl(data->mcumixed + 0x284) != mon_en ||
+	    readl(data->topckgen + 0x10c) != dbg ||
+	    readl(data->topckgen + 0x104) != misc ||
+	    readl(data->topckgen + 0x220) != cal0 ||
+	    ((readl(data->topckgen + 0x224) ^ cal1) & 0xffff0000))
+		return -EIO;
+	return ret;
+}
+
+static ssize_t frequency_meter_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	static const unsigned int selectors[] = { 34, 35, 37, 36, 45 };
+	static const char * const names[] = {
+		"cluster0", "cluster1", "cluster2", "cci", "abist45",
+	};
+	struct mt6797_cpufreq *data = dev_get_drvdata(dev);
+	ssize_t len = 0;
+	unsigned int i;
+	int ret;
+
+	cpus_read_lock();
+	mutex_lock(&data->lock);
+	ret = mt6797_hw_semaphore_get(data);
+	if (ret)
+		goto out;
+	for (i = 0; i < ARRAY_SIZE(selectors); i++) {
+		unsigned int khz = 0;
+
+		ret = (i < 3 && !data->cluster[i].active) ? -ENODEV :
+			mt6797_measure_rate(data, selectors[i], &khz);
+		len += sysfs_emit_at(buf, len, "%s selector=%u khz=%u error=%d\n",
+				     names[i],
+				     selectors[i], khz, ret);
+	}
+	mt6797_hw_semaphore_put(data);
+	ret = 0;
+out:
+	mutex_unlock(&data->lock);
+	cpus_read_unlock();
+	return ret ? ret : len;
+}
+static DEVICE_ATTR_RO(frequency_meter);
+
 static struct attribute *mt6797_cpufreq_attrs[] = {
 	&dev_attr_runtime_state.attr,
+	&dev_attr_frequency_meter.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(mt6797_cpufreq);
@@ -1028,6 +1346,8 @@ static struct cpufreq_driver mt6797_cpufreq_driver = {
 	.target_index = mt6797_cpufreq_target_index,
 	.get = mt6797_cpufreq_get,
 	.init = mt6797_cpufreq_init,
+	.online = mt6797_cpufreq_init,
+	.offline = mt6797_cpufreq_offline,
 	.exit = mt6797_cpufreq_exit,
 };
 
@@ -1169,6 +1489,9 @@ static int mt6797_cpufreq_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_regulators;
 	data->cci.current_khz = cci_target->khz;
+	ret = mt6797_sync_dcm(data, &data->cci, data->cci.current_khz);
+	if (ret)
+		goto err_regulators;
 	if (vproc1_uv < data->cluster[0].current_uv) {
 		ret = mt6797_set_voltages(data, &data->cluster[0], vproc1_uv);
 		if (ret)

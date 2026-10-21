@@ -13,6 +13,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/regulator/dlg,da9211-regulator.h>
 #include <dt-bindings/thermal/thermal.h>
+#include "mt6797-x20-96-cooling.h"
 #include "mt6797.dtsi"
 
 / {
@@ -54,19 +55,19 @@
 
 			trips {
 				big_warm: big-warm {
-					temperature = <80000>;
+					temperature = <120000>;
 					hysteresis = <3000>;
 					type = "passive";
 				};
 
 				soc_warm: soc-warm {
-					temperature = <90000>;
+					temperature = <135000>;
 					hysteresis = <3000>;
 					type = "passive";
 				};
 
 				soc_hot: soc-hot {
-					temperature = <95000>;
+					temperature = <145000>;
 					hysteresis = <3000>;
 					type = "passive";
 				};
@@ -81,20 +82,28 @@
 			cooling-maps {
 				big-warm-map {
 					trip = <&big_warm>;
-					cooling-device = <&cpu8 5 5>;
+					cooling-device = <&cpu8 X20_BIG_STATE_2314000
+							 X20_BIG_STATE_2314000>;
 				};
 
 				soc-warm-map {
 					trip = <&soc_warm>;
-					cooling-device = <&cpu8 8 8>,
-							 <&cpu0 2 THERMAL_NO_LIMIT>,
-							 <&cpu4 2 THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1677000
+							 X20_BIG_STATE_1677000>,
+							 <&cpu0 X20_LL_STATE_1066000
+							 X20_LL_STATE_1066000>,
+							 <&cpu4 X20_L_STATE_1209000
+							 X20_L_STATE_1209000>;
 				};
 
 				soc-hot-map {
 					trip = <&soc_hot>;
-					cooling-device = <&cpu0 5 THERMAL_NO_LIMIT>,
-							 <&cpu4 5 THERMAL_NO_LIMIT>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1495000
+							 X20_BIG_STATE_1495000>,
+							 <&cpu0 X20_LL_STATE_806000
+							 X20_LL_STATE_806000>,
+							 <&cpu4 X20_L_STATE_832000
+							 X20_L_STATE_832000>;
 				};
 			};
 		};
@@ -129,10 +138,10 @@
 		opp-shared;
 		clock-latency-ns = <30000>;
 
-		opp-1391000000 { opp-hz = /bits/ 64 <1391000000>; opp-microvolt = <1200000>; };
-		opp-1339000000 { opp-hz = /bits/ 64 <1339000000>; opp-microvolt = <1180000>; };
-		opp-1287000000 { opp-hz = /bits/ 64 <1287000000>; opp-microvolt = <1150000>; };
-		opp-1222000000 { opp-hz = /bits/ 64 <1222000000>; opp-microvolt = <1130000>; };
+		opp-1391000000 { opp-hz = /bits/ 64 <1391000000>; opp-microvolt = <1180000>; };
+		opp-1339000000 { opp-hz = /bits/ 64 <1339000000>; opp-microvolt = <1160000>; };
+		opp-1287000000 { opp-hz = /bits/ 64 <1287000000>; opp-microvolt = <1130000>; };
+		opp-1222000000 { opp-hz = /bits/ 64 <1222000000>; opp-microvolt = <1110000>; };
 		opp-1118000000 { opp-hz = /bits/ 64 <1118000000>; opp-microvolt = <1090000>; };
 		opp-1066000000 { opp-hz = /bits/ 64 <1066000000>; opp-microvolt = <1070000>; };
 		opp-949000000 { opp-hz = /bits/ 64 <949000000>; opp-microvolt = <1020000>; };
@@ -152,10 +161,10 @@
 		opp-shared;
 		clock-latency-ns = <30000>;
 
-		opp-1846000000 { opp-hz = /bits/ 64 <1846000000>; opp-microvolt = <1200000>; };
-		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1180000>; };
-		opp-1703000000 { opp-hz = /bits/ 64 <1703000000>; opp-microvolt = <1150000>; };
-		opp-1625000000 { opp-hz = /bits/ 64 <1625000000>; opp-microvolt = <1130000>; };
+		opp-1846000000 { opp-hz = /bits/ 64 <1846000000>; opp-microvolt = <1180000>; };
+		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1160000>; };
+		opp-1703000000 { opp-hz = /bits/ 64 <1703000000>; opp-microvolt = <1130000>; };
+		opp-1625000000 { opp-hz = /bits/ 64 <1625000000>; opp-microvolt = <1110000>; };
 		opp-1495000000 { opp-hz = /bits/ 64 <1495000000>; opp-microvolt = <1090000>; };
 		opp-1417000000 { opp-hz = /bits/ 64 <1417000000>; opp-microvolt = <1070000>; };
 		opp-1274000000 { opp-hz = /bits/ 64 <1274000000>; opp-microvolt = <1020000>; };
@@ -175,21 +184,26 @@
 		opp-shared;
 		clock-latency-ns = <30000>;
 
-		opp-2249000000 { opp-hz = /bits/ 64 <2249000000>; opp-microvolt = <1180000>; };
-		opp-2197000000 { opp-hz = /bits/ 64 <2197000000>; opp-microvolt = <1170000>; };
-		opp-2171000000 { opp-hz = /bits/ 64 <2171000000>; opp-microvolt = <1160000>; };
-		opp-2119000000 { opp-hz = /bits/ 64 <2119000000>; opp-microvolt = <1140000>; };
-		opp-2093000000 { opp-hz = /bits/ 64 <2093000000>; opp-microvolt = <1130000>; };
-		opp-1989000000 { opp-hz = /bits/ 64 <1989000000>; opp-microvolt = <1110000>; };
-		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1070000>; };
-		opp-1677000000 { opp-hz = /bits/ 64 <1677000000>; opp-microvolt = <1050000>; };
-		opp-1495000000 { opp-hz = /bits/ 64 <1495000000>; opp-microvolt = <1000000>; };
-		opp-1378000000 { opp-hz = /bits/ 64 <1378000000>; opp-microvolt = <980000>; };
-		opp-1248000000 { opp-hz = /bits/ 64 <1248000000>; opp-microvolt = <950000>; };
-		opp-1131000000 { opp-hz = /bits/ 64 <1131000000>; opp-microvolt = <930000>; };
-		opp-1001000000 { opp-hz = /bits/ 64 <1001000000>; opp-microvolt = <900000>; };
-		opp-845000000 { opp-hz = /bits/ 64 <845000000>; opp-microvolt = <880000>; };
-		opp-676000000 { opp-hz = /bits/ 64 <676000000>; opp-microvolt = <850000>; };
+		/* Board experiment curve; no requests above the verified 2.405 GHz. */
+		/* Highest tested execution point, using the user voltage curve. */
+		opp-2405000000 { opp-hz = /bits/ 64 <2405000000>; opp-microvolt = <1110000>; };
+		opp-2366000000 { opp-hz = /bits/ 64 <2366000000>; opp-microvolt = <1090000>; };
+		opp-2314000000 { opp-hz = /bits/ 64 <2314000000>; opp-microvolt = <1070000>; };
+		opp-2249000000 { opp-hz = /bits/ 64 <2249000000>; opp-microvolt = <1160000>; };
+		opp-2197000000 { opp-hz = /bits/ 64 <2197000000>; opp-microvolt = <1150000>; };
+		opp-2171000000 { opp-hz = /bits/ 64 <2171000000>; opp-microvolt = <1140000>; };
+		opp-2119000000 { opp-hz = /bits/ 64 <2119000000>; opp-microvolt = <1120000>; };
+		opp-2093000000 { opp-hz = /bits/ 64 <2093000000>; opp-microvolt = <1110000>; };
+		opp-1989000000 { opp-hz = /bits/ 64 <1989000000>; opp-microvolt = <1100000>; };
+		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1060000>; };
+		opp-1677000000 { opp-hz = /bits/ 64 <1677000000>; opp-microvolt = <1040000>; };
+		opp-1495000000 { opp-hz = /bits/ 64 <1495000000>; opp-microvolt = <990000>; };
+		opp-1378000000 { opp-hz = /bits/ 64 <1378000000>; opp-microvolt = <970000>; };
+		opp-1248000000 { opp-hz = /bits/ 64 <1248000000>; opp-microvolt = <940000>; };
+		opp-1131000000 { opp-hz = /bits/ 64 <1131000000>; opp-microvolt = <920000>; };
+		opp-1001000000 { opp-hz = /bits/ 64 <1001000000>; opp-microvolt = <890000>; };
+		opp-845000000 { opp-hz = /bits/ 64 <845000000>; opp-microvolt = <870000>; };
+		opp-676000000 { opp-hz = /bits/ 64 <676000000>; opp-microvolt = <840000>; };
 		opp-338000000 { opp-hz = /bits/ 64 <338000000>; opp-microvolt = <800000>; };
 	};
 
@@ -204,16 +218,19 @@
 	};
 };
 
-&cpu0 { operating-points-v2 = <&cluster0_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu1 { operating-points-v2 = <&cluster0_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu2 { operating-points-v2 = <&cluster0_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu3 { operating-points-v2 = <&cluster0_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu4 { operating-points-v2 = <&cluster1_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu5 { operating-points-v2 = <&cluster1_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu6 { operating-points-v2 = <&cluster1_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu7 { operating-points-v2 = <&cluster1_opp>; cpu-supply = <&vproc1_reg>; };
-&cpu8 { operating-points-v2 = <&cluster2_opp>; cpu-supply = <&vproc2_reg>; };
-&cpu9 { operating-points-v2 = <&cluster2_opp>; cpu-supply = <&vproc2_reg>; };
+/* Short on-board Dhrystone gives A53:A72 DMIPS/MHz approximately 2:3.
+ * Linux combines these per-MHz weights with each policy maximum.
+ */
+&cpu0 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu1 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu2 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu3 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu4 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu5 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu6 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu7 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu8 { operating-points-v2 = <&cluster2_opp>; capacity-dmips-mhz = <1000>; cpu-supply = <&vproc2_reg>; };
+&cpu9 { operating-points-v2 = <&cluster2_opp>; capacity-dmips-mhz = <1000>; cpu-supply = <&vproc2_reg>; };
 
 &auxadc {
 	status = "okay";
@@ -260,7 +277,7 @@
 			vproc2_reg: BUCKB {
 				regulator-name = "vproc2";
 				regulator-min-microvolt = <800000>;
-				regulator-max-microvolt = <1180000>;
+				regulator-max-microvolt = <1200000>;
 				regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
 				regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
 						   DA9211_BUCK_MODE_AUTO>;

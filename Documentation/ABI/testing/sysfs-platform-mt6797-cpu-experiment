@@ -1,0 +1,45 @@
+What:           /sys/bus/platform/devices/1001a000.cpufreq/runtime_state
+Date:           October 2026
+Contact:        X20 board port maintainers
+Description:
+                Read-only snapshot of prepared CPU masks, cluster activity,
+                requested OPP frequency/voltage, PLL/divider register rates,
+                regulator voltage and SRAM LDO register readback, and CCI.
+                Voltage readback describes programmed settings, not an
+                independent electrical measurement. PLL rate describes the
+                programmed PLL; use execution counters to verify throughput.
+                clock_flow reports MCU FHCTL readiness, completed/failed hop
+                counts, sync DCM update count and secure register readbacks.
+                LL/L/CCI use the BSP hopping flow; BIG retains its secure PLL
+                API. Runtime clock-flow switches are read-only boot parameters.
+
+What:           /sys/bus/platform/devices/1001a000.cpufreq/frequency_meter
+Date:           October 2026
+Contact:        X20 board port maintainers
+Description:
+                Explicit diagnostic read of BSP ABIST clock-output selectors
+                34, 35, 37, 36 and backup 45. Reports kHz and per-selector errno.
+                Serializes with CPU hotplug/DVFS and the HW semaphore, uses an
+                input divider of eight, and restores all writable controls on
+                completion or timeout. Offline cluster selectors return ENODEV.
+                BIG high-rate output readings disagree with active execution
+                counters on this board; they are raw diagnostic observations
+                and must not be used alone as CPU operating-rate validation.
+
+What:           /sys/bus/platform/devices/1100b000.thermal/bank_temperatures
+Date:           October 2026
+Contact:        X20 board port maintainers
+Description:
+                Six calibrated thermal-bank temperatures in millidegrees C,
+                in BSP order BIG, GPU, SOC, L, LL and CCI. Each read uses the
+                same IRQ-safe bank-selector lock as the thermal driver.
+
+What:           /sys/bus/platform/devices/1100b000.thermal/eem_status
+Date:           October 2026
+Contact:        X20 board port maintainers
+Description:
+                Read-only EEM enable, interrupt status and raw VOP registers
+                for each bank, with the shared bank lock. voltage_control is
+                manual_opp: this interface does not run EEM or update OPPs.
+                VOP registers are diagnostic values; a valid calibration and
+                completed EEM phase are prerequisites for voltage estimates.
