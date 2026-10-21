@@ -72,7 +72,7 @@
 				};
 
 				soc_critical: soc-critical {
-					temperature = <120000>;
+					temperature = <150000>;
 					hysteresis = <2000>;
 					type = "critical";
 				};
