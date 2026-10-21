@@ -17,7 +17,15 @@ Description:
                 ARMCORE access uses the CPUFreq supplier's software mutex,
                 hardware semaphore and MCUMIXED bridge read/write sequence.
                 MODE2 (WFI/WFE triggering) is not exposed.
+                "mem 1" applies BSP MEM/DFS_MEM presets and latch sequences:
+                active bus divide 1:1, idle divide 1:32, DRAMC free clock 1:1.
+                "mem 0" applies the BSP disable sequence. Reads include both
+                current values, binding-time snapshots and mem_enabled.
+                Initial latch bits must be clear before applying defaults;
+                a transition with either latch bit set returns EBUSY.
+                Unload/rollback re-latches saved fields before restoring the
+                latch selector, and preserves other shared register fields.
                 Invalid commands return EINVAL without changing registers.
                 The shared TOP_DCMCTL ratio enable stays set while bound.
                 Removing the driver restores its original register fields.
-                CPU sync DCM, PLLs, OPPs and memory DCM are not affected.
+                CPU sync DCM, PLLs, OPPs and DDR PHY are not affected.

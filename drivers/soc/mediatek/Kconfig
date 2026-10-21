@@ -62,10 +62,10 @@ config MTK_MT6797_DCM
 	select MFD_SYSCON
 	help
 	  Apply the MT6797 BSP always-on infrastructure, peripheral bus and
-	  static MCUSYS and ARMCORE clock gating settings. MCUCFG uses firmware
+	  static MCUSYS, ARMCORE and MEM clock gating settings. MCUCFG uses firmware
 	  secure access; ARMCORE shares the cpufreq lock and hardware semaphore.
-	  CPU sync DCM is managed by cpufreq;
-	  DRAM, DDR PHY and memory clock control are not modified here.
+	  CPU sync DCM is managed by cpufreq. MEM/DFS_MEM uses the BSP latch
+	  sequences and default dividers; DRAM PLLs and DDR PHY are not modified.
 
 config MTK_REGULATOR_COUPLER
 	bool "MediaTek SoC Regulator Coupler" if COMPILE_TEST
