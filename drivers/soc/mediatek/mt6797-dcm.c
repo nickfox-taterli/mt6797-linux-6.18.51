@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2015 MediaTek Inc.
  *
- * MT6797 INFRA/PERI and static MCUSYS DCM. Register masks, presets and values
+ * MT6797 INFRA/PERI, static MCUSYS and ARMCORE DCM. Masks, presets and values
  * follow the BSP mt_dcm.c. Linux owns only these always-on registers;
  * CPU sync DCM remains with cpufreq, and memory/DDR DCM is not touched.
  */
@@ -14,8 +14,10 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/soc/mediatek/mt6797-armcore-dcm.h>
 #include <linux/string.h>
 
 #define TOP_DCMCTL		0x010
@@ -52,6 +54,10 @@ static bool mcusys = true;
 module_param(mcusys, bool, 0444);
 MODULE_PARM_DESC(mcusys, "Apply BSP static MCUSYS defaults at probe");
 
+static bool armcore = true;
+module_param(armcore, bool, 0444);
+MODULE_PARM_DESC(armcore, "Apply BSP ARMCORE MODE1 at probe");
+
 static const struct {
 	u32 reg;
 	u32 mask;
@@ -82,9 +88,11 @@ struct mt6797_dcm {
 	struct device *dev;
 	struct regmap *infra;
 	struct clk *axi;
+	struct device *cpufreq;
 	struct mutex lock;
 	u32 saved[ARRAY_SIZE(owned)];
 	u32 mcu_saved[ARRAY_SIZE(mcu_owned)];
+	u32 armcore_saved;
 	unsigned long changes;
 };
 
@@ -150,6 +158,8 @@ static void dcm_restore(void *arg)
 
 	cpus_read_lock();
 	mutex_lock(&dcm->lock);
+	if (mt6797_armcore_dcm_access(dcm->cpufreq, &dcm->armcore_saved, true))
+		dev_err(dcm->dev, "failed to restore ARMCORE DCM\n");
 	for (int i = ARRAY_SIZE(mcu_owned) - 1; i >= 0; i--)
 		if (mcu_update(dcm, i, dcm->mcu_saved[i]))
 			dev_err(dcm->dev, "failed to restore MCUSYS DCM %s\n", mcu_owned[i].name);
@@ -159,6 +169,16 @@ static void dcm_restore(void *arg)
 			dev_err(dcm->dev, "failed to restore DCM register %#x\n", owned[i].reg);
 	mutex_unlock(&dcm->lock);
 	cpus_read_unlock();
+}
+
+static int armcore_set(struct mt6797_dcm *dcm, bool on)
+{
+	u32 value = on ? MT6797_ARMCORE_DCM_MODE1 : 0;
+	int ret = mt6797_armcore_dcm_access(dcm->cpufreq, &value, true);
+
+	if (!ret)
+		dcm->changes++;
+	return ret;
 }
 
 /* Caller holds cpus_read_lock and dcm->lock: no hotplug during the sequence. */
@@ -250,10 +270,17 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 	struct mt6797_dcm *dcm = dev_get_drvdata(dev);
 	u32 value[ARRAY_SIZE(owned)];
 	u32 mcu[ARRAY_SIZE(mcu_owned)];
+	u32 arm;
 	int ret;
 	ssize_t len;
 
+	cpus_read_lock();
 	mutex_lock(&dcm->lock);
+	ret = mt6797_armcore_dcm_access(dcm->cpufreq, &arm, false);
+	if (ret) {
+		len = ret;
+		goto out;
+	}
 	for (unsigned int i = 0; i < ARRAY_SIZE(owned); i++) {
 		ret = regmap_read(dcm->infra, owned[i].reg, &value[i]);
 		if (ret) {
@@ -282,8 +309,12 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 		len += sysfs_emit_at(buf, len, "%s=%08x initial_%s=%08x %s_enabled=%u\n",
 			mcu_owned[i].name, mcu[i], mcu_owned[i].name, dcm->mcu_saved[i],
 			mcu_owned[i].name, (mcu[i] & mcu_owned[i].mask) == mcu_owned[i].mask);
+	len += sysfs_emit_at(buf, len, "armcore=%08x initial_armcore=%08x armcore_enabled=%u\n",
+		arm, dcm->armcore_saved,
+		(arm & MT6797_ARMCORE_DCM_MASK) == MT6797_ARMCORE_DCM_MODE1);
 out:
 	mutex_unlock(&dcm->lock);
+	cpus_read_unlock();
 	return len;
 }
 
@@ -292,7 +323,7 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 {
 	struct mt6797_dcm *dcm = dev_get_drvdata(dev);
 	unsigned int selection = 0;
-	bool peri = false, on = false;
+	bool peri = false, on = false, arm = false;
 	char command[24];
 	int ret;
 
@@ -304,6 +335,9 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 		peri = true; on = true;
 	} else if (sysfs_streq(buf, "peri 0")) {
 		peri = true; on = false;
+	} else if (sysfs_streq(buf, "armcore 1") || sysfs_streq(buf, "armcore 0")) {
+		arm = true;
+		on = sysfs_streq(buf, "armcore 1");
 	} else if (sysfs_streq(buf, "mcusys 1") || sysfs_streq(buf, "mcusys 0")) {
 		selection = GENMASK(ARRAY_SIZE(mcu_owned) - 1, 0);
 		on = sysfs_streq(buf, "mcusys 1");
@@ -322,7 +356,10 @@ static ssize_t state_store(struct device *dev, struct device_attribute *attr,
 	}
 	cpus_read_lock();
 	mutex_lock(&dcm->lock);
-	ret = selection ? mcu_set(dcm, selection, on) : dcm_set(dcm, peri, on);
+	if (arm)
+		ret = armcore_set(dcm, on);
+	else
+		ret = selection ? mcu_set(dcm, selection, on) : dcm_set(dcm, peri, on);
 	mutex_unlock(&dcm->lock);
 	cpus_read_unlock();
 	return ret ? ret : count;
@@ -332,9 +369,16 @@ static DEVICE_ATTR_RW(state);
 static struct attribute *mt6797_dcm_attrs[] = { &dev_attr_state.attr, NULL };
 ATTRIBUTE_GROUPS(mt6797_dcm);
 
+static void dcm_put_supplier(void *arg)
+{
+	put_device(arg);
+}
+
 static int mt6797_dcm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct platform_device *supplier;
+	struct device_node *node;
 	struct mt6797_dcm *dcm;
 	int ret;
 
@@ -342,6 +386,22 @@ static int mt6797_dcm_probe(struct platform_device *pdev)
 	if (!dcm)
 		return -ENOMEM;
 	dcm->dev = dev;
+	node = of_parse_phandle(dev->of_node, "mediatek,cpufreq", 0);
+	if (!node)
+		return -EINVAL;
+	supplier = of_find_device_by_node(node);
+	of_node_put(node);
+	if (!supplier)
+		return -EPROBE_DEFER;
+	ret = devm_add_action_or_reset(dev, dcm_put_supplier, &supplier->dev);
+	if (ret)
+		return ret;
+	if (!device_is_bound(&supplier->dev))
+		return -EPROBE_DEFER;
+	if (!device_link_add(dev, &supplier->dev,
+			     DL_FLAG_AUTOREMOVE_CONSUMER | DL_FLAG_AUTOPROBE_CONSUMER))
+		return -ENOMEM;
+	dcm->cpufreq = &supplier->dev;
 	dcm->infra = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,infracfg");
 	if (IS_ERR(dcm->infra))
 		return dev_err_probe(dev, PTR_ERR(dcm->infra), "missing INFRACFG\n");
@@ -360,6 +420,11 @@ static int mt6797_dcm_probe(struct platform_device *pdev)
 		if (ret)
 			return dev_err_probe(dev, ret, "MCUSYS secure read unavailable\n");
 	}
+	cpus_read_lock();
+	ret = mt6797_armcore_dcm_access(dcm->cpufreq, &dcm->armcore_saved, false);
+	cpus_read_unlock();
+	if (ret)
+		return dev_err_probe(dev, ret, "ARMCORE DCM read unavailable\n");
 	ret = devm_add_action_or_reset(dev, dcm_restore, dcm);
 	if (ret)
 		return ret;
@@ -372,12 +437,14 @@ static int mt6797_dcm_probe(struct platform_device *pdev)
 	}
 	if (!ret && mcusys)
 		ret = mcu_set(dcm, GENMASK(ARRAY_SIZE(mcu_owned) - 1, 0), true);
+	if (!ret && armcore)
+		ret = armcore_set(dcm, true);
 	mutex_unlock(&dcm->lock);
 	cpus_read_unlock();
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to apply BSP DCM\n");
-	dev_info(dev, "BSP INFRA/PERI=%u static MCUSYS=%u, AXI=%lu Hz\n",
-		 enable, mcusys, clk_get_rate(dcm->axi));
+	dev_info(dev, "BSP INFRA/PERI=%u static MCUSYS=%u ARMCORE=%u, AXI=%lu Hz\n",
+		 enable, mcusys, armcore, clk_get_rate(dcm->axi));
 	return 0;
 }
 
@@ -395,5 +462,5 @@ static struct platform_driver mt6797_dcm_driver = {
 	},
 };
 module_platform_driver(mt6797_dcm_driver);
-MODULE_DESCRIPTION("MT6797 BSP INFRA/PERI and static MCUSYS dynamic clock management");
+MODULE_DESCRIPTION("MT6797 BSP bus, static MCUSYS and ARMCORE dynamic clock management");
 MODULE_LICENSE("GPL");

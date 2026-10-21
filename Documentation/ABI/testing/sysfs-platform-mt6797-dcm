@@ -11,6 +11,12 @@ Description:
                 in BSP order. Each command requires a literal 0 or 1.
                 These writes exclude concurrent CPU hotplug and verify the
                 register fields via firmware. Failed transitions roll back.
+                "armcore 1" applies BSP ARMCORE MODE1 (mask 0x7777, value
+                0x1111); "armcore 0" clears these fields. Reads include its
+                actual value, binding-time snapshot and MODE1 enabled flag.
+                ARMCORE access uses the CPUFreq supplier's software mutex,
+                hardware semaphore and MCUMIXED bridge read/write sequence.
+                MODE2 (WFI/WFE triggering) is not exposed.
                 Invalid commands return EINVAL without changing registers.
                 The shared TOP_DCMCTL ratio enable stays set while bound.
                 Removing the driver restores its original register fields.

@@ -17,6 +17,7 @@
 #include "mt6797.dtsi"
 
 &dcm {
+	mediatek,cpufreq = <&mt6797_cpufreq>;
 	status = "okay";
 };
 

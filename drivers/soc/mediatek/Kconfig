@@ -56,13 +56,15 @@ config MTK_PMIC_WRAP
 	  hardware to connect the PMIC.
 
 config MTK_MT6797_DCM
-	tristate "MediaTek MT6797 bus and static MCUSYS dynamic clock management"
+	tristate "MediaTek MT6797 bus and CPU dynamic clock management"
 	depends on ARCH_MEDIATEK && ARM64 && OF
+	depends on ARM_MT6797_CPUFREQ
 	select MFD_SYSCON
 	help
 	  Apply the MT6797 BSP always-on infrastructure, peripheral bus and
-	  static MCUSYS clock gating settings, using firmware secure access for
-	  MCUCFG. CPU sync DCM is managed by cpufreq;
+	  static MCUSYS and ARMCORE clock gating settings. MCUCFG uses firmware
+	  secure access; ARMCORE shares the cpufreq lock and hardware semaphore.
+	  CPU sync DCM is managed by cpufreq;
 	  DRAM, DDR PHY and memory clock control are not modified here.
 
 config MTK_REGULATOR_COUPLER

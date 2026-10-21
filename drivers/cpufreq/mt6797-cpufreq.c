@@ -30,6 +30,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/regulator/consumer.h>
+#include <linux/soc/mediatek/mt6797-armcore-dcm.h>
 
 #define MT6797_SIP_IDVFS_PLL_SET_FREQ	0xC20003B8
 #define MT6797_SIP_IDVFS_SRAM_LDO_SET	0xC20003BF
@@ -41,6 +42,7 @@
 #define MT6797_PLL_CCI_CON1		0x224
 #define MT6797_PLL_MUXSEL		0x270
 #define MT6797_PLL_CKDIV		0x274
+#define MT6797_ARMPLLDIV_DCMCTL	0x278
 #define MT6797_TOP_CLK_MISC_CFG_0	0x104
 
 #define MT6797_SEMA_POWERON_CONFIG	0x000
@@ -364,6 +366,42 @@ static int mt6797_mcu_write(void __iomem *reg, u32 value, u32 mask)
 			   value, mask, mt6797_mcu_read(reg));
 	return -EIO;
 }
+
+/* BSP ARMCORE DCM shares MCUMIXED with DVFS/FHCTL. M0 is one HW owner,
+ * so the cpufreq mutex must cover all Linux users as well as the semaphore.
+ */
+int mt6797_armcore_dcm_access(struct device *supplier, u32 *value, bool write)
+{
+	struct mt6797_cpufreq *data = dev_get_drvdata(supplier);
+	void __iomem *reg;
+	u32 old;
+	int ret;
+
+	lockdep_assert_cpus_held();
+	if (!data)
+		return -EPROBE_DEFER;
+	reg = data->mcumixed + MT6797_ARMPLLDIV_DCMCTL;
+	mutex_lock(&data->lock);
+	ret = mt6797_hw_semaphore_get(data);
+	if (ret)
+		goto out;
+	old = mt6797_mcu_read(reg);
+	if (write) {
+		u32 next = (old & ~MT6797_ARMCORE_DCM_MASK) |
+			   (*value & MT6797_ARMCORE_DCM_MASK);
+
+		ret = mt6797_mcu_write(reg, next, MT6797_ARMCORE_DCM_MASK);
+		if (ret && mt6797_mcu_write(reg, old, MT6797_ARMCORE_DCM_MASK))
+			dev_err(supplier, "ARMCORE DCM rollback failed\n");
+	} else {
+		*value = old;
+	}
+	mt6797_hw_semaphore_put(data);
+out:
+	mutex_unlock(&data->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_armcore_dcm_access);
 
 /* PLL0=LL, PLL1=L, PLL2=CCI. PLL3 is the shared backup, left untouched. */
 static int mt6797_fhctl_init(struct mt6797_cpufreq *data)
