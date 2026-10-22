@@ -1,0 +1,24 @@
+What:		/sys/bus/platform/devices/eem/calibrate
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Write 1 to run BSP EEM INIT01/INIT02 on BIG/L/LL/CCI banks and
+		start advisory MON sampling. All three CPU clusters must be
+		active, their current frequencies and CCI at most 750000 kHz.
+		Otherwise the request fails with EBUSY. The CPUfreq supplier lock
+		and CPU read lock protect a temporary 1 V calibration supply and
+		the exact restoration of manual rails/modes. OPPs are not changed.
+		Write 0 to stop EEM and restore the saved writable registers.
+		Suspend stops MON; resume reruns INIT02 using cached DC offsets.
+		Loading the driver alone does not perform a calibration.
+
+What:		/sys/bus/platform/devices/eem/state
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Read-only calibration/MON status, runs, samples, failures, last
+		error and eFuse ATE version. Rejected calibration requests count
+		as failures. Each bank reports DC/age offsets, status, packed
+		VOP voltage codes, MTS/BTS and eight frequency percentages.
+		Results are advisory: automatic_voltage=0 and the manual CPUfreq
+		curve remains the voltage owner. Raw codes are not measured rails.

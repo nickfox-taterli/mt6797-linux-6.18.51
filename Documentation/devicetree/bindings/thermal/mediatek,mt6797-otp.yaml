@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/thermal/mediatek,mt6797-otp.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 hardware thermal PID
+
+maintainers:
+  - X20 Bring-up <x20@localhost>
+
+description: |
+  The BIG cluster PID receives thermal controller samples. Firmware mediates
+  its register accesses. CPUfreq applies frequency caps using the existing
+  manual voltage OPPs; autonomous iDVFS voltage control is not enabled.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-otp
+
+  mediatek,thermal:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Thermal controller supplying the calibrated BIG sensor
+
+required:
+  - compatible
+  - mediatek,thermal
+
+additionalProperties: false

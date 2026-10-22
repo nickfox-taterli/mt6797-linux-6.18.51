@@ -1,0 +1,14 @@
+What:		/sys/bus/platform/devices/1100b000.thermal/hw_critical_temp
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Read/write the six-bank TC final direct-reset threshold in
+		millidegrees Celsius. Default follows the board's critical trip
+		(150000); allowed writes are 10000..150000. Thresholds use BSP
+		eFuse/AUXADC calibration. TC drives TOPRGU directly, without a
+		software IRQ actuator; the driver also establishes the BSP external
+		reset and bypass-power-key flags. A low test threshold can reset
+		the board immediately. Writes are transient and do not edit DT.
+		This is separate from the normal passive thermal cooling policy
+		and the BIG PID frequency cap. Reading it does not prove a real
+		150 C action, physical power-off or subsequent boot recovery.

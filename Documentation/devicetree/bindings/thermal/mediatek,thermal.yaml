@@ -59,6 +59,10 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: A phandle to the AUXADC which the thermal controller uses
 
+  mediatek,watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 watchdog receiving the direct hardware thermal reset
+
   mediatek,apmixedsys:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: A phandle to the APMIXEDSYS controller

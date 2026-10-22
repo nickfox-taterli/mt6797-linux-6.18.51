@@ -1,0 +1,24 @@
+What:		/sys/bus/platform/devices/10004000.vcorefs/state
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Read-only PCM ownership, physical PHY shuffle, decoded DDR data
+		rate (MT/s), AXI clock (Hz), baseline shuffle, successful changes
+		and failures. CPU voltage ownership remains with CPUfreq.
+		The standard devfreq userspace set_freq interface selects nominal
+		DRAM clocks in Hz; a selection succeeds only after the physical
+		PHY and PCM both acknowledge it. A timeout is not a low-rate PASS.
+		This board exposes 800000000 and 635000000 requests. The
+		uncompleted 400000000 ULPM transition is excluded from the OPPs;
+		it is a recorded implementation limitation, not a qualified level.
+
+What:		/sys/bus/platform/devices/10004000.vcorefs/release
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Write 1 to restore the initial memory level, offload and reset
+		the PCM before releasing instruction DMA, restore the saved
+		SPM/PWRAP/PMIC and AXI state, and drop the firmware module hold.
+		MEM/DFS_MEM DCM preserves the current user's latched settings.
+		If hardware does not stop, the firmware buffer and module remain
+		held and the write fails. A subsequent set_freq starts it again.

@@ -31,6 +31,7 @@
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
+#include <linux/soc/mediatek/mt6797-wdt.h>
 
 #define WDT_MAX_TIMEOUT		31
 #define WDT_MIN_TIMEOUT		2
@@ -97,6 +98,47 @@ static const struct mtk_wdt_data mt6735_data = {
 static const struct mtk_wdt_data mt6797_data = {
 	.vendor_reset = true,
 };
+
+int mt6797_wdt_thermal_direct(struct device *dev, bool enable)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+	unsigned long flags;
+	u32 mode, irq, reset;
+	int ret = 0;
+
+	if (!wdt || !wdt->vendor_reset)
+		return -ENODEV;
+	spin_lock_irqsave(&wdt->lock, flags);
+	mode = readl(wdt->wdt_base + 0x30) & 0x00ffffff;
+	irq = readl(wdt->wdt_base + 0x34) & 0x00ffffff;
+	mode = enable ? mode | BIT(18) : mode & ~BIT(18);
+	if (enable) {
+		/* BSP mtk_wdt_mode_config(): propagate reset to the PMIC and
+		 * carry the bypass-power-key flag into the vendor boot chain.
+		 * This does not enable the watchdog countdown or change its IRQ.
+		 */
+		reset = readl(wdt->wdt_base + WDT_MODE);
+		reset |= WDT_MODE_EXRST_EN | WDT_MODE_AUTO_START;
+		writel(WDT_MODE_KEY | reset, wdt->wdt_base + WDT_MODE);
+		if ((readl(wdt->wdt_base + WDT_MODE) &
+		     (WDT_MODE_EXRST_EN | WDT_MODE_AUTO_START)) !=
+		    (WDT_MODE_EXRST_EN | WDT_MODE_AUTO_START)) {
+			ret = -EIO;
+			goto unlock;
+		}
+	}
+	/* BSP THERMAL_DIRECT_MODE, RESET_MODE: IRQ is not the actuator. */
+	irq &= ~BIT(18);
+	writel(0x44000000 | irq, wdt->wdt_base + 0x34);
+	writel(0x33000000 | mode, wdt->wdt_base + 0x30);
+	if ((readl(wdt->wdt_base + 0x30) & BIT(18)) != (mode & BIT(18)) ||
+	    (readl(wdt->wdt_base + 0x34) & BIT(18)))
+		ret = -EIO;
+unlock:
+	spin_unlock_irqrestore(&wdt->lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wdt_thermal_direct);
 
 static const struct mtk_wdt_data mt6795_data = {
 	.toprgu_sw_rst_num = MT6795_TOPRGU_SW_RST_NUM,
@@ -236,10 +278,12 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base;
+	unsigned long flags;
 	u32 reg;
 
 	wdt_base = mtk_wdt->wdt_base;
 
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = readl(wdt_base + WDT_MODE);
 	if (mtk_wdt->vendor_reset) {
 		/* Match the MT6797 vendor wdt_arch_reset() sequence. */
@@ -255,6 +299,7 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 		reg &= ~WDT_MODE_IRQ_EN;
 	}
 	writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
 	if (mtk_wdt->vendor_reset) {
 		mb();
 		udelay(100);
@@ -325,12 +370,15 @@ static int mtk_wdt_stop(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	unsigned long flags;
 	u32 reg;
 
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = readl(wdt_base + WDT_MODE);
 	reg &= ~WDT_MODE_EN;
 	reg |= WDT_MODE_KEY;
 	iowrite32(reg, wdt_base + WDT_MODE);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
 
 	return 0;
 }
@@ -340,12 +388,14 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 	u32 reg;
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	unsigned long flags;
 	int ret;
 
 	ret = mtk_wdt_set_timeout(wdt_dev, wdt_dev->timeout);
 	if (ret < 0)
 		return ret;
 
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = ioread32(wdt_base + WDT_MODE);
 	if (wdt_dev->pretimeout)
 		reg |= (WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
@@ -357,6 +407,7 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 		reg |= WDT_MODE_CNT_SEL;
 	reg |= (WDT_MODE_EN | WDT_MODE_KEY);
 	iowrite32(reg, wdt_base + WDT_MODE);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
 
 	return 0;
 }
@@ -366,8 +417,11 @@ static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdd);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
-	u32 reg = ioread32(wdt_base + WDT_MODE);
+	unsigned long flags;
+	u32 reg;
 
+	spin_lock_irqsave(&mtk_wdt->lock, flags);
+	reg = ioread32(wdt_base + WDT_MODE);
 	if (timeout && !wdd->pretimeout) {
 		wdd->pretimeout = wdd->timeout / 2;
 		reg |= (WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
@@ -375,11 +429,13 @@ static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
 		wdd->pretimeout = 0;
 		reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
 	} else {
+		spin_unlock_irqrestore(&mtk_wdt->lock, flags);
 		return 0;
 	}
 
 	reg |= WDT_MODE_KEY;
 	iowrite32(reg, wdt_base + WDT_MODE);
+	spin_unlock_irqrestore(&mtk_wdt->lock, flags);
 
 	return mtk_wdt_set_timeout(wdd, wdd->timeout);
 }
@@ -428,6 +484,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	mtk_wdt = devm_kzalloc(dev, sizeof(*mtk_wdt), GFP_KERNEL);
 	if (!mtk_wdt)
 		return -ENOMEM;
+	spin_lock_init(&mtk_wdt->lock);
 
 	platform_set_drvdata(pdev, mtk_wdt);
 

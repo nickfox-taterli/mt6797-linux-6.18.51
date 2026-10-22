@@ -17,6 +17,13 @@ config MTK_CMDQ
 	  time limitation, such as updating display configuration during the
 	  vblank.
 
+config MTK_MT6797_GPT_WAKEUP
+	tristate "MT6797 APXGPT4 suspend wake timer"
+	depends on OF && PM_SLEEP
+	help
+	  Provide the BSP GPT4 wake timer for idle/suspend using its always-on
+	  32kHz clock. The architectural timer remains Linux's clocksource.
+
 config MTK_DEVAPC
 	tristate "Mediatek Device APC Support"
 	help
@@ -66,6 +73,18 @@ config MTK_MT6797_DCM
 	  secure access; ARMCORE shares the cpufreq lock and hardware semaphore.
 	  CPU sync DCM is managed by cpufreq. MEM/DFS_MEM uses the BSP latch
 	  sequences and default dividers; DRAM PLLs and DDR PHY are not modified.
+
+config MTK_MT6797_VCOREFS
+	tristate "MediaTek MT6797 SPM VCORE and DRAM DVFS"
+	depends on ARCH_MEDIATEK && ARM64 && OF
+	depends on PM_DEVFREQ
+	depends on MTK_MT6797_DCM
+	select DEVFREQ_GOV_USERSPACE
+	select PM_OPP
+	help
+	  Run the BSP SPM vcorefs firmware for the X20 LPDDR3-1600 memory
+	  configuration. CPU VPROC and VSRAM remain under CPUfreq control.
+	  The userspace governor changes memory levels only on explicit request.
 
 config MTK_REGULATOR_COUPLER
 	bool "MediaTek SoC Regulator Coupler" if COMPILE_TEST

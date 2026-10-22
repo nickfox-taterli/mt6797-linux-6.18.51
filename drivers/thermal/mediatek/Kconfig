@@ -18,6 +18,23 @@ config MTK_SOC_THERMAL
 	  This driver configures thermal controllers to collect
 	  temperature via AUXADC interface.
 
+config MTK_MT6797_EEM
+	tristate "MT6797 EEM hardware measurements with manual voltage ownership"
+	depends on MTK_SOC_THERMAL && ARM_MT6797_CPUFREQ && NVMEM && OF
+	help
+	  Provide explicit INIT01/INIT02 calibration and MON measurements. The
+	  CPU frequencies must first be lowered below 750 MHz. Calibration uses
+	  temporary 1V rails and restores their previous voltages and modes.
+	  Recommendations never change the manual OPP table or CPU voltages.
+
+config MTK_MT6797_OTP
+	tristate "MT6797 thermal PID using the manual CPUfreq OPPs"
+	depends on MTK_SOC_THERMAL && CPU_FREQ && OF && ARM64
+	help
+	  Run the BSP hardware PID and apply its BIG frequency limit through
+	  CPUfreq QoS, retaining the manual voltage curve. This does not enable
+	  autonomous iDVFS voltage control. The default target is 150 degrees C.
+
 config MTK_LVTS_THERMAL
         tristate "LVTS Thermal Driver for MediaTek SoCs"
         depends on HAS_IOMEM

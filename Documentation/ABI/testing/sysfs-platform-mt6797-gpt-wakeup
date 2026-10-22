@@ -1,0 +1,11 @@
+What:		/sys/bus/platform/devices/10008000.timer/wake_after_ms
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Write 1..600000 to arm one GPT4 32.768 kHz one-shot wake interrupt
+		that many milliseconds from the write, or 0 to disarm it. A new
+		write replaces the existing deadline. Reading reports the armed
+		delay, total fired count, counter, compare and control register.
+		It is a relative wake timer, not an RTC alarm. GPT2 separately
+		supplies a 32-bit non-stop sleep clock for timekeeping; GPT4's
+		deadline starts immediately, including suspend preparation time.

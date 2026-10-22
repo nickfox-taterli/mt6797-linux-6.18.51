@@ -28,4 +28,9 @@ Description:
                 Invalid commands return EINVAL without changing registers.
                 The shared TOP_DCMCTL ratio enable stays set while bound.
                 Removing the driver restores its original register fields.
-                CPU sync DCM, PLLs, OPPs and DDR PHY are not affected.
+                memory_transition_pending reports an outstanding SPM memory
+                transaction. MEM writes return EBUSY while it is set. Once
+                the memory controller is quiescent, the shared transaction
+                API re-latches the pre-transition user settings and clears
+                the pending state. The DCM commands themselves do not change
+                CPU sync DCM, PLLs, OPPs or DDR PHY frequencies.

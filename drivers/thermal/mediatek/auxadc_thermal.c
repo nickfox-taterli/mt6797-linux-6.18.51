@@ -15,12 +15,15 @@
 #include <linux/nvmem-consumer.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/thermal.h>
 #include <linux/reset.h>
 #include <linux/soc/mediatek/mt6797-thermal-eem.h>
+#include <linux/soc/mediatek/mt6797-wdt.h>
 #include <linux/types.h>
 
 #include "../thermal_hwmon.h"
@@ -120,6 +123,8 @@
 /* Valid temperatures range */
 #define MT8173_TEMP_MIN		-20000
 #define MT8173_TEMP_MAX		150000
+/* Temporary upper range for MT6797 thermal-limit characterization. */
+#define MT6797_TEMP_MAX_TEST	180000
 
 /*
  * Layout of the fuses providing the calibration data
@@ -309,7 +314,6 @@ struct thermal_bank_cfg {
 struct mtk_thermal_bank {
 	struct mtk_thermal *mt;
 	int id;
-	unsigned long flags;
 };
 
 DEFINE_SPINLOCK(mt6797_thermal_eem_lock);
@@ -337,6 +341,10 @@ struct mtk_thermal_data {
 struct mtk_thermal {
 	struct device *dev;
 	void __iomem *thermal_base;
+	phys_addr_t thermal_phys;
+	struct device *hw_watchdog;
+	struct mutex hw_protect_lock;
+	int hw_critical_temp;
 
 	struct clk *clk_peri_therm;
 	struct clk *clk_auxadc;
@@ -735,9 +743,12 @@ static const struct mtk_thermal_data mt7986_thermal_data = {
 	.apmixed_buffer_ctl_set = BIT(0),
 };
 
-static bool mtk_thermal_temp_is_valid(int temp)
+static bool mtk_thermal_temp_is_valid(struct mtk_thermal *mt, int temp)
 {
-	return (temp >= MT8173_TEMP_MIN) && (temp <= MT8173_TEMP_MAX);
+	int max_temp = mt->conf->version == MTK_THERMAL_MT6797 ?
+			MT6797_TEMP_MAX_TEST : MT8173_TEMP_MAX;
+
+	return (temp >= MT8173_TEMP_MIN) && (temp <= max_temp);
 }
 
 /**
@@ -841,14 +852,15 @@ static int raw_to_mcelsius_v3(struct mtk_thermal *mt, int sensno, s32 raw)
  * The bank registers are banked, we have to select a bank in the
  * PTPCORESEL register to access it.
  */
-static void mtk_thermal_get_bank(struct mtk_thermal_bank *bank)
+static unsigned long mtk_thermal_get_bank(struct mtk_thermal_bank *bank)
 {
 	struct mtk_thermal *mt = bank->mt;
+	unsigned long flags = 0;
 	u32 val;
 
 	if (mt->conf->need_switch_bank) {
 		if (mt->conf->version == MTK_THERMAL_MT6797)
-			spin_lock_irqsave(&mt6797_thermal_eem_lock, bank->flags);
+			spin_lock_irqsave(&mt6797_thermal_eem_lock, flags);
 		else
 			mutex_lock(&mt->lock);
 
@@ -857,6 +869,7 @@ static void mtk_thermal_get_bank(struct mtk_thermal_bank *bank)
 		val |= bank->id;
 		writel(val, mt->thermal_base + PTPCORESEL);
 	}
+	return flags;
 }
 
 /**
@@ -865,14 +878,15 @@ static void mtk_thermal_get_bank(struct mtk_thermal_bank *bank)
  *
  * release a bank previously taken with mtk_thermal_get_bank,
  */
-static void mtk_thermal_put_bank(struct mtk_thermal_bank *bank)
+static void mtk_thermal_put_bank(struct mtk_thermal_bank *bank,
+				 unsigned long flags)
 {
 	struct mtk_thermal *mt = bank->mt;
 
 	if (mt->conf->need_switch_bank) {
 		if (mt->conf->version == MTK_THERMAL_MT6797)
 			spin_unlock_irqrestore(&mt6797_thermal_eem_lock,
-					       bank->flags);
+					       flags);
 		else
 			mutex_unlock(&mt->lock);
 	}
@@ -907,7 +921,7 @@ static int mtk_thermal_bank_temperature(struct mtk_thermal_bank *bank)
 		 * and to eventually avoid bogus readings during runtime in the
 		 * event that the AUXADC gets unstable due to high EMI, etc.
 		 */
-		if (!mtk_thermal_temp_is_valid(temp))
+		if (!mtk_thermal_temp_is_valid(mt, temp))
 			temp = THERMAL_TEMP_INVALID;
 
 		if (temp > max)
@@ -919,6 +933,7 @@ static int mtk_thermal_bank_temperature(struct mtk_thermal_bank *bank)
 
 static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 {
+	unsigned long flags;
 	struct mtk_thermal *mt = thermal_zone_device_priv(tz);
 	int i;
 	int tempmax = INT_MIN;
@@ -926,17 +941,66 @@ static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 	for (i = 0; i < mt->conf->num_banks; i++) {
 		struct mtk_thermal_bank *bank = &mt->banks[i];
 
-		mtk_thermal_get_bank(bank);
+		flags = mtk_thermal_get_bank(bank);
 
 		tempmax = max(tempmax, mtk_thermal_bank_temperature(bank));
 
-		mtk_thermal_put_bank(bank);
+		mtk_thermal_put_bank(bank, flags);
 	}
 
 	*temperature = tempmax;
 
 	return 0;
 }
+
+int mt6797_thermal_bank_temp(struct device *dev, unsigned int id, int *temp)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	unsigned long flags;
+
+	if (!mt || mt->conf->version != MTK_THERMAL_MT6797 ||
+	    id >= mt->conf->num_banks)
+		return -EINVAL;
+	flags = mtk_thermal_get_bank(&mt->banks[id]);
+	*temp = mtk_thermal_bank_temperature(&mt->banks[id]);
+	mtk_thermal_put_bank(&mt->banks[id], flags);
+	return *temp == THERMAL_TEMP_INVALID ? -EAGAIN : 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_thermal_bank_temp);
+
+int mt6797_thermal_eem_calibration(struct device *dev, unsigned int bank,
+				 u32 *mts, u32 *bts)
+{
+	static const unsigned int dominant_sensor[] = { 0, 3, 1, 1, 1, 1 };
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	s64 room, t0, t1, t2;
+	int gain, offset, slope;
+
+	if (!mt || mt->conf->version != MTK_THERMAL_MT6797 ||
+	    bank >= ARRAY_SIZE(dominant_sensor))
+		return -EINVAL;
+	gain = 10000 + (mt->adc_ge - 512) * 10000 / 4096;
+	offset = mt->adc_oe - 512;
+	slope = 1663 + (mt->o_slope_sign ? -mt->o_slope * 10 : mt->o_slope * 10);
+	/* Preserve the BSP get_thermal_slope_intercept() integer ordering. */
+	room = div_s64((s64)(mt->vts[dominant_sensor[bank]] + 3350 - offset) * 10000,
+		       4096);
+	room = div_s64(room * 10000, gain);
+	t0 = div_s64(div_s64(1000000000, gain) * 15, 18);
+	*mts = div_s64(t0 * 10, slope);
+	t0 = mt->degc_cali * 10 / 2;
+	t1 = div_s64((div_s64(1000000000 / 4096, gain) * offset + room * 10) * 15, 18);
+	t2 = div_s64(t1 * 100, slope);
+	*bts = div_s64((t0 + t2 - 250) * 4, 10);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_thermal_eem_calibration);
+
+int mt6797_thermal_otp_calibration(struct device *dev, u32 *mts, u32 *bts)
+{
+	return mt6797_thermal_eem_calibration(dev, 0, mts, bts);
+}
+EXPORT_SYMBOL_GPL(mt6797_thermal_otp_calibration);
 
 static const struct thermal_zone_device_ops mtk_thermal_ops = {
 	.get_temp = mtk_read_temp,
@@ -945,6 +1009,7 @@ static const struct thermal_zone_device_ops mtk_thermal_ops = {
 static ssize_t bank_temperatures_show(struct device *dev,
 				      struct device_attribute *attr, char *buf)
 {
+	unsigned long flags;
 	struct mtk_thermal *mt = dev_get_drvdata(dev);
 	ssize_t len = 0;
 	int i, temperature;
@@ -952,9 +1017,9 @@ static ssize_t bank_temperatures_show(struct device *dev,
 	for (i = 0; i < mt->conf->num_banks; i++) {
 		struct mtk_thermal_bank *bank = &mt->banks[i];
 
-		mtk_thermal_get_bank(bank);
+		flags = mtk_thermal_get_bank(bank);
 		temperature = mtk_thermal_bank_temperature(bank);
-		mtk_thermal_put_bank(bank);
+		mtk_thermal_put_bank(bank, flags);
 		len += sysfs_emit_at(buf, len, "bank%d=%d\n", i, temperature);
 	}
 	return len;
@@ -964,6 +1029,7 @@ static DEVICE_ATTR_RO(bank_temperatures);
 static ssize_t eem_status_show(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
+	unsigned long flags;
 	struct mtk_thermal *mt = dev_get_drvdata(dev);
 	ssize_t len = 0;
 	int i;
@@ -974,12 +1040,12 @@ static ssize_t eem_status_show(struct device *dev,
 		u32 enable, status, vop30, vop74;
 
 		/* BSP mt_defptp.h: EEM shares the thermal bank selector. */
-		mtk_thermal_get_bank(bank);
+		flags = mtk_thermal_get_bank(bank);
 		enable = readl(mt->thermal_base + 0x238);
 		status = readl(mt->thermal_base + 0x254);
 		vop30 = readl(mt->thermal_base + 0x248);
 		vop74 = readl(mt->thermal_base + 0x24c);
-		mtk_thermal_put_bank(bank);
+		mtk_thermal_put_bank(bank, flags);
 		len += sysfs_emit_at(buf, len,
 			"bank%d eem_en=0x%08x intsts=0x%08x vop30=0x%08x vop74=0x%08x\n",
 			i, enable, status, vop30, vop74);
@@ -988,19 +1054,153 @@ static ssize_t eem_status_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(eem_status);
 
+static int mt6797_hw_protect(struct mtk_thermal *mt, int temperature)
+{
+	unsigned long flags;
+	s64 room, delta, raw;
+	int gain, offset, slope, i, sensor, ret, retry;
+	u32 interrupt, thresholds[MAX_NUM_ZONES];
+	bool ready;
+
+	if (!mt->hw_watchdog)
+		return -EOPNOTSUPP;
+	/* An unfilled MSR is zero, which hardware interprets as very hot. */
+	for (retry = 0; retry < 100; retry++) {
+		ready = true;
+		for (i = 0; i < mt->conf->num_banks; i++) {
+			flags = mtk_thermal_get_bank(&mt->banks[i]);
+			ready &= !!(readl(mt->thermal_base + TEMP_MSR0) & 0xfff);
+			mtk_thermal_put_bank(&mt->banks[i], flags);
+		}
+		if (ready)
+			break;
+		usleep_range(1000, 2000);
+	}
+	if (!ready)
+		return -ETIMEDOUT;
+	gain = 10000 + (mt->adc_ge - 512) * 10000 / 4096;
+	offset = mt->adc_oe - 512;
+	slope = 1663 + (mt->o_slope_sign ? -mt->o_slope * 10 : mt->o_slope * 10);
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		/* BSP set_tc_trigger_hw_protect() selects the first sensor. */
+		sensor = mt->conf->bank_data[i].sensors[0];
+		room = div_s64((s64)(mt->vts[sensor] + 3350 - offset) * 10000, 4096);
+		room = div_s64(room * 10000, gain);
+		delta = div_s64((s64)(temperature - mt->degc_cali * 500) * slope, 10);
+		delta = -div_s64(delta * 18, 15);
+		raw = div_s64(delta, 1000) + room * 10;
+		raw = div_s64(div_s64(raw * 4096, 10000) * gain, 100000) + offset;
+		if (raw < 1 || raw > 4095)
+			return -ERANGE;
+		thresholds[i] = raw;
+	}
+	mutex_lock(&mt->hw_protect_lock);
+	ret = mt6797_wdt_thermal_direct(mt->hw_watchdog, false);
+	if (ret)
+		goto unlock;
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		flags = mtk_thermal_get_bank(&mt->banks[i]);
+		interrupt = readl(mt->thermal_base + 0x00c);
+		writel(0, mt->thermal_base + 0x00c);
+		writel(0x20000, mt->thermal_base + 0x0c0);
+		writel(thresholds[i], mt->thermal_base + 0x0cc);
+		writel(interrupt | BIT(31), mt->thermal_base + 0x00c);
+		if (readl(mt->thermal_base + 0x0cc) != thresholds[i] ||
+		    !(readl(mt->thermal_base + 0x00c) & BIT(31))) {
+			mtk_thermal_put_bank(&mt->banks[i], flags);
+			ret = -EIO;
+			goto unlock;
+		}
+		mtk_thermal_put_bank(&mt->banks[i], flags);
+	}
+	ret = mt6797_wdt_thermal_direct(mt->hw_watchdog, true);
+	if (!ret)
+		mt->hw_critical_temp = temperature;
+unlock:
+	mutex_unlock(&mt->hw_protect_lock);
+	return ret;
+}
+
+static ssize_t hw_critical_temp_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(mt->hw_critical_temp));
+}
+
+static ssize_t hw_critical_temp_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	int temperature, ret;
+
+	if (kstrtoint(buf, 0, &temperature) || temperature < 10000 || temperature > 150000)
+		return -EINVAL;
+	ret = mt6797_hw_protect(mt, temperature);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(hw_critical_temp);
+
 static struct attribute *mt6797_thermal_attrs[] = {
 	&dev_attr_bank_temperatures.attr,
 	&dev_attr_eem_status.attr,
+	&dev_attr_hw_critical_temp.attr,
 	NULL,
 };
 static const struct attribute_group mt6797_thermal_group = {
 	.attrs = mt6797_thermal_attrs,
 };
 
-static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
+/* BSP fast init fills even disabled slots; hardware protection compares all
+ * slots, and an uninitialized zero would represent an extremely hot sensor.
+ */
+static int mt6797_thermal_fast_init(struct mtk_thermal *mt)
+{
+	static const u32 msr[] = { TEMP_MSR0, TEMP_MSR1, TEMP_MSR2, TEMP_MSR3 };
+	u32 value;
+	int i, ret;
+
+	writel(0, mt->thermal_base + 0x00c);
+	writel(0, mt->thermal_base + TEMP_MONCTL0);
+	writel(0x1da1, mt->thermal_base + 0x428);
+	writel(1, mt->thermal_base + TEMP_MONCTL1);
+	writel(1, mt->thermal_base + TEMP_MONCTL2);
+	writel(1, mt->thermal_base + TEMP_AHBPOLL);
+	writel(0xff, mt->thermal_base + TEMP_AHBTO);
+	writel(0, mt->thermal_base + TEMP_MONIDET0);
+	writel(0, mt->thermal_base + TEMP_MONIDET1);
+	writel(0, mt->thermal_base + TEMP_MSRCTL0);
+	writel(1, mt->thermal_base + TEMP_ADCPNP0);
+	writel(2, mt->thermal_base + TEMP_ADCPNP1);
+	writel(3, mt->thermal_base + TEMP_ADCPNP2);
+	writel(4, mt->thermal_base + 0x0b4);
+	writel(mt->thermal_phys + 0x420, mt->thermal_base + TEMP_PNPMUXADDR);
+	writel(mt->thermal_phys + 0x420, mt->thermal_base + TEMP_ADCMUXADDR);
+	writel(mt->thermal_phys + 0x424, mt->thermal_base + TEMP_ADCENADDR);
+	writel(mt->thermal_phys + 0x428, mt->thermal_base + TEMP_ADCVALIDADDR);
+	writel(mt->thermal_phys + 0x428, mt->thermal_base + TEMP_ADCVOLTADDR);
+	writel(0, mt->thermal_base + TEMP_RDCTRL);
+	writel(0x2c, mt->thermal_base + TEMP_ADCVALIDMASK);
+	writel(0, mt->thermal_base + TEMP_ADCVOLTAGESHIFT);
+	writel(3, mt->thermal_base + TEMP_ADCWRITECTRL);
+	writel(15, mt->thermal_base + TEMP_MONCTL0);
+	for (i = 0; i < ARRAY_SIZE(msr); i++) {
+		ret = readl_poll_timeout_atomic(mt->thermal_base + msr[i], value,
+					       (value & 0xfff) == 0xda1, 1, 2000);
+		if (ret)
+			break;
+	}
+	writel(0, mt->thermal_base + TEMP_MONCTL0);
+	return ret;
+}
+
+static int mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 				  u32 apmixed_phys_base, u32 auxadc_phys_base,
 				  int ctrl_id)
 {
+	unsigned long flags;
 	struct mtk_thermal_bank *bank = &mt->banks[num];
 	const struct mtk_thermal_data *conf = mt->conf;
 	int i;
@@ -1011,7 +1211,15 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	bank->id = num;
 	bank->mt = mt;
 
-	mtk_thermal_get_bank(bank);
+	flags = mtk_thermal_get_bank(bank);
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		int ret = mt6797_thermal_fast_init(mt);
+
+		if (ret) {
+			mtk_thermal_put_bank(bank, flags);
+			return ret;
+		}
+	}
 
 	/* bus clock 66M counting unit is 12 * 15.15ns * 256 = 46.540us */
 	writel(TEMP_MONCTL1_PERIOD_UNIT(12), controller_base + TEMP_MONCTL1);
@@ -1107,7 +1315,8 @@ static void mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	       TEMP_ADCWRITECTRL_ADC_MUX_WRITE,
 	       controller_base + TEMP_ADCWRITECTRL);
 
-	mtk_thermal_put_bank(bank);
+	mtk_thermal_put_bank(bank, flags);
+	return 0;
 }
 
 static u64 of_get_phys_base(struct device_node *np)
@@ -1364,6 +1573,7 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	u64 auxadc_phys_base, apmixed_phys_base;
 	struct thermal_zone_device *tzdev;
 	void __iomem *apmixed_base, *auxadc_base;
+	struct resource *thermal_res;
 
 	mt = devm_kzalloc(&pdev->dev, sizeof(*mt), GFP_KERNEL);
 	if (!mt)
@@ -1371,15 +1581,17 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 
 	mt->conf = of_device_get_match_data(&pdev->dev);
 
-	mt->thermal_base = devm_platform_get_and_ioremap_resource(pdev, 0, NULL);
+	mt->thermal_base = devm_platform_get_and_ioremap_resource(pdev, 0, &thermal_res);
 	if (IS_ERR(mt->thermal_base))
 		return PTR_ERR(mt->thermal_base);
+	mt->thermal_phys = thermal_res->start;
 
 	ret = mtk_thermal_get_calibration_data(&pdev->dev, mt);
 	if (ret)
 		return ret;
 
 	mutex_init(&mt->lock);
+	mutex_init(&mt->hw_protect_lock);
 
 	mt->dev = &pdev->dev;
 
@@ -1454,9 +1666,12 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
 
 	for (ctrl_id = 0; ctrl_id < mt->conf->num_controller ; ctrl_id++)
-		for (i = 0; i < mt->conf->num_banks; i++)
-			mtk_thermal_init_bank(mt, i, apmixed_phys_base,
-					      auxadc_phys_base, ctrl_id);
+		for (i = 0; i < mt->conf->num_banks; i++) {
+			ret = mtk_thermal_init_bank(mt, i, apmixed_phys_base,
+						  auxadc_phys_base, ctrl_id);
+			if (ret)
+				return ret;
+		}
 	if (mt->conf->version == MTK_THERMAL_MT6797)
 		writel(BIT(11), auxadc_base + AUXADC_CON1_SET_V);
 
@@ -1469,7 +1684,35 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
 	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		struct platform_device *wdt;
+		struct device_node *node;
+		int critical;
+
 		dev_set_drvdata(&pdev->dev, mt);
+		node = of_parse_phandle(np, "mediatek,watchdog", 0);
+		if (node) {
+			wdt = of_find_device_by_node(node);
+			of_node_put(node);
+			if (!wdt)
+				return -EPROBE_DEFER;
+			if (!device_is_bound(&wdt->dev)) {
+				put_device(&wdt->dev);
+				return -EPROBE_DEFER;
+			}
+			mt->hw_watchdog = &wdt->dev;
+			if (!device_link_add(&pdev->dev, &wdt->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+				put_device(&wdt->dev);
+				return -ENOMEM;
+			}
+			put_device(&wdt->dev);
+			ret = thermal_zone_get_crit_temp(tzdev, &critical);
+			if (ret || critical > 150000 || critical < 10000)
+				return -EINVAL;
+			ret = mt6797_hw_protect(mt, critical);
+			if (ret)
+				return ret;
+			dev_info(&pdev->dev, "TC direct watchdog protection=%dmC\n", critical);
+		}
 		return devm_device_add_group(&pdev->dev, &mt6797_thermal_group);
 	}
 

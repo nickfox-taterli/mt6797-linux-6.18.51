@@ -1,0 +1,21 @@
+What:		/sys/bus/platform/devices/otp/target
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Read/write BIG hardware PID target in whole degrees Celsius.
+		Range 50..150, default 150. Lowering the value reprograms the PID
+		and resets the recovery interval. The actuator is CPUfreq maximum
+		QoS, bounded by the manual OPP table and 2405000 kHz. It does not
+		enable autonomous iDVFS or write CPU VPROC/VSRAM voltages.
+		The cap relaxes after two continuous seconds at least 5 C below
+		the target. BIG cluster OFF/ON and system PM reinitialize the PID.
+
+What:		/sys/bus/platform/devices/otp/state
+Date:		October 2026
+Contact:	X20 Bring-up <admin@taterli.com>
+Description:
+		Read-only PID configuration, active cap (kHz), score/frequency
+		output, samples, failures and longest work interval (ns).
+		The nominal sampling period is 5 ms; workqueue execution is not
+		a hard real-time deadline. Read/access failures apply the minimum
+		BIG cap. This is separate from the TC direct-reset final boundary.

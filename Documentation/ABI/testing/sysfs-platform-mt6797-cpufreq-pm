@@ -1,0 +1,17 @@
+What:           /sys/bus/platform/devices/1001a000.cpufreq/runtime_state
+Date:           October 2026
+Contact:        X20 board maintainers
+Description:
+                In addition to the cluster and CCI state, reports
+                pm_rails_held, pm_cycles and pm_failures. Before system sleep,
+                the driver saves active clusters, clocks and actual manual
+                VPROC/VSRAM settings, and temporarily holds each active supply
+                at the maximum required by the current manual OPP table.
+                Early CPU restoration uses MMIO/secure SRAM accesses only;
+                external regulator I2C transfers wait for device resume.
+                Original clocks and exact supply settings are then restored.
+                pm_rails_held must return to zero after successful recovery.
+                A restoration failure retains the held state and increments
+                pm_failures; ordinary DVFS/calibration is rejected while held.
+                This does not change the OPP table or establish minimum sleep
+                power consumption. Counters are reset at driver initialization.

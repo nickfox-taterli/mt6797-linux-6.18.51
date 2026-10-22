@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/thermal/mediatek,mt6797-eem.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 EEM detector with manual CPU voltage ownership
+
+maintainers:
+  - X20 Bring-up <x20@localhost>
+
+description: |
+  EEM shares the thermal register page and bank selector. This node describes
+  the CPU and CCI detectors. INIT01 uses temporary stable 1V CPU supplies and
+  restores the manual voltages. INIT02 and MON produce advisory measurements;
+  they never install a voltage table or control the CPU voltage regulators.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-eem
+
+  mediatek,thermal:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Thermal controller with the shared EEM registers and calibration
+
+  mediatek,cpufreq:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: CPUfreq provider serializing calibration with DVFS and hotplug
+
+  nvmem-cells:
+    maxItems: 1
+
+  nvmem-cell-names:
+    const: calibration-data
+
+required:
+  - compatible
+  - mediatek,thermal
+  - mediatek,cpufreq
+  - nvmem-cells
+  - nvmem-cell-names
+
+additionalProperties: false

@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-vcorefs.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 SPM VCORE and DRAM DVFS
+
+maintainers:
+  - X20 Bring-up <x20@localhost>
+
+description: |
+  SPM vcorefs for the X20-96 LPDDR3-1600 single-rank memory configuration.
+  The power controller owns the shared SPM register page. The DVFS command
+  bank is separate from the PMIC wrapper driver's WACS registers. A reserved
+  page supplies firmware dummy reads without accessing Linux allocations.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-vcorefs
+
+  reg:
+    items:
+      - description: DRAMC always-on registers
+      - description: DDR PHY registers
+      - description: PMIC wrapper DVFS command bank
+      - description: Chip hardware revision
+      - description: CPU SPM semaphore and inactive-firmware guard
+      - description: BIG SPM semaphore and inactive-firmware guard
+
+  reg-names:
+    items:
+      - const: dramc
+      - const: ddrphy
+      - const: pwrap-dvfs
+      - const: chip-version
+      - const: cpu-spm
+      - const: big-spm
+
+  mediatek,infracfg:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Infrastructure controller providing the SPM address mapping mode
+
+  clocks:
+    maxItems: 8
+
+  clock-names:
+    items:
+      - const: spm
+      - const: dvfs
+      - const: ddrphy
+      - const: dramc
+      - const: dramc-b
+      - const: axi
+      - const: axi-high
+      - const: axi-low
+
+  mediatek,dcm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: DCM supplier serializing MEM/DFS_MEM latch transactions
+
+  mediatek,spm:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Power controller containing the shared SPM register page
+
+  memory-region:
+    maxItems: 1
+    description: Reserved dummy-read page in the board's single DRAM rank
+
+  mediatek,pmic-wrapper:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: PMIC wrapper providing the MT6351 regmap
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - mediatek,spm
+  - mediatek,infracfg
+  - clocks
+  - clock-names
+  - mediatek,pmic-wrapper
+  - memory-region
+  - mediatek,dcm
+
+additionalProperties: false

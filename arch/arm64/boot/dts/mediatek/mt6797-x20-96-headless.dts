@@ -39,11 +39,57 @@
 		#size-cells = <2>;
 		ranges;
 
+		/* Dedicated dummy reads for the board's single DRAM rank. */
+		dram_dummy: memory@43f00000 {
+			reg = <0 0x43f00000 0 0x1000>;
+			no-map;
+		};
+
 		/* The BSP Preloader locks this former BL31 DRAM window in EMI MPU. */
 		atf_dram_reserved: memory@44600000 {
 			reg = <0 0x44600000 0 0x10000>;
 			no-map;
 		};
+	};
+
+	vcorefs: vcorefs@10004000 {
+		compatible = "mediatek,mt6797-vcorefs";
+		reg = <0 0x10004000 0 0x1000>,
+		      <0 0x1000f000 0 0x1000>,
+		      <0 0x1000d10c 0 0x80>,
+		      <0 0x08000008 0 4>,
+		      <0 0x11015000 0 0x1000>,
+		      <0 0x11016000 0 0x1000>;
+		reg-names = "dramc", "ddrphy", "pwrap-dvfs", "chip-version",
+			    "cpu-spm", "big-spm";
+		mediatek,infracfg = <&infrasys>;
+		mediatek,spm = <&scpsys>;
+		mediatek,pmic-wrapper = <&pwrap>;
+		mediatek,dcm = <&dcm>;
+		clocks = <&topckgen CLK_TOP_MUX_SPM>,
+			 <&infrasys CLK_INFRA_DVFS_SPM1>,
+			 <&topckgen CLK_TOP_MUX_DDRPHYCFG>,
+			 <&infrasys CLK_INFRA_DRAMC_CONF>,
+			 <&infrasys CLK_INFRA_DRAMC_B_CONF>,
+			 <&topckgen CLK_TOP_MUX_AXI>,
+			 <&topckgen CLK_TOP_SYSPLL_D7>,
+			 <&topckgen CLK_TOP_MUX_ULPOSC_AXI_CK_MUX>;
+		clock-names = "spm", "dvfs", "ddrphy", "dramc", "dramc-b",
+			      "axi", "axi-high", "axi-low";
+		memory-region = <&dram_dummy>;
+	};
+
+	eem {
+		compatible = "mediatek,mt6797-eem";
+		mediatek,thermal = <&thermal>;
+		mediatek,cpufreq = <&mt6797_cpufreq>;
+		nvmem-cells = <&eem_calibration>;
+		nvmem-cell-names = "calibration-data";
+	};
+
+	otp {
+		compatible = "mediatek,mt6797-otp";
+		mediatek,thermal = <&thermal>;
 	};
 
 	chosen {
@@ -274,6 +320,7 @@
 };
 
 &thermal {
+	mediatek,watchdog = <&watchdog>;
 	status = "okay";
 };
 

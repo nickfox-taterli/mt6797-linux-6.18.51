@@ -43,10 +43,23 @@
 			};
 		};
 
+		idle-states {
+			entry-method = "psci";
+
+			cpu_standby: cpu-standby {
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0>;
+				entry-latency-us = <100>;
+				exit-latency-us = <100>;
+				min-residency-us = <1000>;
+			};
+		};
+
 		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x000>;
 			#cooling-cells = <2>;
 		};
@@ -55,6 +68,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x001>;
 		};
 
@@ -62,6 +76,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x002>;
 		};
 
@@ -69,6 +84,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x003>;
 		};
 
@@ -76,6 +92,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x100>;
 			#cooling-cells = <2>;
 		};
@@ -84,6 +101,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x101>;
 		};
 
@@ -91,6 +109,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x102>;
 		};
 
@@ -98,6 +117,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a53";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x103>;
 		};
 
@@ -105,6 +125,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x200>;
 			#cooling-cells = <2>;
 		};
@@ -113,6 +134,7 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a72";
 			enable-method = "psci";
+			cpu-idle-states = <&cpu_standby>;
 			reg = <0x201>;
 		};
 	};
@@ -279,6 +301,14 @@
 		reg = <0 0x10007000 0 0x100>;
 	};
 
+	gpt_wakeup: timer@10008000 {
+		compatible = "mediatek,mt6797-gpt-wakeup";
+		reg = <0 0x10008000 0 0x1000>;
+		interrupts = <GIC_SPI 169 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_APXGPT>;
+		wakeup-source;
+	};
+
 	/*
 	 * Connectivity subsystem: hosts the WLAN/BT/GPS baseband and drives
 	 * the external MT6631 radio over dedicated CONN_IF pins.  The AP_RGU
@@ -344,6 +374,10 @@
 		reg = <0 0x10206000 0 0x1000>;
 		#address-cells = <1>;
 		#size-cells = <1>;
+
+		eem_calibration: calibration@960 {
+			reg = <0x960 0x44>;
+		};
 
 		thermal_calibration: calibration@180 {
 			reg = <0x180 0xc>;

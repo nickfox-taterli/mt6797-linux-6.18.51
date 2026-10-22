@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-armcore-dcm.h>
+#include <linux/soc/mediatek/mt6797-dcm.h>
 #include <linux/string.h>
 
 #define TOP_DCMCTL		0x010
@@ -121,6 +122,8 @@ struct mt6797_dcm {
 	u32 mcu_saved[ARRAY_SIZE(mcu_owned)];
 	u32 armcore_saved;
 	u32 memory_saved[ARRAY_SIZE(memory_owned)];
+	u32 transition_saved[ARRAY_SIZE(memory_owned)];
+	bool transition_pending;
 	bool memory_touched;
 	unsigned long changes;
 };
@@ -257,6 +260,8 @@ static int memory_set(struct mt6797_dcm *dcm, bool on)
 	u32 old[ARRAY_SIZE(memory_owned)];
 	int ret;
 
+	if (dcm->transition_pending)
+		return -EBUSY;
 	for (unsigned int i = 0; i < ARRAY_SIZE(memory_owned); i++) {
 		ret = regmap_read(dcm->infra, memory_owned[i].reg, &old[i]);
 		if (ret)
@@ -289,6 +294,45 @@ restore:
 		dev_err(dcm->dev, "MEM/DFS_MEM DCM rollback failed\n");
 	return ret;
 }
+
+int mt6797_dcm_memory_transaction(struct device *supplier,
+		int (*transition)(void *data, bool *quiescent), void *data)
+{
+	struct mt6797_dcm *dcm = dev_get_drvdata(supplier);
+	bool quiescent = false;
+	int ret, restore;
+
+	if (!dcm || !transition)
+		return -ENODEV;
+	mutex_lock(&dcm->lock);
+	if (!dcm->transition_pending) {
+		for (unsigned int i = 0; i < ARRAY_SIZE(memory_owned); i++) {
+			ret = regmap_read(dcm->infra, memory_owned[i].reg,
+					  &dcm->transition_saved[i]);
+			if (ret)
+				goto unlock;
+		}
+		if ((dcm->transition_saved[0] & MEM_TOGGLE) ||
+		    (dcm->transition_saved[1] & DFS_TOGGLE)) {
+			ret = -EBUSY;
+			goto unlock;
+		}
+	}
+	dcm->memory_touched = true;
+	dcm->transition_pending = true;
+	ret = transition(data, &quiescent);
+	if (quiescent) {
+		restore = memory_restore(dcm, dcm->transition_saved);
+		if (!restore)
+			dcm->transition_pending = false;
+		if (!ret)
+			ret = restore;
+	}
+unlock:
+	mutex_unlock(&dcm->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_dcm_memory_transaction);
 
 static void dcm_restore(void *arg)
 {
@@ -466,6 +510,8 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 		(mem[1] & memory_owned[1].mask) == DFS_GATE_MASK);
 	len += sysfs_emit_at(buf, len, "initial_mem=%08x initial_dfs_mem=%08x\n",
 		dcm->memory_saved[0], dcm->memory_saved[1]);
+	len += sysfs_emit_at(buf, len, "memory_transition_pending=%u\n",
+		dcm->transition_pending);
 out:
 	mutex_unlock(&dcm->lock);
 	cpus_read_unlock();
