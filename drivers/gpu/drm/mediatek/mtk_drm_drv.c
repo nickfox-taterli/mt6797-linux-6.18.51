@@ -121,6 +121,12 @@ static unsigned int mt8167_mtk_ddp_main[] = {
 	DDP_COMPONENT_DSI0,
 };
 
+static const unsigned int mt6797_mtk_ddp_main[] = {
+	DDP_COMPONENT_RDMA1,
+	DDP_COMPONENT_DSC0,
+	DDP_COMPONENT_DPI0,
+};
+
 static const unsigned int mt8173_mtk_ddp_main[] = {
 	DDP_COMPONENT_OVL0,
 	DDP_COMPONENT_COLOR0,
@@ -264,6 +270,13 @@ static const struct mtk_mmsys_driver_data mt8167_mmsys_driver_data = {
 	.mmsys_dev_num = 1,
 };
 
+static const struct mtk_mmsys_driver_data mt6797_mmsys_driver_data = {
+	.bootstrap_rdma = true,
+	.main_path = mt6797_mtk_ddp_main,
+	.main_len = ARRAY_SIZE(mt6797_mtk_ddp_main),
+	.mmsys_dev_num = 1,
+};
+
 static const struct mtk_mmsys_driver_data mt8173_mmsys_driver_data = {
 	.main_path = mt8173_mtk_ddp_main,
 	.main_len = ARRAY_SIZE(mt8173_mtk_ddp_main),
@@ -339,6 +352,8 @@ static const struct of_device_id mtk_drm_of_ids[] = {
 	  .data = &mt2712_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8167-mmsys",
 	  .data = &mt8167_mmsys_driver_data},
+	{ .compatible = "mediatek,mt6797-mmsys",
+	  .data = &mt6797_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8173-mmsys",
 	  .data = &mt8173_mmsys_driver_data},
 	{ .compatible = "mediatek,mt8183-mmsys",
@@ -712,6 +727,11 @@ static const struct component_master_ops mtk_drm_ops = {
 };
 
 static const struct of_device_id mtk_ddp_comp_dt_ids[] = {
+	{ .compatible = "mediatek,mt6797-disp-rdma", .data = (void *)MTK_DISP_RDMA },
+	{ .compatible = "mediatek,mt6797-disp-dsc", .data = (void *)MTK_DISP_DSC },
+	{ .compatible = "mediatek,mt6797-dpi", .data = (void *)MTK_DPI },
+	{ .compatible = "mediatek,mt6797-disp-mutex", .data = (void *)MTK_DISP_MUTEX },
+
 	{ .compatible = "mediatek,mt8167-disp-aal",
 	  .data = (void *)MTK_DISP_AAL},
 	{ .compatible = "mediatek,mt8173-disp-aal",

@@ -8,6 +8,7 @@
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/module.h>
+#include <linux/iopoll.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -159,8 +160,30 @@ size_t mtk_rdma_get_num_formats(struct device *dev)
 int mtk_rdma_clk_enable(struct device *dev)
 {
 	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+	u32 val;
+	int ret;
 
-	return clk_prepare_enable(rdma->clk);
+	ret = clk_prepare_enable(rdma->clk);
+	if (ret || !of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-rdma"))
+		return ret;
+
+	/* BSP rdma_reset(): discard stale FIFO/translation-error state before
+	 * programming a new memory-fed path. This is not an MMC reset.
+	 */
+	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, BIT(4), BIT(4));
+	ret = readl_poll_timeout(rdma->regs + DISP_REG_RDMA_GLOBAL_CON, val,
+				(val & 0x700) != 0x100, 10, 100000);
+	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, BIT(4), 0);
+	if (!ret)
+		ret = readl_poll_timeout(rdma->regs + DISP_REG_RDMA_GLOBAL_CON, val,
+					(val & 0x700) == 0x100, 10, 100000);
+	if (ret) {
+		dev_err(dev, "BSP RDMA reset timeout: %08x\n", val);
+		clk_disable_unprepare(rdma->clk);
+	} else {
+		writel(0, rdma->regs + DISP_REG_RDMA_INT_STATUS);
+	}
+	return ret;
 }
 
 void mtk_rdma_clk_disable(struct device *dev)
@@ -172,13 +195,58 @@ void mtk_rdma_clk_disable(struct device *dev)
 
 void mtk_rdma_start(struct device *dev)
 {
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
 	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, RDMA_ENGINE_EN,
 			 RDMA_ENGINE_EN);
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-rdma"))
+		dev_dbg(dev, "memory start=%08x pitch=%u con=%08x size=%08x/%08x\n",
+			readl(rdma->regs + DISP_RDMA_MEM_START_ADDR),
+			readl(rdma->regs + DISP_RDMA_MEM_SRC_PITCH),
+			readl(rdma->regs + DISP_REG_RDMA_GLOBAL_CON),
+			readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_0),
+			readl(rdma->regs + DISP_REG_RDMA_SIZE_CON_1));
 }
 
 void mtk_rdma_stop(struct device *dev)
 {
 	rdma_update_bits(dev, DISP_REG_RDMA_GLOBAL_CON, RDMA_ENGINE_EN, 0);
+}
+
+
+/* MT6797 BSP rdma_set_ultra_l(), RDMA1 branch. This generation has the
+ * issue-request threshold in GMC_SETTING_2; leaving its reset value (zero)
+ * prevents all memory requests. Keep BSP 24-bpp/60-Hz accounting for RDMA1,
+ * using the CCF-reported MM clock in place of BSP's 320/450-MHz class.
+ * SODI/DVFS thresholds configure the client FIFO only; no DRAM OPP changes.
+ */
+static void mt6797_rdma_golden(struct mtk_disp_rdma *rdma, unsigned int width,
+			      unsigned int height, struct cmdq_pkt *pkt)
+{
+	u64 consume, fill;
+	u32 prelow, prehigh, low, output, req, sodi_low, sodi_high;
+	s64 remaining;
+
+	consume = (u64)width * height / 8000;
+	consume *= 60 * 24;
+	consume = div_u64(1200 * consume, 16000);
+	fill = 960ULL * (clk_get_rate(rdma->clk) / 1000000) * 3 / 16;
+	prelow = DIV_ROUND_UP_ULL(6 * consume, 1000);
+	prehigh = DIV_ROUND_UP_ULL(7 * consume, 1000);
+	low = DIV_ROUND_UP_ULL(4 * consume, 1000);
+	req = min_t(u32, 512 - prelow, 255);
+	output = min_t(u32, prelow, width * height * 24 / 128 - 1);
+	remaining = 512 - div_s64(1200 * ((s64)fill - consume), 1000000);
+	sodi_high = max_t(s64, prehigh, remaining);
+	sodi_low = DIV_ROUND_UP_ULL(44 * consume / 10, 1000);
+#define GOLDEN(off, val) mtk_ddp_write(pkt, val, &rdma->cmdq_reg, rdma->regs, off)
+	GOLDEN(0x30, prelow | prehigh << 16);
+	GOLDEN(0x34, low | prelow << 16);
+	GOLDEN(0x3c, req);
+	GOLDEN(0x40, BIT(31) | 512 << 16 | output);
+	GOLDEN(0xa8, sodi_low | sodi_high << 16);
+	GOLDEN(0xac, prelow | (prelow + 1) << 16);
+#undef GOLDEN
 }
 
 void mtk_rdma_config(struct device *dev, unsigned int width,
@@ -211,6 +279,8 @@ void mtk_rdma_config(struct device *dev, unsigned int width,
 	      RDMA_FIFO_PSEUDO_SIZE(rdma_fifo_size) |
 	      RDMA_OUTPUT_VALID_FIFO_THRESHOLD(threshold);
 	mtk_ddp_write(cmdq_pkt, reg, &rdma->cmdq_reg, rdma->regs, DISP_REG_RDMA_FIFO_CON);
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-rdma"))
+		mt6797_rdma_golden(rdma, width, height, cmdq_pkt);
 }
 
 static unsigned int rdma_fmt_convert(struct mtk_disp_rdma *rdma,
@@ -285,8 +355,9 @@ void mtk_rdma_layer_config(struct device *dev, unsigned int idx,
 			      DISP_RDMA_MEM_START_ADDR);
 	mtk_ddp_write_relaxed(cmdq_pkt, pitch, &rdma->cmdq_reg, rdma->regs,
 			      DISP_RDMA_MEM_SRC_PITCH);
-	mtk_ddp_write(cmdq_pkt, RDMA_MEM_GMC, &rdma->cmdq_reg, rdma->regs,
-		      DISP_RDMA_MEM_GMC_SETTING_0);
+	if (!of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-rdma"))
+		mtk_ddp_write(cmdq_pkt, RDMA_MEM_GMC, &rdma->cmdq_reg, rdma->regs,
+			      DISP_RDMA_MEM_GMC_SETTING_0);
 	mtk_ddp_write_mask(cmdq_pkt, RDMA_MODE_MEMORY, &rdma->cmdq_reg, rdma->regs,
 			   DISP_REG_RDMA_GLOBAL_CON, RDMA_MODE_MEMORY);
 
@@ -403,6 +474,8 @@ static const struct mtk_disp_rdma_data mt8195_rdma_driver_data = {
 static const struct of_device_id mtk_disp_rdma_driver_dt_match[] = {
 	{ .compatible = "mediatek,mt2701-disp-rdma",
 	  .data = &mt2701_rdma_driver_data},
+	{ .compatible = "mediatek,mt6797-disp-rdma",
+	  .data = &mt8173_rdma_driver_data},
 	{ .compatible = "mediatek,mt8173-disp-rdma",
 	  .data = &mt8173_rdma_driver_data},
 	{ .compatible = "mediatek,mt8183-disp-rdma",

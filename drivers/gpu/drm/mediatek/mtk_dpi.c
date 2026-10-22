@@ -172,6 +172,7 @@ struct mtk_dpi_conf {
 	bool edge_cfg_in_mmsys;
 	bool clocked_by_hdmi;
 	bool output_1pixel;
+	bool ccir656;
 };
 
 static void mtk_dpi_mask(struct mtk_dpi *dpi, u32 offset, u32 val, u32 mask)
@@ -484,12 +485,14 @@ static void mtk_dpi_config_color_format(struct mtk_dpi *dpi,
 
 static void mtk_dpi_dual_edge(struct mtk_dpi *dpi)
 {
-	if ((dpi->output_fmt == MEDIA_BUS_FMT_RGB888_2X12_LE) ||
+	if (dpi->conf->ccir656 ||
+	    (dpi->output_fmt == MEDIA_BUS_FMT_RGB888_2X12_LE) ||
 	    (dpi->output_fmt == MEDIA_BUS_FMT_RGB888_2X12_BE)) {
 		mtk_dpi_mask(dpi, DPI_DDR_SETTING, DDR_EN | DDR_4PHASE,
 			     DDR_EN | DDR_4PHASE);
 		mtk_dpi_mask(dpi, DPI_OUTPUT_SETTING,
-			     dpi->output_fmt == MEDIA_BUS_FMT_RGB888_2X12_LE ?
+			     (dpi->conf->ccir656 ||
+			      dpi->output_fmt == MEDIA_BUS_FMT_RGB888_2X12_LE) ?
 			     EDGE_SEL : 0, EDGE_SEL);
 		if (dpi->conf->edge_cfg_in_mmsys)
 			mtk_mmsys_ddp_dpi_fmt_config(dpi->mmsys_dev, MTK_DPI_RGB888_DDR_CON);
@@ -578,6 +581,13 @@ static void mtk_dpi_set_pixel_clk(struct mtk_dpi *dpi, struct videomode *vm, int
 
 	clk_set_rate(dpi->tvd_clk, pll_rate);
 	pll_rate = clk_get_rate(dpi->tvd_clk);
+	if (dpi->conf->ccir656) {
+		/* BSP holds dpi0_sel on TVDPLL_D4 and varies the PLL. Asking
+		 * the mux for a rate lets CCF choose another divider instead.
+		 */
+		vm->pixelclock = clk_get_rate(dpi->pixel_clk);
+		return;
+	}
 
 	/*
 	 * Depending on the IP version, we may output a different amount of
@@ -689,6 +699,22 @@ static int mtk_dpi_set_display_mode(struct mtk_dpi *dpi,
 		mtk_dpi_mask(dpi, DPI_CON, dpi->conf->input_2p_en_bit,
 			     dpi->conf->input_2p_en_bit);
 	}
+	if (dpi->conf->ccir656) {
+		/* MT6797 ddp_dpi_ConfigCCIR656: data on DPI_D4..11, embedded SAV/EAV. */
+		/* BSP progressive output enables only the left odd timing bank. */
+		mtk_dpi_mask(dpi, DPI_CON, VS_LODD_EN,
+			     VS_LODD_EN | VS_LEVEN_EN | VS_RODD_EN | VS_REVEN);
+		mtk_dpi_mask(dpi, DPI_CON, YUV422_EN | CSC_ENABLE | EMBSYNC_EN,
+			     YUV422_EN | CSC_ENABLE | EMBSYNC_EN);
+		mtk_dpi_mask(dpi, DPI_OUTPUT_SETTING, (7 << YC_MAP) | CK_POL,
+			     YC_MAP_MASK | CK_POL);
+		writel(0x0f000100, dpi->regs + DPI_Y_LIMIT);
+		writel(0x0f000100, dpi->regs + DPI_C_LIMIT);
+		mtk_dpi_mask(dpi, 0xa0, BIT(0), BIT(0));
+		mtk_dpi_mask(dpi, 0xa4, 7, 7);
+		mtk_dpi_mask(dpi, DPI_ESAV_VTIMING_LODD,
+			     (mode->vtotal - mode->vdisplay) << 16, GENMASK(27, 16));
+	}
 	mtk_dpi_sw_reset(dpi, false);
 
 	return 0;
@@ -753,6 +779,7 @@ static unsigned int mtk_dpi_bus_fmt_bit_num(unsigned int out_bus_format)
 	case MEDIA_BUS_FMT_BGR888_1X24:
 	case MEDIA_BUS_FMT_RGB888_2X12_LE:
 	case MEDIA_BUS_FMT_RGB888_2X12_BE:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUV8_1X24:
 		return MTK_DPI_OUT_BIT_NUM_8BITS;
@@ -773,6 +800,7 @@ static unsigned int mtk_dpi_bus_fmt_channel_swap(unsigned int out_bus_format)
 	case MEDIA_BUS_FMT_RGB888_2X12_LE:
 	case MEDIA_BUS_FMT_RGB888_2X12_BE:
 	case MEDIA_BUS_FMT_RGB101010_1X30:
+	case MEDIA_BUS_FMT_UYVY8_2X8:
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV10_1X20:
 	case MEDIA_BUS_FMT_YUYV12_1X24:
@@ -794,6 +822,7 @@ static unsigned int mtk_dpi_bus_fmt_color_format(unsigned int out_bus_format)
 	case MEDIA_BUS_FMT_RGB888_2X12_BE:
 	case MEDIA_BUS_FMT_RGB101010_1X30:
 		return MTK_DPI_COLOR_FORMAT_RGB;
+	case MEDIA_BUS_FMT_UYVY8_2X8:
 	case MEDIA_BUS_FMT_YUYV8_1X16:
 	case MEDIA_BUS_FMT_YUYV10_1X20:
 	case MEDIA_BUS_FMT_YUYV12_1X24:
@@ -1121,6 +1150,26 @@ static const struct mtk_dpi_factor dpi_factor_mt8195_dp_intf[] = {
 	{ 70000 - 1, 4 }, { 200000 - 1, 2 }, { U32_MAX, 1 }
 };
 
+static const u32 mt6797_output_fmts[] = { MEDIA_BUS_FMT_UYVY8_2X8 };
+static const struct mtk_dpi_factor dpi_factor_mt6797[] = { { U32_MAX, 8 } };
+static const struct mtk_dpi_conf mt6797_conf = {
+	.dpi_factor = dpi_factor_mt6797,
+	.num_dpi_factor = ARRAY_SIZE(dpi_factor_mt6797),
+	.max_clock_khz = 148500,
+	.output_fmts = mt6797_output_fmts,
+	.num_output_fmts = ARRAY_SIZE(mt6797_output_fmts),
+	.pixels_per_iter = 1,
+	.is_ck_de_pol = true,
+	.swap_input_support = true,
+	.support_direct_pin = true,
+	.dimension_mask = HPW_MASK,
+	.hvsize_mask = HSIZE_MASK,
+	.channel_swap_shift = CH_SWAP,
+	.yuv422_en_bit = YUV422_EN,
+	.csc_enable_bit = CSC_ENABLE,
+	.ccir656 = true,
+};
+
 static const struct mtk_dpi_conf mt8173_conf = {
 	.dpi_factor = dpi_factor_mt8173,
 	.num_dpi_factor = ARRAY_SIZE(dpi_factor_mt8173),
@@ -1338,6 +1387,7 @@ static void mtk_dpi_remove(struct platform_device *pdev)
 static const struct of_device_id mtk_dpi_of_ids[] = {
 	{ .compatible = "mediatek,mt2701-dpi", .data = &mt2701_conf },
 	{ .compatible = "mediatek,mt8173-dpi", .data = &mt8173_conf },
+	{ .compatible = "mediatek,mt6797-dpi", .data = &mt6797_conf },
 	{ .compatible = "mediatek,mt8183-dpi", .data = &mt8183_conf },
 	{ .compatible = "mediatek,mt8186-dpi", .data = &mt8186_conf },
 	{ .compatible = "mediatek,mt8188-dp-intf", .data = &mt8195_dpintf_conf },

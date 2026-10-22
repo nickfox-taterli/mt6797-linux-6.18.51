@@ -338,6 +338,8 @@ ddp_cmdq_cb_out:
 
 static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 {
+	struct mtk_drm_private *priv = mtk_crtc->base.dev->dev_private;
+	bool bootstrap_rdma = priv->data->bootstrap_rdma;
 	struct drm_crtc *crtc = &mtk_crtc->base;
 	struct drm_connector *connector;
 	struct drm_encoder *encoder;
@@ -407,7 +409,8 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 			mtk_ddp_comp_bgclr_in_on(comp);
 
 		mtk_ddp_comp_config(comp, width, height, vrefresh, bpc, NULL);
-		mtk_ddp_comp_start(comp);
+		if (!bootstrap_rdma)
+			mtk_ddp_comp_start(comp);
 	}
 
 	/* Initially configure all planes */
@@ -419,13 +422,24 @@ static int mtk_crtc_ddp_hw_init(struct mtk_crtc *mtk_crtc)
 
 		plane_state = to_mtk_plane_state(plane->state);
 
-		/* should not enable layer before crtc enabled */
-		plane_state->pending.enable = false;
+		/* A memory-fed RDMA has no upstream OVL to produce the first
+		 * frame-end IRQ. Supply its actual framebuffer before starting
+		 * the engine; otherwise CPU updates wait for an IRQ while RDMA
+		 * faults on IOVA 0. BSP also configures RDMA before start.
+		 */
+		if (bootstrap_rdma && plane->state->fb)
+			mtk_plane_update_new_state(plane->state, plane_state);
+		else
+			plane_state->pending.enable = false;
 		comp = mtk_ddp_comp_for_plane(crtc, plane, &local_layer);
 		if (comp)
 			mtk_ddp_comp_layer_config(comp, local_layer,
 						  plane_state, NULL);
 	}
+
+	if (bootstrap_rdma)
+		for (i = 0; i < mtk_crtc->ddp_comp_nr; i++)
+			mtk_ddp_comp_start(mtk_crtc->ddp_comp[i]);
 
 	return 0;
 

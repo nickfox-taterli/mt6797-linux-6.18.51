@@ -74,6 +74,7 @@ properties:
           - mediatek,mt2712-m4u  # generation two
           - mediatek,mt6779-m4u  # generation two
           - mediatek,mt6795-m4u  # generation two
+          - mediatek,mt6797-m4u
           - mediatek,mt6893-iommu-mm         # generation two
           - mediatek,mt8167-m4u  # generation two
           - mediatek,mt8173-m4u  # generation two

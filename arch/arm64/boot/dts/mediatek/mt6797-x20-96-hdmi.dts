@@ -102,3 +102,97 @@
 		power-domain-names = "core0", "core1", "core2", "core3";
 	};
 };
+
+/* BSP external-display memory path: SMI larb5 port2, one shared MM M4U. */
+/ {
+	aliases {
+		rdma1 = &disp_rdma1;
+		dsc0 = &disp_dsc;
+		dpi0 = &dpi0;
+	};
+	m4u: iommu@10205000 {
+		compatible = "mediatek,mt6797-m4u";
+		reg = <0 0x10205000 0 0x1000>;
+		interrupts = <GIC_SPI 156 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>;
+		clock-names = "bclk";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		mediatek,larbs = <&smi_larb5>;
+		#iommu-cells = <1>;
+	};
+	smi_common: smi@14022000 {
+		compatible = "mediatek,mt6797-smi-common";
+		reg = <0 0x14022000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&mmsys CLK_MM_SMI_COMMON>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	smi_larb5: larb@14021000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x14021000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_SMI_LARB5>, <&mmsys CLK_MM_SMI_LARB5>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <5>;
+	};
+	disp_rdma1: rdma@14010000 {
+		compatible = "mediatek,mt6797-disp-rdma";
+		reg = <0 0x14010000 0 0x1000>;
+		interrupts = <GIC_SPI 218 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_DISP_RDMA1>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		iommus = <&m4u 162>; /* MTK_M4U_ID(5, 2) */
+	};
+	disp_dsc: dsc@1401a000 {
+		compatible = "mediatek,mt6797-disp-dsc";
+		reg = <0 0x1401a000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_DISP_DSC>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	disp_mutex: mutex@1401f000 {
+		compatible = "mediatek,mt6797-disp-mutex";
+		reg = <0 0x1401f000 0 0x1000>;
+		interrupts = <GIC_SPI 202 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	dpi0: dpi@1401e000 {
+		compatible = "mediatek,mt6797-dpi";
+		reg = <0 0x1401e000 0 0x1000>;
+		interrupts = <GIC_SPI 231 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_DPI_INTERFACE_CLOCK>,
+			 <&mmsys CLK_MM_DPI_MM_CLOCK>, <&apmixedsys CLK_APMIXED_TVDPLL>;
+		clock-names = "pixel", "engine", "pll";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_DPI0>;
+		assigned-clock-parents = <&topckgen CLK_TOP_TVDPLL_D4>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dpi_ccir_pins>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		port {
+			dpi_out: endpoint { remote-endpoint = <&mt8193_in>; };
+		};
+	};
+};
+
+&mt8193 {
+	port {
+		mt8193_in: endpoint { remote-endpoint = <&dpi_out>; };
+	};
+};
+
+&pio {
+	dpi_ccir_pins: dpi-ccir-pins {
+		pins-dpi {
+			pinmux = <MT6797_GPIO43__FUNC_DPI_D4>, <MT6797_GPIO44__FUNC_DPI_D5>,
+				 <MT6797_GPIO45__FUNC_DPI_D6>, <MT6797_GPIO46__FUNC_DPI_D7>,
+				 <MT6797_GPIO47__FUNC_DPI_D8>, <MT6797_GPIO48__FUNC_DPI_D9>,
+				 <MT6797_GPIO49__FUNC_DPI_D10>, <MT6797_GPIO50__FUNC_DPI_D11>,
+				 <MT6797_GPIO52__FUNC_DPI_CK>;
+			bias-disable;
+		};
+	};
+};
+
+&mmsys {
+	power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+};

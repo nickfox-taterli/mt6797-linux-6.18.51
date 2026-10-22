@@ -21,6 +21,7 @@ properties:
       - enum:
           - mediatek,mt2701-dpi
           - mediatek,mt7623-dpi
+          - mediatek,mt6797-dpi
           - mediatek,mt8173-dpi
           - mediatek,mt8183-dpi
           - mediatek,mt8186-dpi
@@ -63,6 +64,7 @@ properties:
   pinctrl-1: true
 
   pinctrl-names:
+    minItems: 1
     items:
       - const: default
       - const: sleep

@@ -196,6 +196,8 @@ static void mtk_dsc_config(struct device *dev, unsigned int w,
 	/* dsc bypass mode */
 	mtk_ddp_write_mask(cmdq_pkt, DSC_BYPASS, &priv->cmdq_reg, priv->regs,
 			   DISP_REG_DSC_CON, DSC_BYPASS);
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-dsc"))
+		return;
 	mtk_ddp_write_mask(cmdq_pkt, DSC_UFOE_SEL, &priv->cmdq_reg, priv->regs,
 			   DISP_REG_DSC_CON, DSC_UFOE_SEL);
 	mtk_ddp_write_mask(cmdq_pkt, DSC_DUAL_INOUT, &priv->cmdq_reg, priv->regs,
@@ -205,6 +207,9 @@ static void mtk_dsc_config(struct device *dev, unsigned int w,
 static void mtk_dsc_start(struct device *dev)
 {
 	struct mtk_ddp_comp_dev *priv = dev_get_drvdata(dev);
+
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-disp-dsc"))
+		return;
 
 	/* write with mask to reserve the value set in mtk_dsc_config */
 	mtk_ddp_write_mask(NULL, DSC_EN, &priv->cmdq_reg, priv->regs, DISP_REG_DSC_CON, DSC_EN);

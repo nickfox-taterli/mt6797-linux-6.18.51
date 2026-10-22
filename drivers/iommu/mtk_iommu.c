@@ -167,6 +167,7 @@ enum mtk_iommu_plat {
 	M4U_MT2712,
 	M4U_MT6779,
 	M4U_MT6795,
+	M4U_MT6797,
 	M4U_MT8167,
 	M4U_MT8173,
 	M4U_MT8183,
@@ -188,6 +189,7 @@ struct mtk_iommu_suspend_reg {
 	u32			ctrl_reg;
 	u32			vld_pa_rng;
 	u32			wr_len_ctrl;
+	u32 coherence, in_order_wr, table_walk_dis;
 
 	u32			int_control[MTK_IOMMU_BANK_MAX];
 	u32			int_main_control[MTK_IOMMU_BANK_MAX];
@@ -1050,6 +1052,12 @@ static int mtk_iommu_hw_init(const struct mtk_iommu_data *data, unsigned int ban
 		regval |= F_MMU_TF_PROT_TO_PROGRAM_ADDR;
 	}
 	writel_relaxed(regval, bank0->base + REG_MMU_CTRL_REG);
+	if (data->plat_data->m4u_plat == M4U_MT6797) {
+		/* BSP: coherent walkers, table walks enabled, out-of-order writes. */
+		writel_relaxed(3, bank0->base + 0x80);
+		writel_relaxed(0, bank0->base + 0x84);
+		writel_relaxed(0, bank0->base + 0x88);
+	}
 
 	if (data->enable_4GB &&
 	    MTK_IOMMU_HAS_FLAG(data->plat_data, HAS_VLD_PA_RNG)) {
@@ -1457,6 +1465,11 @@ static int __maybe_unused mtk_iommu_runtime_suspend(struct device *dev)
 	reg->dcm_dis = readl_relaxed(base + REG_MMU_DCM_DIS);
 	reg->ctrl_reg = readl_relaxed(base + REG_MMU_CTRL_REG);
 	reg->vld_pa_rng = readl_relaxed(base + REG_MMU_VLD_PA_RNG);
+	if (data->plat_data->m4u_plat == M4U_MT6797) {
+		reg->coherence = readl_relaxed(base + 0x80);
+		reg->in_order_wr = readl_relaxed(base + 0x84);
+		reg->table_walk_dis = readl_relaxed(base + 0x88);
+	}
 	do {
 		if (!data->plat_data->banks_enable[i])
 			continue;
@@ -1496,6 +1509,11 @@ static int __maybe_unused mtk_iommu_runtime_resume(struct device *dev)
 	writel_relaxed(reg->dcm_dis, base + REG_MMU_DCM_DIS);
 	writel_relaxed(reg->ctrl_reg, base + REG_MMU_CTRL_REG);
 	writel_relaxed(reg->vld_pa_rng, base + REG_MMU_VLD_PA_RNG);
+	if (data->plat_data->m4u_plat == M4U_MT6797) {
+		writel_relaxed(reg->coherence, base + 0x80);
+		writel_relaxed(reg->in_order_wr, base + 0x84);
+		writel_relaxed(reg->table_walk_dis, base + 0x88);
+	}
 	do {
 		m4u_dom = data->bank[i].m4u_dom;
 		if (!data->plat_data->banks_enable[i] || !m4u_dom)
@@ -1545,6 +1563,18 @@ static const struct mtk_iommu_plat_data mt6779_data = {
 	.iova_region   = single_domain,
 	.iova_region_nr = ARRAY_SIZE(single_domain),
 	.larbid_remap  = {{0}, {1}, {2}, {3}, {5}, {7, 8}, {10}, {9}},
+};
+
+static const struct mtk_iommu_plat_data mt6797_data = {
+	.m4u_plat = M4U_MT6797,
+	.flags = HAS_BCLK | RESET_AXI | WR_THROT_EN | HAS_LEGACY_IVRP_PADDR |
+		 MTK_IOMMU_TYPE_MM,
+	.inv_sel_reg = REG_MMU_INV_SEL_GEN1,
+	.banks_num = 1,
+	.banks_enable = {true},
+	.iova_region = single_domain,
+	.iova_region_nr = ARRAY_SIZE(single_domain),
+	.larbid_remap = {{0}, {1}, {2}, {3}, {4}, {5}, {6}},
 };
 
 static const struct mtk_iommu_plat_data mt6795_data = {
@@ -1801,6 +1831,7 @@ static const struct of_device_id mtk_iommu_of_ids[] = {
 	{ .compatible = "mediatek,mt2712-m4u", .data = &mt2712_data},
 	{ .compatible = "mediatek,mt6779-m4u", .data = &mt6779_data},
 	{ .compatible = "mediatek,mt6795-m4u", .data = &mt6795_data},
+	{ .compatible = "mediatek,mt6797-m4u", .data = &mt6797_data},
 	{ .compatible = "mediatek,mt6893-iommu-mm", .data = &mt6893_data},
 	{ .compatible = "mediatek,mt8167-m4u", .data = &mt8167_data},
 	{ .compatible = "mediatek,mt8173-m4u", .data = &mt8173_data},

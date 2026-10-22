@@ -10,6 +10,10 @@
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/media-bus-format.h>
+#include <drm/drm_atomic.h>
+#include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_modes.h>
 #include <linux/mutex.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -30,6 +34,7 @@
 #define DDC_LENGTH GENMASK(10, 8)
 #define DDC_ACK GENMASK(23, 16)
 
+
 struct mt8193 {
 	struct i2c_client *client;
 	struct regmap *map;
@@ -39,6 +44,9 @@ struct mt8193 {
 	struct drm_bridge bridge;
 	bool powered;
 	bool test_pattern;
+	struct drm_display_mode mode;
+	bool video_enabled;
+	int video_error;
 	u64 ddc_blocks, ddc_errors;
 };
 
@@ -91,6 +99,7 @@ static void mt8193_power_off(struct mt8193 *mt)
 	regulator_bulk_disable(ARRAY_SIZE(mt->supplies), mt->supplies);
 	mt->powered = false;
 	mt->test_pattern = false;
+	mt->video_enabled = false;
 }
 
 static int mt8193_power_on(struct mt8193 *mt)
@@ -338,7 +347,253 @@ static const struct drm_edid *mt8193_edid_read(struct drm_bridge *bridge,
 	return edid;
 }
 
+
+/* BSP mt8193table.h, progressive CEA modes. The DGI consumes the board's
+ * embedded-sync 8-bit stream; these counters are not the UVC capture size.
+ * Restrict validation to the exact CEA timings represented by each table.
+ */
+struct mt8193_timing {
+	u8 vic;
+	u32 tg[6];
+	u32 delay;
+};
+static const struct mt8193_timing mt8193_timings[] = {
+	{ 2, {0x020d035a, 0x0006003e, 0x00250204, 0x00250204, 0x007c034b, 3}, 0x00130007 },
+	{17, {0x02710360, 0x00050040, 0x002d026c, 0x002d026c, 0x00860355, 3}, 0x000b0003 },
+	{ 4, {0x02ee0672, 0x00050028, 0x001a02e9, 0x001a02e9, 0x01060605, 0}, 0x000b0065 },
+	{19, {0x02ee07bc, 0x00050028, 0x001a02e9, 0x001a02e9, 0x01060605, 0}, 0x000b01af },
+	{34, {0x04650898, 0x0005002c, 0x002a0461, 0x002a0461, 0x00c20841, 0}, 0x0009004f },
+	{33, {0x04650a50, 0x0005002c, 0x002a0461, 0x002a0461, 0x00c20841, 0}, 0x00090207 },
+	{32, {0x04650abe, 0x0005002c, 0x002a0461, 0x002a0461, 0x00c20841, 0}, 0x00090275 },
+	{16, {0x04650898, 0x0005002c, 0x002a0461, 0x002a0461, 0x00c20841, 0}, 0x000b01b0 },
+	{31, {0x04650a50, 0x0005002c, 0x002a0461, 0x002a0461, 0x00c20841, 0}, 0x000b01b0 },
+};
+
+static const struct mt8193_timing *mt8193_timing(const struct drm_display_mode *mode)
+{
+	unsigned int i, vic = drm_match_cea_mode(mode);
+
+	/* Fractional clocks need a separately qualified PLL table. */
+	if (mode->clock != 27000 && mode->clock != 74250 && mode->clock != 148500)
+		return NULL;
+	if (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))
+		return NULL;
+	for (i = 0; i < ARRAY_SIZE(mt8193_timings); i++)
+		if (mt8193_timings[i].vic == vic)
+			return &mt8193_timings[i];
+	return NULL;
+}
+
+static enum drm_mode_status mt8193_mode_valid(struct drm_bridge *bridge,
+		const struct drm_display_info *info, const struct drm_display_mode *mode)
+{
+	/* The board's 8-bit DPI1 input is qualified through 74.25 MHz.
+	 * At 148.5 MHz the capture stream fails and the input CRC is unstable.
+	 * Keep that EDID preferred mode unavailable until the faster input path
+	 * has been qualified.
+	 */
+	if (mode->clock > 74250)
+		return MODE_CLOCK_HIGH;
+	return mt8193_timing(mode) ? MODE_OK : MODE_BAD;
+}
+
+static void mt8193_mode_set(struct drm_bridge *bridge,
+		const struct drm_display_mode *mode, const struct drm_display_mode *adjusted)
+{
+	struct mt8193 *mt = container_of(bridge, struct mt8193, bridge);
+
+	drm_mode_copy(&mt->mode, adjusted);
+}
+
+static u32 *mt8193_input_formats(struct drm_bridge *bridge,
+		struct drm_bridge_state *bridge_state, struct drm_crtc_state *crtc_state,
+		struct drm_connector_state *conn_state, u32 output_fmt, unsigned int *count)
+{
+	u32 *format = kmalloc(sizeof(*format), GFP_KERNEL);
+
+	*count = 0;
+	if (format) {
+		*format = MEDIA_BUS_FMT_UYVY8_2X8;
+		*count = 1;
+	}
+	return format;
+}
+
+/* Video-only subset of vSetHDMITxPLL / vTxSignalOnOff /
+ * vHDMIResetGenReg / vChgHDMIVideoResolution. Preserve the BSP register order
+ * and delays, propagate all I2C failures, leave audio packets and HDCP off.
+ */
+static int mt8193_video_off(struct mt8193 *mt)
+{
+	int ret;
+
+	mt->video_enabled = false;
+	ret = regmap_update_bits(mt->map, 0x1328, BIT(23), 0);
+	if (!ret)
+		ret = regmap_update_bits(mt->map, 0x1330, BIT(2), 0);
+	if (!ret)
+		ret = regmap_update_bits(mt->map, 0x1344, GENMASK(31, 24), 0x5c000000);
+	if (!ret)
+		ret = regmap_update_bits(mt->map, 0x1344, BIT(19) | BIT(16), BIT(19) | BIT(16));
+	if (!ret)
+		ret = regmap_update_bits(mt->map, 0x1348, GENMASK(23, 16), 0);
+	return ret;
+}
+
+static int mt8193_video_on(struct mt8193 *mt, bool hdmi)
+{
+	const struct mt8193_timing *t = mt8193_timing(&mt->mode);
+	static const struct reg_sequence analog[] = {
+		{0x1328, 0x00009999}, {0x132c, 0}, {0x1330, 0x1f001f00},
+		{0x1334, 0x00300094}, {0x1338, 0xf4c81400},
+		{0x133c, 0x46331717}, {0x1340, 0x00004100}, {0x1340, 0x00004140},
+	};
+	u8 avi[13] = {0x10, 0xa8, 0x04, 0, 0};
+	u8 checksum = 0x82 + 2 + sizeof(avi);
+	unsigned int i;
+	int ret;
+
+	if (!t)
+		return -EINVAL;
+#define W(reg, val) do { ret = regmap_write(mt->map, reg, val); if (ret) return ret; } while (0)
+#define U(reg, mask, val) do { ret = regmap_update_bits(mt->map, reg, mask, val); if (ret) return ret; } while (0)
+	/* hdmi_drv.c invokes the calibration trigger and PLL reset before
+	 * TMDS-off and the selected-frequency programming.
+	 */
+	W(0x1348, 0);
+	for (i = 0; i < ARRAY_SIZE(analog); i++)
+		W(analog[i].reg, analog[i].def);
+	udelay(20);
+	U(0x1334, BIT(20), 0);
+	udelay(20);
+	U(0x1334, BIT(20), BIT(20));
+	W(0x1348, 0x31ff0000);
+	U(0x1334, BIT(21), 0);
+	udelay(2);
+	U(0x1334, BIT(21), BIT(21));
+	udelay(2);
+	ret = mt8193_video_off(mt);
+	if (ret)
+		return ret;
+	U(0x0450, BIT(6) | BIT(1) | BIT(4) | BIT(9) | BIT(10) | BIT(0), BIT(1));
+	for (i = 0; i < ARRAY_SIZE(analog); i++)
+		W(analog[i].reg, analog[i].def);
+	udelay(10);
+	U(0x1334, 0xff, mt->mode.clock == 27000 ? 0x94 : 0x8f);
+	W(0x1338, mt->mode.clock == 27000 ? 0xf4c81400 :
+			mt->mode.clock == 74250 ? 0xd4a88f00 : 0xb4888f00);
+	U(0x1344, BIT(4), BIT(4));
+	U(0x1020, GENMASK(2, 0), 0); /* 8-bit, no deep color */
+	U(0x1328, BIT(23), 0);
+	msleep(5);
+	U(0x1344, GENMASK(31, 24), 0);
+	U(0x1344, BIT(19) | BIT(16), 0);
+	udelay(20);
+	U(0x1334, BIT(20) | BIT(21), 0);
+	udelay(20);
+	U(0x1334, BIT(20) | BIT(21), BIT(20));
+	udelay(20);
+	U(0x1334, BIT(20) | BIT(21), BIT(20) | BIT(21));
+
+	U(0x101c, BIT(1), BIT(1)); /* digital reset */
+	U(0x0604, BIT(19), BIT(19));
+	U(0x065c, GENMASK(2, 0), GENMASK(2, 0));
+	U(0x0608, BIT(20) | BIT(21), BIT(20));
+	U(0x0604, 0x7f, 0x40);
+	U(0x0604, BIT(16) | BIT(17), BIT(17));
+	U(0x0600, BIT(0), BIT(0));
+	U(0x060c, GENMASK(11, 8), 0);
+	U(0x060c, BIT(1) | BIT(0), BIT(1));
+	U(0x0608, GENMASK(5, 0), 5);
+	U(0x0728, BIT(1) | BIT(0), BIT(1) | BIT(0));
+	U(0x101c, BIT(1), 0);
+	U(0x0030, BIT(6), 0);
+	U(0x101c, BIT(2), BIT(2));
+	U(0x002c, BIT(6), BIT(6));
+	W(0x0018, 0xff);
+	W(0x0624, t->tg[0]);
+	W(0x0628, t->tg[1]);
+	W(0x062c, t->tg[5] << 5);
+	W(0x0630, t->tg[4]);
+	W(0x0634, t->tg[3]);
+	W(0x0638, t->tg[2]);
+	U(0x061c, GENMASK(23, 22) | BIT(20), BIT(20));
+	U(0x0620, BIT(31) | GENMASK(28, 16) | GENMASK(12, 0), t->delay);
+	U(0x0028, BIT(2), hdmi ? 0 : BIT(2));
+	W(0x0178, 0); /* RGB TMDS, no YC swap */
+	U(0x01b0, BIT(6), BIT(6)); /* audio packets off */
+	U(0x0728, BIT(31), 0);
+	msleep(20);
+	udelay(50);
+	U(0x0158, BIT(4), 0); /* no gamut packet */
+	U(0x001c, BIT(6), 0);
+	if (hdmi) {
+		avi[3] = t->vic;
+		if (mt->mode.vdisplay < 720)
+			avi[1] = 0x68;
+		for (i = 0; i < sizeof(avi); i++)
+			checksum += avi[i];
+		W(0x019c, 2);
+		W(0x01a0, 0x82);
+		W(0x01a4, sizeof(avi));
+		W(0x0188, (u8)-checksum);
+		for (i = 0; i < sizeof(avi); i++)
+			W(0x0188, avi[i]);
+		U(0x001c, BIT(6), BIT(6));
+	}
+	U(0x0034, BIT(5) | BIT(6), BIT(5));
+	udelay(30);
+	U(0x0034, BIT(5) | BIT(6), BIT(6));
+	U(0x0604, BIT(16) | BIT(17) | BIT(19), 0);
+	U(0x0728, BIT(31), BIT(31));
+
+	U(0x1348, GENMASK(23, 16), GENMASK(23, 16));
+#undef U
+#undef W
+	return 0;
+}
+
+static void mt8193_enable(struct drm_bridge *bridge, struct drm_atomic_state *state)
+{
+	struct mt8193 *mt = container_of(bridge, struct mt8193, bridge);
+	struct drm_connector *connector;
+	int ret;
+
+	connector = drm_atomic_get_new_connector_for_encoder(state, bridge->encoder);
+	mutex_lock(&mt->lock);
+	ret = mt->powered ? mt8193_video_on(mt, connector && connector->display_info.is_hdmi) : -EHOSTDOWN;
+	mt->video_error = ret;
+	mt->video_enabled = !ret;
+	mt->test_pattern = false;
+	if (ret) {
+		mt8193_video_off(mt);
+		dev_err(&mt->client->dev, "video enable failed: %d\n", ret);
+	} else {
+		dev_info(&mt->client->dev, "DPI1 video %dx%d clock=%d kHz\n",
+			mt->mode.hdisplay, mt->mode.vdisplay, mt->mode.clock);
+	}
+	mutex_unlock(&mt->lock);
+}
+
+static void mt8193_disable(struct drm_bridge *bridge, struct drm_atomic_state *state)
+{
+	struct mt8193 *mt = container_of(bridge, struct mt8193, bridge);
+
+	mutex_lock(&mt->lock);
+	if (mt->powered)
+		mt->video_error = mt8193_video_off(mt);
+	mutex_unlock(&mt->lock);
+}
+
 static const struct drm_bridge_funcs mt8193_bridge_funcs = {
+	.atomic_reset = drm_atomic_helper_bridge_reset,
+	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
+	.atomic_get_input_bus_fmts = mt8193_input_formats,
+	.atomic_enable = mt8193_enable,
+	.atomic_disable = mt8193_disable,
+	.mode_valid = mt8193_mode_valid,
+	.mode_set = mt8193_mode_set,
 	.detect = mt8193_detect,
 	.edid_read = mt8193_edid_read,
 };
@@ -354,9 +609,9 @@ static ssize_t link_status_show(struct device *dev, struct device_attribute *att
 	if (!ret)
 		ret = regmap_read(mt->map, MT8193_PWR_CTRL, &power);
 	if (!ret)
-		ret = sysfs_emit(buf, "powered=%u hpd=%u pord=%u status=%08x power=%08x ddc_blocks=%llu ddc_errors=%llu\n",
+		ret = sysfs_emit(buf, "powered=%u hpd=%u pord=%u status=%08x power=%08x ddc_blocks=%llu ddc_errors=%llu video=%u video_error=%d\n",
 			mt->powered, !!(status & BIT(0)), !!(status & BIT(1)), status, power,
-			mt->ddc_blocks, mt->ddc_errors);
+			mt->ddc_blocks, mt->ddc_errors, mt->video_enabled, mt->video_error);
 	mutex_unlock(&mt->lock);
 	return ret;
 }

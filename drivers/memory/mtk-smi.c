@@ -126,6 +126,7 @@ struct mtk_smi_common_plat {
 	u32			bus_sel; /* Balance some larbs to enter mmu0 or mmu1 */
 
 	const struct mtk_smi_reg_pair	*init;
+	unsigned int init_nr;
 };
 
 struct mtk_smi_larb_gen {
@@ -233,6 +234,31 @@ static int mtk_smi_larb_config_port_mt8173(struct device *dev)
 	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
 
 	writel(*larb->mmu, larb->base + MT8173_SMI_LARB_MMU_EN);
+	return 0;
+}
+
+/* MT6797 BSP SMI_EV profile and M4U non-secure domain setup. */
+static int mtk_smi_larb_config_port_mt6797(struct device *dev)
+{
+	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
+	static const struct mtk_smi_reg_pair larb5_init[] = {
+		{0x14, 0x7f0}, {0x24, 0x370246},
+		{0x100, 0xb}, {0x104, 0xb}, {0x108, 0xb}, {0x118, 0xb},
+		{0x200, 0x1f}, {0x204, 0x1f}, {0x208, 0x1f}, {0x20c, 1},
+		{0x210, 6}, {0x214, 6}, {0x218, 0x1f}, {0x21c, 7},
+		{0x220, 8}, {0x224, 1},
+	};
+	unsigned int i;
+
+	if (larb->larbid == 5)
+		for (i = 0; i < ARRAY_SIZE(larb5_init); i++)
+			writel_relaxed(larb5_init[i].value, larb->base + larb5_init[i].offset);
+	for (i = 0; i < 4; i++)
+		writel_relaxed(0x44444444, larb->base + 0xfd0 + i * 4);
+	/* All consumers attached by this driver use non-secure translations. */
+	writel_relaxed(readl_relaxed(larb->base + 0xfc4) & ~*larb->mmu,
+		       larb->base + 0xfc4);
+	writel(*larb->mmu, larb->base + 0xfc0);
 	return 0;
 }
 
@@ -509,6 +535,10 @@ static const struct mtk_smi_larb_gen mtk_smi_larb_mt8167 = {
 	.config_port = mtk_smi_larb_config_port_mt8167,
 };
 
+static const struct mtk_smi_larb_gen mtk_smi_larb_mt6797 = {
+	.config_port = mtk_smi_larb_config_port_mt6797,
+};
+
 static const struct mtk_smi_larb_gen mtk_smi_larb_mt8173 = {
 	/* mt8173 do not need the port in larb */
 	.config_port = mtk_smi_larb_config_port_mt8173,
@@ -550,6 +580,7 @@ static const struct of_device_id mtk_smi_larb_of_ids[] = {
 	{.compatible = "mediatek,mt2712-smi-larb", .data = &mtk_smi_larb_mt2712},
 	{.compatible = "mediatek,mt6779-smi-larb", .data = &mtk_smi_larb_mt6779},
 	{.compatible = "mediatek,mt6795-smi-larb", .data = &mtk_smi_larb_mt8173},
+	{.compatible = "mediatek,mt6797-smi-larb", .data = &mtk_smi_larb_mt6797},
 	{.compatible = "mediatek,mt6893-smi-larb", .data = &mtk_smi_larb_mt6893},
 	{.compatible = "mediatek,mt8167-smi-larb", .data = &mtk_smi_larb_mt8167},
 	{.compatible = "mediatek,mt8173-smi-larb", .data = &mtk_smi_larb_mt8173},
@@ -736,6 +767,16 @@ static struct platform_driver mtk_smi_larb_driver = {
 	}
 };
 
+static const struct mtk_smi_reg_pair mtk_smi_common_mt6797_init[] = {
+	{0x104, 0x18fc}, {0x108, 0x1000}, {0x10c, 0x1000},
+	{0x110, 0x1000}, {0x114, 0x1000}, {0x118, 0x126a}, {0x11c, 0x1000},
+	{0x100, 0xb},
+	{0x234, BIT(31) | (0x1d << 26) | (0x1f << 21) | (3 << 15) |
+		(4 << 10) | (4 << 5) | 5},
+	{0x238, (2 << 25) | (3 << 20) | (4 << 15) | (5 << 10) | (7 << 5) | 8},
+	{0x230, 0x7f | (8 << 7) | (7 << 12)}, {0x300, 0x403},
+};
+
 static const struct mtk_smi_reg_pair mtk_smi_common_mt6795_init[SMI_COMMON_INIT_REGS_NR] = {
 	{SMI_L1_ARB, 0x1b},
 	{SMI_M4U_TH, 0xce810c85},
@@ -771,6 +812,13 @@ static const struct mtk_smi_common_plat mtk_smi_common_mt6795 = {
 	.type	  = MTK_SMI_GEN2,
 	.bus_sel  = F_MMU1_LARB(0),
 	.init     = mtk_smi_common_mt6795_init,
+};
+
+static const struct mtk_smi_common_plat mtk_smi_common_mt6797 = {
+	.type = MTK_SMI_GEN2,
+	.bus_sel = 0x1554,
+	.init = mtk_smi_common_mt6797_init,
+	.init_nr = ARRAY_SIZE(mtk_smi_common_mt6797_init),
 };
 
 static const struct mtk_smi_common_plat mtk_smi_common_mt6893 = {
@@ -842,6 +890,7 @@ static const struct of_device_id mtk_smi_common_of_ids[] = {
 	{.compatible = "mediatek,mt2712-smi-common", .data = &mtk_smi_common_gen2},
 	{.compatible = "mediatek,mt6779-smi-common", .data = &mtk_smi_common_mt6779},
 	{.compatible = "mediatek,mt6795-smi-common", .data = &mtk_smi_common_mt6795},
+	{.compatible = "mediatek,mt6797-smi-common", .data = &mtk_smi_common_mt6797},
 	{.compatible = "mediatek,mt6893-smi-common", .data = &mtk_smi_common_mt6893},
 	{.compatible = "mediatek,mt8167-smi-common", .data = &mtk_smi_common_gen2},
 	{.compatible = "mediatek,mt8173-smi-common", .data = &mtk_smi_common_gen2},
@@ -936,7 +985,7 @@ static int __maybe_unused mtk_smi_common_resume(struct device *dev)
 	if (common->plat->type != MTK_SMI_GEN2)
 		return 0;
 
-	for (i = 0; i < SMI_COMMON_INIT_REGS_NR && init && init[i].offset; i++)
+	for (i = 0; i < (common->plat->init_nr ?: SMI_COMMON_INIT_REGS_NR) && init && init[i].offset; i++)
 		writel_relaxed(init[i].value, common->base + init[i].offset);
 
 	writel(bus_sel, common->base + SMI_BUS_SEL);
