@@ -1,0 +1,24 @@
+What:           /sys/bus/platform/devices/10204000.spm-suspend/wake_after_ms
+Date:           October 2026
+Contact:        X20 Bring-up <x20@localhost>
+Description:
+                Optional PCM sleep timer for the next system deep suspend,
+                in milliseconds: 0 disables the timer (default), otherwise
+                100..600000. Other enabled hardware wake sources remain armed.
+                Select deep in /sys/power/mem_sleep, then write mem to
+                /sys/power/state. This attribute does not start suspend.
+
+What:           /sys/bus/platform/devices/10204000.spm-suspend/state
+Date:           October 2026
+Contact:        X20 Bring-up <x20@localhost>
+Description:
+                Read-only cycle/resume/error counts, PCM ownership/reset safety,
+                DCM lease and last raw wake/debug/timer/flag records. A resume
+                count requires the PSCI warm cpu_resume path. CPU powerdown is
+                implemented; INFRA powerdown is requested but physical INFRA
+                shutdown is not verified on this board. Manual CPU rails are
+                retained. These fields are diagnostics, not power measurements.
+                CIRQ records clone/resume cycles, replayed pending lines, its
+                enabled state and the last seven pending words (SPI72..290).
+                Original CIRQ polarity, sensitivity, mask and control settings
+                are restored after replaying retained interrupts into the GIC.

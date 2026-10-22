@@ -79,6 +79,19 @@
 		memory-region = <&dram_dummy>;
 	};
 
+	spm_suspend: spm-suspend@10204000 {
+		compatible = "mediatek,mt6797-spm-suspend";
+		reg = <0 0x10204000 0 0x1000>;
+		clocks = <&infrasys CLK_INFRA_SYS_CIRQ>;
+		clock-names = "cirq";
+		mediatek,vcorefs = <&vcorefs>;
+		mediatek,gic = <&gic>;
+		mediatek,sysirq = <&sysirq>;
+		interrupt-parent = <&sysirq>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;
+	};
+
 	eem {
 		compatible = "mediatek,mt6797-eem";
 		mediatek,thermal = <&thermal>;

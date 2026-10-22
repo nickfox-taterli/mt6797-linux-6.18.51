@@ -6,6 +6,7 @@ obj-$(CONFIG_MTK_INFRACFG) += mtk-infracfg.o
 obj-$(CONFIG_MTK_PMIC_WRAP) += mtk-pmic-wrap.o
 obj-$(CONFIG_MTK_MT6797_DCM) += mt6797-dcm.o
 obj-$(CONFIG_MTK_MT6797_VCOREFS) += mt6797-vcorefs.o
+obj-$(CONFIG_MTK_MT6797_SPM_SUSPEND) += mt6797-spm-suspend.o
 obj-$(CONFIG_MTK_MT6797_GPT_WAKEUP) += mt6797-gpt-wakeup.o
 obj-$(CONFIG_MTK_REGULATOR_COUPLER) += mtk-regulator-coupler.o
 obj-$(CONFIG_MTK_MMSYS) += mtk-mmsys.o

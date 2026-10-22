@@ -7,6 +7,7 @@
  */
 #include <linux/clk.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
@@ -33,6 +34,8 @@
 #define MTK_UART_FRACDIV_L	0x15	/* Fractional divider LSB address */
 #define MTK_UART_FRACDIV_M	0x16	/* Fractional divider MSB address */
 #define MTK_UART_DEBUG0	0x18
+#define MTK_UART_SLEEP_REQ	0x2d
+#define MTK_UART_SLEEP_ACK	0x2e
 #define MTK_UART_IER_XOFFI	0x20	/* Enable XOFF character interrupt */
 #define MTK_UART_IER_RTSI	0x40	/* Enable RTS Modem status interrupt */
 #define MTK_UART_IER_CTSI	0x80	/* Enable CTS Modem status interrupt */
@@ -76,6 +79,8 @@ struct mtk8250_data {
 	enum dma_rx_status	rx_status;
 #endif
 	int			rx_wakeup_irq;
+	u32			sleep_req;
+	bool			sleep_requested;
 };
 
 /* flow control mode */
@@ -599,6 +604,41 @@ static void mtk8250_remove(struct platform_device *pdev)
 	pm_runtime_put_noidle(&pdev->dev);
 }
 
+/* MT6797 BSP request_uart_to_sleep/wakeup(), after serial-core TX drain.
+ * Briefly acquire runtime clocks for the handshake, then allow normal gating.
+ */
+static int mtk8250_sleep_request(struct device *dev, bool asleep)
+{
+	struct mtk8250_data *data = dev_get_drvdata(dev);
+	struct uart_8250_port *up = serial8250_get_port(data->line);
+	u32 value;
+	int ret;
+
+	if (!of_device_is_compatible(dev->of_node, "mediatek,mt6797-uart"))
+		return 0;
+	if (uart_console(&up->port) && !console_suspend_enabled)
+		return 0;
+	if (!asleep && !data->sleep_requested)
+		return 0;
+	ret = pm_runtime_resume_and_get(dev);
+	if (ret < 0)
+		return ret;
+	if (asleep)
+		data->sleep_req = serial_in(up, MTK_UART_SLEEP_REQ);
+	serial_out(up, MTK_UART_SLEEP_REQ,
+		   asleep ? data->sleep_req | BIT(0) : data->sleep_req);
+	ret = read_poll_timeout(serial_in, value,
+			       !!(value & BIT(0)) ==
+			       (asleep || !!(data->sleep_req & BIT(0))),
+			       10, 10000, false, up, MTK_UART_SLEEP_ACK);
+	if (ret && asleep)
+		serial_out(up, MTK_UART_SLEEP_REQ, data->sleep_req);
+	else if (!ret)
+		data->sleep_requested = asleep;
+	pm_runtime_put_sync_suspend(dev);
+	return ret;
+}
+
 static int __maybe_unused mtk8250_suspend(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
@@ -606,6 +646,11 @@ static int __maybe_unused mtk8250_suspend(struct device *dev)
 	int err;
 
 	serial8250_suspend_port(data->line);
+	err = mtk8250_sleep_request(dev, true);
+	if (err) {
+		serial8250_resume_port(data->line);
+		return dev_err_probe(dev, err, "UART sleep ACK missing\n");
+	}
 
 	pinctrl_pm_select_sleep_state(dev);
 	if (irq >= 0) {
@@ -615,6 +660,7 @@ static int __maybe_unused mtk8250_suspend(struct device *dev)
 				"failed to enable irq wake on IRQ %d: %d\n",
 				irq, err);
 			pinctrl_pm_select_default_state(dev);
+			mtk8250_sleep_request(dev, false);
 			serial8250_resume_port(data->line);
 			return err;
 		}
@@ -627,14 +673,16 @@ static int __maybe_unused mtk8250_resume(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
 	int irq = data->rx_wakeup_irq;
+	int ret;
 
 	if (irq >= 0)
 		disable_irq_wake(irq);
 	pinctrl_pm_select_default_state(dev);
+	ret = mtk8250_sleep_request(dev, false);
 
 	serial8250_resume_port(data->line);
 
-	return 0;
+	return ret;
 }
 
 static const struct dev_pm_ops mtk8250_pm_ops = {

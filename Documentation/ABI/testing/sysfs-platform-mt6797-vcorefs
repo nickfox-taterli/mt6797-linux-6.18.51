@@ -5,6 +5,9 @@ Description:
 		Read-only PCM ownership, physical PHY shuffle, decoded DDR data
 		rate (MT/s), AXI clock (Hz), baseline shuffle, successful changes
 		and failures. CPU voltage ownership remains with CPUfreq.
+		pm_suspended and sleep_owner show system sleep's exclusive PCM
+		lease. DVFS/release requests are rejected while sleep owns SPM;
+		VCORE resumes only after the sleep PCM has reset and released it.
 		The standard devfreq userspace set_freq interface selects nominal
 		DRAM clocks in Hz; a selection succeeds only after the physical
 		PHY and PCM both acknowledge it. A timeout is not a low-rate PASS.

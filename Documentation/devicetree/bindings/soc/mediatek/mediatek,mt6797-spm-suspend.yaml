@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-spm-suspend.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 SPM system suspend
+
+maintainers:
+  - X20 Bring-up <x20@localhost>
+
+description: |
+  System sleep shares the SPM register page, PMIC wrapper DVFS commands,
+  DDR PHY and clocks with the VCORE/DRAM DVFS controller. The VCORE supplier
+  owns those resources and relinquishes the PCM before system sleep uses
+  them. The X20 TF-A sleep capability ABI v1 is required for CPU0 warm resume.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-spm-suspend
+
+  reg:
+    maxItems: 1
+    description: CIRQ retention register page for SPI72 through SPI290
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: cirq
+
+  mediatek,gic:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: GIC distributor whose interrupt state is cloned and replayed
+
+  mediatek,sysirq:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: System interrupt polarity controller with secure register access
+
+  mediatek,vcorefs:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: VCORE controller providing resources and exclusive PCM ownership
+
+  interrupts:
+    maxItems: 1
+
+  wakeup-source: true
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - clock-names
+  - mediatek,vcorefs
+  - mediatek,gic
+  - mediatek,sysirq
+  - interrupts
+  - wakeup-source
+
+additionalProperties: false

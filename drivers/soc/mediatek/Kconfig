@@ -86,6 +86,15 @@ config MTK_MT6797_VCOREFS
 	  configuration. CPU VPROC and VSRAM remain under CPUfreq control.
 	  The userspace governor changes memory levels only on explicit request.
 
+config MTK_MT6797_SPM_SUSPEND
+	tristate "MediaTek MT6797 SPM CPU powerdown suspend"
+	depends on MTK_MT6797_VCOREFS && ARM_PSCI_FW && SUSPEND
+	help
+	  Use the BSP sleep PCM and TF-A CPU0/MP0 warm-resume path for
+	  system suspend. Borrows SPM from VCORE after device suspension.
+	  CPU manual voltages remain owned by CPUfreq. Requires the X20
+	  TF-A sleep capability ABI v1 and pcm_suspend.bin firmware.
+
 config MTK_REGULATOR_COUPLER
 	bool "MediaTek SoC Regulator Coupler" if COMPILE_TEST
 	default ARCH_MEDIATEK

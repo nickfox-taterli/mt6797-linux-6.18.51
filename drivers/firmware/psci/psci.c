@@ -525,6 +525,7 @@ int psci_cpu_suspend_enter(u32 state)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(psci_cpu_suspend_enter);
 #endif
 
 static int psci_system_suspend(unsigned long unused)

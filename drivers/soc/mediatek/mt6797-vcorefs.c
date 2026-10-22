@@ -18,6 +18,7 @@
 #include <linux/pm_opp.h>
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-dcm.h>
+#include <linux/soc/mediatek/mt6797-vcorefs.h>
 #include <linux/unaligned.h>
 
 #include "mt6797-spm-regs.h"
@@ -65,6 +66,9 @@ struct mt6797_vcorefs {
 	u32 dummy_address;
 	u32 pcm_address, pcm_flags;
 	bool resume_running;
+	bool pm_suspended;
+	bool mapping_4g;
+	struct device *sleep_owner;
 	unsigned int resume_opp;
 	bool running;
 	bool stopped;
@@ -492,7 +496,9 @@ static int vcorefs_target(struct device *dev, unsigned long *freq, u32 flags)
 	if (transition.index == ARRAY_SIZE(dram_rates))
 		return -EINVAL;
 	mutex_lock(&s->lock);
-	if (!s->running &&
+	if (s->sleep_owner || s->pm_suspended)
+		ret = -EBUSY;
+	else if (!s->running &&
 	    (spm_read(s, PCM_FSM_STA) & 0x7fffff) != SPM_RESET_STATE)
 		ret = -EBUSY;
 	else
@@ -527,6 +533,8 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 			 s->failures, s->version, spm_read(s, PCM_REG1_DATA),
 			 spm_read(s, PCM_REG6_DATA), spm_read(s, SPM_SW_FLAG),
 			 spm_read(s, PCM_IM_PTR), spm_read(s, PCM_IM_LEN));
+	len += sysfs_emit_at(buf, len, "pm_suspended=%u sleep_owner=%s\n",
+			    s->pm_suspended, s->sleep_owner ? dev_name(s->sleep_owner) : "none");
 	mutex_unlock(&s->lock);
 	return len;
 }
@@ -574,7 +582,8 @@ static ssize_t release_store(struct device *dev, struct device_attribute *attr,
 		return -EINVAL;
 	mutex_lock(&s->devfreq->lock);
 	mutex_lock(&s->lock);
-	ret = mt6797_dcm_memory_transaction(s->dcm, vcorefs_transition, &transition);
+	ret = s->sleep_owner ? -EBUSY :
+		mt6797_dcm_memory_transaction(s->dcm, vcorefs_transition, &transition);
 	mutex_unlock(&s->lock);
 	mutex_unlock(&s->devfreq->lock);
 	return ret ? ret : count;
@@ -718,6 +727,7 @@ static int vcorefs_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "SPM firmware rejected\n");
 	s->pcm_address = lower_32_bits(s->code_dma);
+	s->mapping_4g = mapping & BIT(13);
 	/* BSP enable_4G()/MAPPING_DRAM_ACCESS_ADDR(), SPM's bus address. */
 	if (mapping & BIT(13)) {
 		if (s->pcm_address >= 0x40000000 && s->pcm_address < 0xc0000000)
@@ -769,6 +779,8 @@ static int vcorefs_suspend(struct device *dev)
 	s->resume_running = s->running;
 	s->resume_opp = s->current_opp;
 	ret = mt6797_dcm_memory_transaction(s->dcm, vcorefs_transition, &transition);
+	if (!ret)
+		s->pm_suspended = true;
 	mutex_unlock(&s->lock);
 	mutex_unlock(&s->devfreq->lock);
 	if (ret)
@@ -783,6 +795,14 @@ static int vcorefs_resume(struct device *dev)
 	int ret = 0;
 
 	mutex_lock(&s->devfreq->lock);
+	mutex_lock(&s->lock);
+	if (s->sleep_owner) {
+		mutex_unlock(&s->lock);
+		mutex_unlock(&s->devfreq->lock);
+		return -EBUSY;
+	}
+	s->pm_suspended = false;
+	mutex_unlock(&s->lock);
 	if (s->resume_running) {
 		ret = vcorefs_target(dev, &frequency, 0);
 		if (!ret)
@@ -794,6 +814,59 @@ static int vcorefs_resume(struct device *dev)
 	return ret;
 }
 static DEFINE_SIMPLE_DEV_PM_OPS(vcorefs_pm_ops, vcorefs_suspend, vcorefs_resume);
+
+int mt6797_vcorefs_sleep_resources(struct device *dev,
+				 struct mt6797_spm_resources *resources)
+{
+	struct mt6797_vcorefs *s = dev_get_drvdata(dev);
+
+	if (!s || !resources)
+		return -ENODEV;
+	*resources = (struct mt6797_spm_resources) {
+		.spm = s->spm, .pwrap = s->pwrap, .phy = s->phy,
+		.pmic = s->pmic, .dcm = s->dcm,
+		.dummy_address = s->dummy_address, .mapping_4g = s->mapping_4g,
+	};
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt6797_vcorefs_sleep_resources);
+
+int mt6797_vcorefs_claim_sleep(struct device *dev, struct device *owner)
+{
+	struct mt6797_vcorefs *s = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (!s || !owner)
+		return -ENODEV;
+	mutex_lock(&s->lock);
+	if (!s->pm_suspended || s->running || s->sleep_owner ||
+	    (spm_read(s, PCM_FSM_STA) & 0x7fffff) != SPM_RESET_STATE)
+		ret = -EBUSY;
+	else
+		s->sleep_owner = owner;
+	mutex_unlock(&s->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_vcorefs_claim_sleep);
+
+int mt6797_vcorefs_release_sleep(struct device *dev, struct device *owner)
+{
+	struct mt6797_vcorefs *s = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (!s || !owner)
+		return -ENODEV;
+	mutex_lock(&s->lock);
+	if (s->sleep_owner != owner)
+		ret = -EPERM;
+	else if ((spm_read(s, PCM_FSM_STA) & 0x7fffff) != SPM_RESET_STATE)
+		ret = -EBUSY;
+	else
+		s->sleep_owner = NULL;
+	mutex_unlock(&s->lock);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_vcorefs_release_sleep);
 
 static void vcorefs_shutdown(struct platform_device *pdev)
 {
