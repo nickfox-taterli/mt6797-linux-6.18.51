@@ -6,11 +6,22 @@
 #include <linux/slab.h>
 #include <linux/dma-buf.h>
 #include <linux/dma-mapping.h>
+#include <linux/moduleparam.h>
+#include <linux/of.h>
 
 #include <drm/panfrost_drm.h>
 #include "panfrost_device.h"
 #include "panfrost_gem.h"
 #include "panfrost_mmu.h"
+
+/* MT6797's BSP installs CPU PTEs eagerly. First-access faults during bulk
+ * uploads can stall this platform; keep the BSP mapping flow without reading
+ * the BO or changing its write-combine attributes. The switch permits a
+ * controlled comparison with the generic shmem fault path.
+ */
+static bool mt6797_eager_mmap = true;
+module_param(mt6797_eager_mmap, bool, 0644);
+MODULE_PARM_DESC(mt6797_eager_mmap, "Install MT6797 GEM CPU PTEs at mmap time (BSP flow)");
 
 #ifdef CONFIG_DEBUG_FS
 static void panfrost_gem_debugfs_bo_add(struct panfrost_device *pfdev,
@@ -258,6 +269,31 @@ static size_t panfrost_gem_rss(struct drm_gem_object *obj)
 	return 0;
 }
 
+static int panfrost_gem_mmap(struct drm_gem_object *obj,
+			     struct vm_area_struct *vma)
+{
+	struct drm_gem_shmem_object *shmem = to_drm_gem_shmem_obj(obj);
+	unsigned long addr, index = 0;
+	int ret;
+
+	ret = drm_gem_shmem_object_mmap(obj, vma);
+	if (ret || !READ_ONCE(mt6797_eager_mmap) || drm_gem_is_imported(obj) ||
+	    !of_device_is_compatible(obj->dev->dev->of_node, "mediatek,mt6797-mali"))
+		return ret;
+
+	dma_resv_lock(obj->resv, NULL);
+	for (addr = vma->vm_start; addr < vma->vm_end; addr += PAGE_SIZE, index++) {
+		ret = vm_fault_to_errno(vmf_insert_pfn(vma, addr,
+					 page_to_pfn(shmem->pages[index])), 0);
+		if (ret)
+			break;
+	}
+	if (ret)
+		drm_gem_shmem_put_pages_locked(shmem);
+	dma_resv_unlock(obj->resv);
+	return ret;
+}
+
 static const struct drm_gem_object_funcs panfrost_gem_funcs = {
 	.free = panfrost_gem_free_object,
 	.open = panfrost_gem_open,
@@ -268,7 +304,7 @@ static const struct drm_gem_object_funcs panfrost_gem_funcs = {
 	.get_sg_table = drm_gem_shmem_object_get_sg_table,
 	.vmap = drm_gem_shmem_object_vmap,
 	.vunmap = drm_gem_shmem_object_vunmap,
-	.mmap = drm_gem_shmem_object_mmap,
+	.mmap = panfrost_gem_mmap,
 	.status = panfrost_gem_status,
 	.rss = panfrost_gem_rss,
 	.vm_ops = &drm_gem_shmem_vm_ops,
