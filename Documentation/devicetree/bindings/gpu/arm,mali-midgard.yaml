@@ -55,6 +55,7 @@ properties:
           - const: arm,mali-t860
       - items:
           - enum:
+              - mediatek,mt6797-mali
               - samsung,exynos8890-mali
           - const: arm,mali-t880
 
@@ -88,7 +89,15 @@ properties:
     type: object
 
   power-domains:
-    maxItems: 1
+    minItems: 1
+    maxItems: 4
+
+  power-domain-names:
+    items:
+      - const: core0
+      - const: core1
+      - const: core2
+      - const: core3
 
   resets:
     minItems: 1
@@ -128,6 +137,25 @@ required:
 additionalProperties: false
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-mali
+    then:
+      properties:
+        power-domains:
+          minItems: 4
+          maxItems: 4
+      required:
+        - power-domains
+        - power-domain-names
+        - mali-supply
+    else:
+      properties:
+        power-domains:
+          maxItems: 1
+        power-domain-names: false
   - if:
       properties:
         compatible:

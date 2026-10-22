@@ -13,6 +13,7 @@ dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-i2c.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-spi.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-spi-cd.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-io-i2c5.dtb
+dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-hdmi.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-io-i2c5-100k.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless-basic-hs400-150m.dtb
 dtb-$(CONFIG_ARCH_MEDIATEK) += mt6797-x20-96-headless-hs400-pio.dtb

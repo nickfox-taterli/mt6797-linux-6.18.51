@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-2.0-only
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/display/bridge/mediatek,mt8193.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT8193 external HDMI control and DDC
+
+maintainers:
+  - Matthias Brugger <matthias.bgg@gmail.com>
+
+description: |
+  The MT8193 is an external multibridge with an HDMI transmitter. This initial
+  binding describes control, power and DDC access. The MT6797 X20 board wires
+  an 8-bit CCIR656 input to DPI1.
+
+properties:
+  compatible:
+    const: mediatek,mt8193
+  reg:
+    maxItems: 1
+  reset-gpios:
+    maxItems: 1
+  enable-gpios:
+    maxItems: 1
+    description: Enables the board HDMI 5 V output.
+  vmipi-supply: true
+  vrf12-supply: true
+  vibr-supply: true
+  vldo28-supply: true
+
+required:
+  - compatible
+  - reg
+  - reset-gpios
+  - enable-gpios
+  - vmipi-supply
+  - vrf12-supply
+  - vibr-supply
+  - vldo28-supply
+
+additionalProperties: false

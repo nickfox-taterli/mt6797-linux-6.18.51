@@ -49,3 +49,4 @@ obj-y += analogix/
 obj-y += cadence/
 obj-y += imx/
 obj-y += synopsys/
+obj-$(CONFIG_DRM_MT8193) += mt8193.o

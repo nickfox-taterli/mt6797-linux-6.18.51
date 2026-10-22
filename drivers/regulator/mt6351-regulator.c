@@ -137,6 +137,35 @@ MT6351_FIXED_LDO(vcn28, MT6351_VCN28, "ldo_vcn28", MT6351_LDO_VCN28_CON0);
 MT6351_FIXED_LDO(vcn33_bt, MT6351_VCN33_BT, "ldo_vcn33_bt", MT6351_LDO_VCN33_CON3);
 MT6351_FIXED_LDO(vcn33_wifi, MT6351_VCN33_WIFI, "ldo_vcn33_wifi", MT6351_LDO_VCN33_CON4);
 
+/* MT8193 board rails; selector tables and output 0 follow the MT6797 BSP. */
+static const unsigned int mt6351_vibr_voltages[] = {
+	1200000, 1300000, 1500000, 1800000, 2000000, 2800000, 3000000, 3300000,
+};
+static const unsigned int mt6351_vrf12_voltages[] = {
+	900000, 950000, 1000000, 1050000, 1200000, 1500000, 1800000,
+};
+static const unsigned int mt6351_vmipi_voltages[] = {
+	900000, 950000, 1000000, 1050000, 1200000, 1500000, 1800000,
+};
+
+#define MT6351_HDMI_LDO(_name, _enable, _vsel) \
+static const struct regulator_desc mt6351_##_name##_desc = { \
+	.name = #_name, .of_match = "ldo_" #_name, \
+	.regulators_node = of_match_ptr("regulators"), \
+	.type = REGULATOR_VOLTAGE, .owner = THIS_MODULE, \
+	.n_voltages = ARRAY_SIZE(mt6351_##_name##_voltages), \
+	.volt_table = mt6351_##_name##_voltages, \
+	.vsel_reg = _vsel, .vsel_mask = GENMASK(10, 8), \
+	.enable_reg = _enable, .enable_mask = BIT(1), \
+	.ops = &mt6351_vmch_ops, \
+}
+
+MT6351_HDMI_LDO(vibr, 0x0a3a, 0x0ae6);
+MT6351_HDMI_LDO(vrf12, 0x0a68, 0x0b0c);
+MT6351_HDMI_LDO(vmipi, 0x0a7a, 0x0b1c);
+#define MT6351_VLDO28_UV 2800000
+MT6351_FIXED_LDO(vldo28, MT6351_VLDO28, "ldo_vldo28", 0x0aa2);
+
 static int mt6351_regulator_probe(struct platform_device *pdev)
 {
 	struct regulator_config config = {
@@ -144,6 +173,10 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 		.regmap = dev_get_regmap(pdev->dev.parent, NULL),
 	};
 	const struct regulator_desc *descs[] = {
+		&mt6351_vibr_desc,
+		&mt6351_vrf12_desc,
+		&mt6351_vmipi_desc,
+		&mt6351_vldo28_desc,
 		&mt6351_vemc_desc,
 		&mt6351_vmch_desc,
 		&mt6351_vmc_desc,
@@ -167,6 +200,17 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 	of_node_put(regulators);
 
 	for (i = 0; i < ARRAY_SIZE(descs); i++) {
+		/* New media rails must not change the state of legacy DT boots. */
+		if (i < 4) {
+			struct device_node *node, *child;
+
+			node = of_get_child_by_name(pdev->dev.of_node, "regulators");
+			child = of_get_child_by_name(node, descs[i]->of_match);
+			of_node_put(node);
+			if (!child)
+				continue;
+			of_node_put(child);
+		}
 		/*
 		 * Legacy DTs model VCC as fixed: do not register an unused,
 		 * switchable VEMC that regulator late init could turn off.
@@ -198,5 +242,5 @@ static struct platform_driver mt6351_regulator_driver = {
 };
 module_platform_driver(mt6351_regulator_driver);
 
-MODULE_DESCRIPTION("MT6351 VEMC/VMC/VMCH/VCN regulator driver");
+MODULE_DESCRIPTION("MT6351 X20 board regulator driver");
 MODULE_LICENSE("GPL");

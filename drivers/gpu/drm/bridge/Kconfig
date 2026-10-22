@@ -474,3 +474,12 @@ source "drivers/gpu/drm/bridge/imx/Kconfig"
 source "drivers/gpu/drm/bridge/synopsys/Kconfig"
 
 endmenu
+
+config DRM_MT8193
+	tristate "MediaTek MT8193 HDMI control and DDC"
+	depends on OF && I2C && DRM
+	select DRM_KMS_HELPER
+	select REGMAP
+	help
+	  Control and EDID access for the external MT8193 HDMI transmitter.
+	  Requires a separate display producer for the CCIR656 input.

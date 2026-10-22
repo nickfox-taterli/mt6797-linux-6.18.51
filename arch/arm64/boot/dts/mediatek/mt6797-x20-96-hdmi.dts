@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+#include "mt6797-x20-96-usb-device.dts"
+#include <dt-bindings/power/mt6797-power.h>
+
+&pmic {
+	regulators {
+		mt6351_vmipi: ldo_vmipi {
+			regulator-name = "vmipi";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+		mt6351_vrf12: ldo_vrf12 {
+			regulator-name = "vrf12";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+		};
+		mt6351_vibr: ldo_vibr {
+			regulator-name = "vibr";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+		mt6351_vldo28: ldo_vldo28 {
+			regulator-name = "vldo28";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+	};
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	clock-frequency = <100000>;
+	status = "okay";
+
+	mt8193: hdmi@1d {
+		compatible = "mediatek,mt8193";
+		reg = <0x1d>;
+		reset-gpios = <&pio 193 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&pio 195 GPIO_ACTIVE_HIGH>;
+		vmipi-supply = <&mt6351_vmipi>;
+		vrf12-supply = <&mt6351_vrf12>;
+		vibr-supply = <&mt6351_vibr>;
+		vldo28-supply = <&mt6351_vldo28>;
+	};
+};
+
+/* The GPU rail is the external FAN53200 on I2C7, not MT6351 VGPU (DRAM). */
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins_a>;
+	clock-frequency = <100000>;
+	status = "okay";
+
+	vgpu: regulator@60 {
+		compatible = "fcs,fan53200";
+		reg = <0x60>;
+		regulator-name = "vgpu";
+		/* First render stage: fixed BSP low frequency and a matching selector. */
+		regulator-min-microvolt = <900000>;
+		regulator-max-microvolt = <900000>;
+		regulator-ramp-delay = <32000>;
+		fcs,suspend-voltage-selector = <1>;
+	};
+};
+
+&scpsys {
+	mfg_async-supply = <&vgpu>;
+	clocks = <&topckgen CLK_TOP_MUX_MFG>, <&topckgen CLK_TOP_MUX_MM>,
+		 <&topckgen CLK_TOP_MUX_VDEC>, <&infrasys CLK_INFRA_MFG_VCG>;
+	clock-names = "mfg", "mm", "vdec", "mfg52m";
+};
+
+/ {
+	mfgsys: clock-controller@13000000 {
+		compatible = "mediatek,mt6797-mfgcfg";
+		reg = <0 0x13000000 0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	gpu: gpu@13040000 {
+		compatible = "mediatek,mt6797-mali", "arm,mali-t880";
+		reg = <0 0x13040000 0 0x4000>;
+		interrupts = <GIC_SPI 264 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 263 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 262 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&mfgsys 0>;
+		clock-names = "core";
+		assigned-clocks = <&apmixedsys CLK_APMIXED_MFGPLL>,
+				  <&topckgen CLK_TOP_MUX_MFG>,
+				  <&topckgen CLK_TOP_MUX_MFG_52M>;
+		assigned-clock-parents = <0>, <&topckgen CLK_TOP_MFGPLL_CK>,
+					<&topckgen CLK_TOP_UNIVPLL2_D8>;
+		assigned-clock-rates = <365000000>, <0>, <0>;
+		mali-supply = <&vgpu>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE3>;
+		power-domain-names = "core0", "core1", "core2", "core3";
+	};
+};

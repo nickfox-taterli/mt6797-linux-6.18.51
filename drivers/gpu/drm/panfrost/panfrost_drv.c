@@ -868,6 +868,17 @@ static const struct panfrost_compatible amlogic_data = {
 	.vendor_quirk = panfrost_gpu_amlogic_quirk,
 };
 
+static const char * const mt6797_pm_domains[] = {
+	"core0", "core1", "core2", "core3",
+};
+static const struct panfrost_compatible mt6797_data = {
+	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
+	.supply_names = default_supplies,
+	.num_pm_domains = ARRAY_SIZE(mt6797_pm_domains),
+	.pm_domain_names = mt6797_pm_domains,
+	.pm_features = BIT(GPU_PM_RT),
+};
+
 static const char * const mediatek_pm_domains[] = { "core0", "core1", "core2",
 						    "core3", "core4" };
 /*
@@ -943,6 +954,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "arm,mali-t820", .data = &default_data, },
 	{ .compatible = "arm,mali-t830", .data = &default_data, },
 	{ .compatible = "arm,mali-t860", .data = &default_data, },
+	{ .compatible = "mediatek,mt6797-mali", .data = &mt6797_data },
 	{ .compatible = "arm,mali-t880", .data = &default_data, },
 	{ .compatible = "arm,mali-bifrost", .data = &default_data, },
 	{ .compatible = "arm,mali-valhall-jm", .data = &default_data, },

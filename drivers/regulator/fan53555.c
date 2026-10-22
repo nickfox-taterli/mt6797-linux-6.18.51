@@ -72,6 +72,7 @@ enum fan53555_vendor {
 	RK8602_VENDOR_ROCKCHIP,		/* RK8602, RK8603 */
 	FAN53555_VENDOR_SILERGY,
 	FAN53526_VENDOR_TCS,
+	FAN53200_VENDOR_FAIRCHILD,
 };
 
 enum {
@@ -449,6 +450,7 @@ static int fan53555_device_setup(struct fan53555_device_info *di,
 	/* Setup voltage control register */
 	switch (di->vendor) {
 	case FAN53526_VENDOR_FAIRCHILD:
+	case FAN53200_VENDOR_FAIRCHILD:
 	case FAN53555_VENDOR_FAIRCHILD:
 	case FAN53555_VENDOR_ROCKCHIP:
 	case FAN53555_VENDOR_SILERGY:
@@ -523,6 +525,7 @@ static int fan53555_device_setup(struct fan53555_device_info *di,
 			break;
 		}
 		break;
+	case FAN53200_VENDOR_FAIRCHILD:
 	case FAN53555_VENDOR_FAIRCHILD:
 	case FAN53555_VENDOR_ROCKCHIP:
 	case FAN53555_VENDOR_SILERGY:
@@ -560,6 +563,19 @@ static int fan53555_device_setup(struct fan53555_device_info *di,
 
 	/* Setup voltage range */
 	switch (di->vendor) {
+	case FAN53200_VENDOR_FAIRCHILD:
+		/* FAN53200UC35X/UC44X: 0.6 V + N * 12.5 mV (onsemi Rev.5). */
+		if (di->chip_id != 0 || di->chip_rev != 1)
+			return -EINVAL;
+		di->vsel_min = 600000;
+		di->vsel_step = 12500;
+		di->enable_time = 400;
+		di->slew_reg = FAN53555_CONTROL;
+		di->slew_mask = CTL_SLEW_MASK;
+		di->ramp_delay_table = slew_rates;
+		di->n_ramp_values = ARRAY_SIZE(slew_rates);
+		di->vsel_count = FAN53555_NVOLTAGES;
+		break;
 	case FAN53526_VENDOR_FAIRCHILD:
 		ret = fan53526_voltages_setup_fairchild(di);
 		break;
@@ -645,6 +661,9 @@ static const struct of_device_id __maybe_unused fan53555_dt_ids[] = {
 	{
 		.compatible = "fcs,fan53526",
 		.data = (void *)FAN53526_VENDOR_FAIRCHILD,
+	}, {
+		.compatible = "fcs,fan53200",
+		.data = (void *)FAN53200_VENDOR_FAIRCHILD
 	}, {
 		.compatible = "fcs,fan53555",
 		.data = (void *)FAN53555_VENDOR_FAIRCHILD

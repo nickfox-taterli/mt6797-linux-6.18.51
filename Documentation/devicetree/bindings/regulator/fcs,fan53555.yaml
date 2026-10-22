@@ -16,6 +16,7 @@ properties:
   compatible:
     oneOf:
       - enum:
+          - fcs,fan53200
           - fcs,fan53555
           - fcs,fan53526
           - rockchip,rk8600
