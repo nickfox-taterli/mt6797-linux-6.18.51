@@ -4,6 +4,7 @@
  * Author: Joe.C <yingjoe.chen@mediatek.com>
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/irq.h>
 #include <linux/irqchip.h>
 #include <linux/irqdomain.h>
@@ -18,6 +19,8 @@ struct mtk_sysirq_chip_data {
 	raw_spinlock_t lock;
 	u32 nr_intpol_bases;
 	void __iomem **intpol_bases;
+	phys_addr_t *intpol_phys;
+	bool secure_access;
 	u32 *intpol_words;
 	u8 *intpol_idx;
 	u16 *which_word;
@@ -38,7 +41,20 @@ static int mtk_sysirq_set_type(struct irq_data *data, unsigned int type)
 	offset = hwirq & 0x1f;
 
 	raw_spin_lock_irqsave(&chip_data->lock, flags);
-	value = readl_relaxed(base + reg_index * 4);
+	if (chip_data->secure_access) {
+		struct arm_smccc_res res;
+
+		arm_smccc_smc(0xc200035f,
+			      chip_data->intpol_phys[intpol_idx] + reg_index * 4,
+			      0, 0, 0, 0, 0, 0, &res);
+		if ((long)res.a0 < 0) {
+			ret = -EIO;
+			goto out_unlock;
+		}
+		value = res.a0;
+	} else {
+		value = readl_relaxed(base + reg_index * 4);
+	}
 	if (type == IRQ_TYPE_LEVEL_LOW || type == IRQ_TYPE_EDGE_FALLING) {
 		if (type == IRQ_TYPE_LEVEL_LOW)
 			type = IRQ_TYPE_LEVEL_HIGH;
@@ -49,10 +65,29 @@ static int mtk_sysirq_set_type(struct irq_data *data, unsigned int type)
 		value &= ~(1 << offset);
 	}
 
-	writel_relaxed(value, base + reg_index * 4);
+	if (chip_data->secure_access) {
+		struct arm_smccc_res res;
+		phys_addr_t address = chip_data->intpol_phys[intpol_idx] +
+				      reg_index * 4;
+
+		/* MT6797 MCUCFG polarity registers are secure-write protected. */
+		arm_smccc_smc(0xc200035e, address, value, 0, 0, 0, 0, 0, &res);
+		if ((long)res.a0 < 0) {
+			ret = -EIO;
+			goto out_unlock;
+		}
+		arm_smccc_smc(0xc200035f, address, 0, 0, 0, 0, 0, 0, &res);
+		if (res.a0 != value) {
+			ret = -EIO;
+			goto out_unlock;
+		}
+	} else {
+		writel_relaxed(value, base + reg_index * 4);
+	}
 
 	data = data->parent_data;
 	ret = data->chip->irq_set_type(data, type);
+out_unlock:
 	raw_spin_unlock_irqrestore(&chip_data->lock, flags);
 	return ret;
 }
@@ -136,6 +171,8 @@ static int __init mtk_sysirq_of_init(struct device_node *node,
 	chip_data = kzalloc(sizeof(*chip_data), GFP_KERNEL);
 	if (!chip_data)
 		return -ENOMEM;
+	chip_data->secure_access = of_device_is_compatible(node,
+						"mediatek,mt6797-sysirq");
 
 	while (of_get_address(node, i++, NULL, NULL))
 		nr_intpol_bases++;
@@ -161,11 +198,20 @@ static int __init mtk_sysirq_of_init(struct device_node *node,
 		ret = -ENOMEM;
 		goto out_free_intpol_words;
 	}
+	chip_data->intpol_phys = kcalloc(nr_intpol_bases,
+					 sizeof(*chip_data->intpol_phys), GFP_KERNEL);
+	if (!chip_data->intpol_phys) {
+		ret = -ENOMEM;
+		goto out_free_intpol;
+	}
 
 	for (i = 0; i < nr_intpol_bases; i++) {
 		struct resource res;
 
 		ret = of_address_to_resource(node, i, &res);
+		if (ret)
+			goto out_free_intpol;
+		chip_data->intpol_phys[i] = res.start;
 		size = resource_size(&res);
 		intpol_num += size * 8;
 		chip_data->intpol_words[i] = size / 4;
@@ -222,6 +268,7 @@ out_free_which_word:
 out_free_intpol_idx:
 	kfree(chip_data->intpol_idx);
 out_free_intpol:
+	kfree(chip_data->intpol_phys);
 	for (i = 0; i < nr_intpol_bases; i++)
 		if (chip_data->intpol_bases[i])
 			iounmap(chip_data->intpol_bases[i]);

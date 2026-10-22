@@ -133,17 +133,25 @@
 			     <GIC_PPI 10 IRQ_TYPE_LEVEL_LOW>;
 	};
 
-	/* PMU counters are usable before the board's overflow IRQs are known.
-	 * The BSP's IRQ assignments have not passed this board's IRQ tests.
-	 */
+	/* Overflow routing measured on X20-96; BSP SPI50-59 is incorrect. */
 	pmu-a53 {
 		compatible = "arm,cortex-a53-pmu";
+		interrupts = <GIC_SPI 8 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 9 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 10 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 11 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 12 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 13 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 14 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 15 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-affinity = <&cpu0>, <&cpu1>, <&cpu2>, <&cpu3>,
 				     <&cpu4>, <&cpu5>, <&cpu6>, <&cpu7>;
 	};
 
 	pmu-a72 {
 		compatible = "arm,cortex-a72-pmu";
+		interrupts = <GIC_SPI 297 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 298 IRQ_TYPE_LEVEL_LOW>;
 		interrupt-affinity = <&cpu8>, <&cpu9>;
 	};
 
