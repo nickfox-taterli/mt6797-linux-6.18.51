@@ -634,7 +634,10 @@ static const struct mtk_pll_data plls[] = {
 	    0x250, 4, 0x0, 0x254, 0),
 	PLL(CLK_APMIXED_IMGPLL, "imgpll", 0x0260, 0x026C, 0x00000120, 0, 21,
 	    0x260, 4, 0x0, 0x264, 0),
-	PLL(CLK_APMIXED_TVDPLL, "tvdpll", 0x0270, 0x027C, 0xC0000120, 0, 21,
+	/* CON0[6:4] is the post-divider, not part of the enable mask.
+	 * Toggling bit 5 here changes the hardware rate behind CCF's cache.
+	 */
+	PLL(CLK_APMIXED_TVDPLL, "tvdpll", 0x0270, 0x027C, 0xC0000100, 0, 21,
 	    0x270, 4, 0x0, 0x274, 0),
 	PLL(CLK_APMIXED_CODECPLL, "codecpll", 0x0290, 0x029C, 0x00000120, 0, 21,
 	    0x290, 4, 0x0, 0x294, 0),
