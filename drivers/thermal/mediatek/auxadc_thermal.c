@@ -358,6 +358,11 @@ struct mtk_thermal {
 	struct device *hw_watchdog;
 	struct mutex hw_protect_lock;
 	int hw_critical_temp;
+	void __iomem *auxadc_base, *apmixed_base;
+	u32 auxadc_phys, apmixed_phys;
+	u32 pm_suspends, pm_resumes, pm_failures;
+	int pm_last_error;
+	bool pm_suspended;
 
 	struct clk *clk_peri_therm;
 	struct clk *clk_auxadc;
@@ -1385,6 +1390,17 @@ static ssize_t tc_hw_status_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(tc_hw_status);
 
+static ssize_t pm_state_show(struct device *dev,
+			     struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "suspends=%u resumes=%u failures=%u last_error=%d suspended=%u\n",
+			 mt->pm_suspends, mt->pm_resumes, mt->pm_failures,
+			 mt->pm_last_error, mt->pm_suspended);
+}
+static DEVICE_ATTR_RO(pm_state);
+
 static ssize_t bank_guard_show(struct device *dev,
                               struct device_attribute *attr, char *buf)
 {
@@ -1458,6 +1474,7 @@ static ssize_t failure_tc_trace_show(struct device *dev,
 static DEVICE_ATTR_RO(failure_tc_trace);
 
 static struct attribute *mt6797_thermal_attrs[] = {
+	&dev_attr_pm_state.attr,
 	&dev_attr_bank_temperatures.attr,
 	&dev_attr_eem_status.attr,
 	&dev_attr_hw_critical_temp.attr,
@@ -2144,6 +2161,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Can't get auxadc phys address\n");
 		return -EINVAL;
 	}
+	mt->auxadc_base = auxadc_base;
+	mt->apmixed_base = apmixed_base;
+	mt->auxadc_phys = auxadc_phys_base;
+	mt->apmixed_phys = apmixed_phys_base;
 	if (mt->conf->version == MTK_THERMAL_MT6797) {
 		struct platform_device *wdt;
 		struct device_node *node;
@@ -2263,11 +2284,116 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int mt6797_restore_thermal(struct mtk_thermal *mt)
+{
+	int critical = mt->hw_critical_temp;
+	int ret;
+
+	/* WDT is a supplier, so its resume has completed before this callback.
+	 * Keep its thermal request off until all slots and thresholds are valid.
+	 */
+	ret = mt6797_wdt_thermal_request(mt->hw_watchdog, false);
+	if (ret)
+		return ret;
+	ret = device_reset_optional(mt->dev);
+	if (ret)
+		return ret;
+	ret = mtk_thermal_turn_on_buffer(mt, mt->apmixed_base);
+	if (ret)
+		return ret;
+	writel(readl(mt->auxadc_base + AUXADC_CON0_V) & ~BIT(11),
+	       mt->auxadc_base + AUXADC_CON0_V);
+	writel(BIT(11), mt->auxadc_base + AUXADC_CON1_CLR_V);
+	ret = mt6797_init_all_banks(mt, mt->apmixed_phys, mt->auxadc_phys,
+				    mt->auxadc_base);
+	if (ret)
+		return ret;
+	ret = mt6797_hw_protect(mt, critical);
+	if (ret)
+		return ret;
+	return mt6797_wdt_thermal_request(mt->hw_watchdog, true);
+}
+
+static int mtk_thermal_suspend(struct device *dev)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	u32 value;
+	int ret, restore_ret;
+
+	if (mt->conf->version != MTK_THERMAL_MT6797 || !mt->hw_watchdog)
+		return 0;
+	/* Thermal core has stopped polling; OTP/EEM are linked consumers and
+	 * have quiesced before us. BSP keeps the clocks on but stops all AHB
+	 * engines before powering down the analog buffer.
+	 */
+	ret = mt6797_wdt_thermal_request(mt->hw_watchdog, false);
+	if (ret) {
+		mt->pm_failures++;
+		mt->pm_last_error = ret;
+		return ret;
+	}
+	ret = mt6797_stop_all_banks(mt);
+	if (ret)
+		goto restore;
+	value = readl(mt->apmixed_base + APMIXED_SYS_TS_CON1);
+	writel(value | GENMASK(5, 4), mt->apmixed_base + APMIXED_SYS_TS_CON1);
+	if ((readl(mt->apmixed_base + APMIXED_SYS_TS_CON1) & GENMASK(5, 4)) !=
+	    GENMASK(5, 4)) {
+		ret = -EIO;
+		goto restore;
+	}
+	mt->pm_suspended = true;
+	mt->pm_suspends++;
+	dev_info(dev, "BSP suspend: banks stopped, AHB drained, TS buffer off\n");
+	return 0;
+
+restore:
+	mt->pm_failures++;
+	mt->pm_last_error = ret;
+	/* A failed suspend callback is not resumed by the PM core. Restore
+	 * working sampling/protection here before returning the abort reason.
+	 */
+	restore_ret = mt6797_restore_thermal(mt);
+	if (restore_ret) {
+		dev_emerg(dev, "cannot restore thermal after aborted suspend: %d\n",
+			  restore_ret);
+		emergency_restart();
+	}
+	return ret;
+}
+
+static int mtk_thermal_resume(struct device *dev)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	int ret;
+
+	if (!mt->pm_suspended)
+		return 0;
+	ret = mt6797_restore_thermal(mt);
+	if (ret) {
+		mt->pm_failures++;
+		mt->pm_last_error = ret;
+		dev_emerg(dev, "cannot resume thermal sampling/protection: %d\n", ret);
+		emergency_restart();
+		return ret;
+	}
+	mt->pm_suspended = false;
+	mt->pm_resumes++;
+	mt->pm_last_error = 0;
+	dev_info(dev, "BSP resume: controller reset, banks seeded, protection=%dmC\n",
+		 mt->hw_critical_temp);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mtk_thermal_pm_ops, mtk_thermal_suspend,
+			      mtk_thermal_resume);
+
 static struct platform_driver mtk_thermal_driver = {
 	.probe = mtk_thermal_probe,
 	.driver = {
 		.name = "mtk-thermal",
 		.of_match_table = mtk_thermal_of_match,
+		.pm = pm_sleep_ptr(&mtk_thermal_pm_ops),
 	},
 };
 
