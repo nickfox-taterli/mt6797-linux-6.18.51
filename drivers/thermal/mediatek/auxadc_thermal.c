@@ -93,6 +93,7 @@
 #define MT6797_TRACE_WORDS	16
 #define MT6797_TRACE_OFFSET	0x800
 #define MT6797_TRACE_SIZE	(64 + MT6797_TRACE_RECORDS * 64)
+#define MT6797_TRACE_ARCHIVE_OFFSET 0x400
 
 #define TEMP_MONCTL1_PERIOD_UNIT(x)	((x) & 0x3ff)
 
@@ -367,9 +368,12 @@ struct mtk_thermal {
 	u64 bank_disarm_failures, bank_rearm_failures, bank_restore_retries;
 	void __iomem *tc_trace;
 	u32 tc_trace_previous[MT6797_TRACE_RECORDS][MT6797_TRACE_WORDS];
+	u32 tc_trace_failure[MT6797_TRACE_RECORDS][MT6797_TRACE_WORDS];
 	u32 tc_trace_sequence[6], tc_trace_generation, tc_trace_previous_generation;
+	u32 tc_trace_failure_generation, tc_trace_failure_reason;
 	u64 tc_trace_last_ns[6];
 	bool tc_trace_previous_valid;
+	bool tc_trace_failure_valid;
 
 	/* Calibration values */
 	s32 adc_ge;
@@ -1427,6 +1431,32 @@ static ssize_t previous_tc_trace_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(previous_tc_trace);
 
+static ssize_t failure_tc_trace_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	ssize_t len;
+	int i;
+
+	len = sysfs_emit(buf, "valid=%d generation=%u pl_reason=%#x\n",
+		mt->tc_trace_failure_valid, mt->tc_trace_failure_generation,
+		mt->tc_trace_failure_reason);
+	if (!mt->tc_trace_failure_valid)
+		return len;
+	for (i = 0; i < MT6797_TRACE_RECORDS; i++) {
+		u32 *w = mt->tc_trace_failure[i];
+
+		len += sysfs_emit_at(buf, len,
+			"slot=%d valid=%d seq=%u mono_ns=%llu bank=%u before_trace_ns=%u msr=%08x,%08x,%08x,%08x monint=%08x intsts=%08x protctl=%08x prottc=%08x msrctl1=%08x selector=%08x commit=%u\n",
+			i, !!w[0] && w[0] == w[15] && w[3] == i / 2,
+			w[0], ((u64)w[2] << 32) | w[1], w[3], w[4], w[5],
+			w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13],
+			w[14], w[15]);
+	}
+	return len;
+}
+static DEVICE_ATTR_RO(failure_tc_trace);
+
 static struct attribute *mt6797_thermal_attrs[] = {
 	&dev_attr_bank_temperatures.attr,
 	&dev_attr_eem_status.attr,
@@ -1434,6 +1464,7 @@ static struct attribute *mt6797_thermal_attrs[] = {
 	&dev_attr_tc_hw_status.attr,
 	&dev_attr_bank_guard.attr,
 	&dev_attr_previous_tc_trace.attr,
+	&dev_attr_failure_tc_trace.attr,
 	NULL,
 };
 static const struct attribute_group mt6797_thermal_group = {
@@ -1870,9 +1901,10 @@ static void mtk_thermal_release_periodic_ts(struct mtk_thermal *mt,
 
 static void mt6797_trace_init(struct mtk_thermal *mt)
 {
-	void __iomem *sram;
+	void __iomem *sram, *archive;
 	unsigned int i, j;
-	u32 generation = 0;
+	u32 generation = 0, reason;
+	bool archive_owned = true;
 
 	sram = devm_ioremap(mt->dev, 0x12d000, 0xc00);
 	if (!sram)
@@ -1896,6 +1928,50 @@ static void mt6797_trace_init(struct mtk_thermal *mt)
 					readl(mt->tc_trace + 64 + i * 64 + j * 4);
 		mt->tc_trace_previous_valid = true;
 		mt->tc_trace_previous_generation = generation;
+	}
+	/* Keep the last exceptional boot separately from the rotating current
+	 * boot. A rescue SYSRSTB or normal reboot must not erase that record.
+	 * Only claim the audited unused area when blank or already ours.
+	 */
+	archive = sram + MT6797_TRACE_ARCHIVE_OFFSET;
+	if (readl(archive) != MT6797_TRACE_MAGIC) {
+		for (i = 0; i < MT6797_TRACE_SIZE; i += 4)
+			if (readl(archive + i)) {
+				archive_owned = false;
+				break;
+			}
+	} else if (readl(archive + 4) != MT6797_TRACE_WORDS ||
+		   readl(archive + 8) != MT6797_TRACE_RECORDS) {
+		archive_owned = false;
+	}
+	reason = readl(sram + 0x40);
+	if (mt->tc_trace_previous_valid && (reason & (BIT(0) | BIT(3) | BIT(5)))) {
+		dev_warn(mt->dev, "previous TC generation=%u, PL reason=%#x\n",
+			 generation, reason);
+		for (i = 0; i < MT6797_TRACE_RECORDS; i++) {
+			u32 *w = mt->tc_trace_previous[i];
+
+			dev_warn(mt->dev, "previous TC bank=%u seq=%u commit=%u mono_ns=%llu msr=%08x,%08x,%08x,%08x protctl=%x prottc=%x\n",
+				 w[3], w[0], w[15], ((u64)w[2] << 32) | w[1],
+				 w[5], w[6], w[7], w[8], w[11], w[12]);
+		}
+		if (archive_owned) {
+			writel(0, archive);
+			for (i = 4; i < MT6797_TRACE_SIZE; i += 4)
+				writel(readl(mt->tc_trace + i), archive + i);
+			writel(reason, archive + 16);
+			writel(MT6797_TRACE_MAGIC, archive);
+			readl(archive);
+		}
+	}
+	if (archive_owned && readl(archive) == MT6797_TRACE_MAGIC) {
+		mt->tc_trace_failure_generation = readl(archive + 12);
+		mt->tc_trace_failure_reason = readl(archive + 16);
+		for (i = 0; i < MT6797_TRACE_RECORDS; i++)
+			for (j = 0; j < MT6797_TRACE_WORDS; j++)
+				mt->tc_trace_failure[i][j] =
+					readl(archive + 64 + i * 64 + j * 4);
+		mt->tc_trace_failure_valid = true;
 	}
 	mt->tc_trace_generation = generation + 1;
 	memset_io(mt->tc_trace, 0, MT6797_TRACE_SIZE);
