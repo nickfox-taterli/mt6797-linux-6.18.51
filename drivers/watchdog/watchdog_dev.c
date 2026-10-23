@@ -113,6 +113,16 @@ static ktime_t watchdog_next_keepalive(struct watchdog_device *wdd)
 
 	hw_heartbeat_ms = min_not_zero(timeout_ms, wdd->max_hw_heartbeat_ms);
 	keepalive_interval = ms_to_ktime(hw_heartbeat_ms / 2);
+	/* An unopened, running dual-stage watchdog must be serviced before
+	 * its first stage, not at the pretimeout interrupt's deadline. Keep
+	 * the final timeout unchanged for userspace ownership and expiry.
+	 */
+	if (!watchdog_active(wdd) && wdd->pretimeout &&
+	    wdd->pretimeout < wdd->timeout) {
+		unsigned int first_stage_ms = timeout_ms - wdd->pretimeout * 1000;
+
+		keepalive_interval = min(keepalive_interval, ms_to_ktime(first_stage_ms / 2));
+	}
 
 	/*
 	 * To ensure that the watchdog times out wdd->timeout seconds
