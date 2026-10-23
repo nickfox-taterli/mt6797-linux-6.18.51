@@ -1945,7 +1945,9 @@ static void mt6797_trace_init(struct mtk_thermal *mt)
 		archive_owned = false;
 	}
 	reason = readl(sram + 0x40);
-	if (mt->tc_trace_previous_valid && (reason & (BIT(0) | BIT(3) | BIT(5)))) {
+	/* Vendor PL may decode dual WDT A0000000 as IRQ-only BIT(2). */
+	if (mt->tc_trace_previous_valid &&
+	    (reason & (BIT(0) | BIT(2) | BIT(3) | BIT(5)))) {
 		dev_warn(mt->dev, "previous TC generation=%u, PL reason=%#x\n",
 			 generation, reason);
 		for (i = 0; i < MT6797_TRACE_RECORDS; i++) {

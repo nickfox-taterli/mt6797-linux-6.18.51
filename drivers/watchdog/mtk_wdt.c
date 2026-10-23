@@ -39,7 +39,6 @@
 #include <linux/sched.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/smpboot.h>
-#include <linux/timer.h>
 #include <linux/nmi.h>
 
 #define WDT_MAX_TIMEOUT		31
@@ -142,7 +141,6 @@ struct mtk_wdt_dev {
 	bool ram_console;
 	u32 pl_reason;
 	u32 prev_pl_reason;
-	struct timer_list health_timer;
 	bool health_registered, health_paused, pm_was_running;
 	u64 health_pings, health_rejections;
 	u64 last_hw_ping_ns;
@@ -153,12 +151,12 @@ struct mtk_wdt_dev {
 
 /* The MT6797 has one TOPRGU. Use the SMP boot/hotplug framework so CPU
  * reports are produced by a scheduled, bound FIFO99 thread, as in BSP WDK.
- * A timer only wakes the threads; it never reports health on their behalf.
+ * Each thread sleeps on its own CPU's timer, as in the BSP WDK loop. A
+ * shared wake timer would stop waking healthy CPUs if its CPU wedged.
  * The watchdog core is the sole keepalive scheduler and userspace owner.
  */
 static DEFINE_PER_CPU(struct task_struct *, mt6797_health_tasks);
 static DEFINE_PER_CPU(unsigned long, mt6797_health_seen);
-static DEFINE_PER_CPU(unsigned long, mt6797_health_due);
 static DEFINE_PER_CPU(u64, mt6797_health_reports);
 static struct mtk_wdt_dev *mt6797_health_owner;
 
@@ -168,23 +166,28 @@ static void mt6797_health_setup(unsigned int cpu)
 
 	sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
 	WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
-	WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies);
 }
 
 static int mt6797_health_should_run(unsigned int cpu)
 {
-	return time_after_eq(jiffies, READ_ONCE(per_cpu(mt6797_health_due, cpu)));
+	return 1;
 }
 
 static void mt6797_health_report(unsigned int cpu)
 {
-	WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies + HZ);
 #ifdef CONFIG_FAULT_INJECTION
 	if (READ_ONCE(health_skip_cpu) == cpu)
-		return;
+		goto sleep;
 #endif
 	WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
 	per_cpu(mt6797_health_reports, cpu)++;
+#ifdef CONFIG_FAULT_INJECTION
+sleep:
+#endif
+	/* Own local wakeup: one IRQ-masked CPU must not silence every reporter.
+	 * Park/stop wakes this interruptible wait through the smpboot framework.
+	 */
+	schedule_timeout_interruptible(HZ);
 }
 
 static struct smp_hotplug_thread mt6797_health_threads = {
@@ -195,21 +198,6 @@ static struct smp_hotplug_thread mt6797_health_threads = {
 	.unpark = mt6797_health_setup,
 	.thread_comm = "wdtk/%u",
 };
-
-static void mt6797_health_wake(struct timer_list *timer)
-{
-	struct mtk_wdt_dev *wdt = timer_container_of(wdt, timer, health_timer);
-	unsigned int cpu;
-
-	for_each_online_cpu(cpu) {
-		struct task_struct *task = per_cpu(mt6797_health_tasks, cpu);
-
-		if (task)
-			wake_up_process(task);
-	}
-	if (!READ_ONCE(wdt->health_paused))
-		mod_timer(&wdt->health_timer, jiffies + HZ);
-}
 
 static int mt6797_health_check(struct mtk_wdt_dev *wdt)
 {
@@ -250,7 +238,6 @@ static void mt6797_health_cleanup(void *data)
 	mode = readl(wdt->wdt_base + WDT_MODE) & ~WDT_MODE_EN;
 	writel(mode | WDT_MODE_KEY, wdt->wdt_base + WDT_MODE);
 	spin_unlock_irqrestore(&wdt->lock, flags);
-	timer_shutdown_sync(&wdt->health_timer);
 	smpboot_unregister_percpu_thread(&mt6797_health_threads);
 	wdt->health_registered = false;
 	mt6797_health_owner = NULL;
@@ -265,15 +252,12 @@ static int mt6797_health_init(struct mtk_wdt_dev *wdt)
 		return -EBUSY;
 	for_each_possible_cpu(cpu) {
 		WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
-		WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies);
 	}
 	ret = smpboot_register_percpu_thread(&mt6797_health_threads);
 	if (ret)
 		return ret;
 	mt6797_health_owner = wdt;
 	wdt->health_registered = true;
-	timer_setup(&wdt->health_timer, mt6797_health_wake, 0);
-	mod_timer(&wdt->health_timer, jiffies + HZ);
 	return devm_add_action_or_reset(wdt->wdt_dev.parent, mt6797_health_cleanup, wdt);
 }
 
@@ -689,6 +673,12 @@ static int mtk_wdt_start(struct watchdog_device *wdt_dev)
 		reg |= (WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
 	else
 		reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+	/* BSP WDK always enables PMIC reset propagation and the vendor PL's
+	 * bypass-power-key flag. Bootstrap/RAM must not depend on a later
+	 * thermal consumer to establish the watchdog's own reset contract.
+	 */
+	if (mtk_wdt->vendor_reset)
+		reg |= WDT_MODE_EXRST_EN | WDT_MODE_AUTO_START;
 	if (mtk_wdt->disable_wdt_extrst)
 		reg &= ~WDT_MODE_EXRST_EN;
 	if (mtk_wdt->reset_by_toprgu)
@@ -1028,7 +1018,11 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		 * watchdog boot flags.  A software reboot is a normal boot
 		 * and keeps bootstatus clear.
 		 */
-		if (r & MT6797_PL_WDT_HW)
+		/* Vendor PL reports HW only if its bypass-power-key bit was set;
+		 * otherwise dual-stage A0000000 becomes IRQ-only. Its decoded
+		 * INTERRUPT flag is WDT, not a normal reboot. Preserve that input.
+		 */
+		if (r & (MT6797_PL_WDT_HW | MT6797_PL_INTERRUPT))
 			mtk_wdt->wdt_dev.bootstatus |= WDIOF_CARDRESET;
 		if (r & (MT6797_PL_SPM_THERMAL | MT6797_PL_THERMAL_DIRECT))
 			mtk_wdt->wdt_dev.bootstatus |= WDIOF_OVERHEAT;
@@ -1106,7 +1100,6 @@ static int mtk_wdt_suspend(struct device *dev)
 	mtk_wdt->pm_was_running = !!(readl(mtk_wdt->wdt_base + WDT_MODE) & WDT_MODE_EN);
 	if (mtk_wdt->health_registered) {
 		WRITE_ONCE(mtk_wdt->health_paused, true);
-		timer_delete_sync(&mtk_wdt->health_timer);
 	}
 	if (mtk_wdt->pm_was_running)
 		mtk_wdt_stop(&mtk_wdt->wdt_dev);
@@ -1123,7 +1116,6 @@ static int mtk_wdt_resume(struct device *dev)
 		for_each_online_cpu(cpu)
 			WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
 		WRITE_ONCE(mtk_wdt->health_paused, false);
-		mod_timer(&mtk_wdt->health_timer, jiffies + HZ);
 	}
 	if (mtk_wdt->pm_was_running)
 		return mtk_wdt_start(&mtk_wdt->wdt_dev);
