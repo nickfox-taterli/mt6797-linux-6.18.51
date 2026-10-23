@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/dts-v1/;
+#include "mt6797-x20-96-usb-host.dts"
+
+/ {
+	venc_lab: video-encoder@17002000 {
+		compatible = "mediatek,mt6797-venc-lab";
+		reg = <0 0x17002000 0 0x1000>;
+		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_1>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		mediatek,larb = <&smi_larb3>;
+		iommus = <&m4u 96>, <&m4u 97>, <&m4u 98>, <&m4u 99>, <&m4u 100>,
+			 <&m4u 105>, <&m4u 106>, <&m4u 107>, <&m4u 108>,
+			 <&m4u 109>, <&m4u 110>;
+	};
+	vdec_lab: video-decoder@16020000 {
+		compatible = "mediatek,mt6797-vdec-lab";
+		reg = <0 0x16020000 0 0x10000>;
+		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vdecsys CLK_VDEC_CKEN>,
+			 <&vdecsys CLK_VDEC_LARB1_CKEN>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		mediatek,larb = <&smi_larb1>;
+		iommus = <&m4u 32>, <&m4u 33>, <&m4u 34>, <&m4u 35>, <&m4u 36>,
+			 <&m4u 37>, <&m4u 38>, <&m4u 39>, <&m4u 40>, <&m4u 41>;
+	};
+};

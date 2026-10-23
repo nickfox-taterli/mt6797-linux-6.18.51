@@ -2,6 +2,13 @@
 
 comment "Mediatek media platform drivers"
 
+config VIDEO_MT6797_CODEC_LAB
+	tristate "MT6797 BSP codec algorithm resource bridge"
+	depends on ARCH_MEDIATEK && MTK_IOMMU && COMPAT
+	help
+	  Root-only bring-up bridge for the MT6797 BSP algorithm libraries.
+	  Provides bounded DMA, M4U, clock, power and IRQ access per engine.
+
 source "drivers/media/platform/mediatek/jpeg/Kconfig"
 source "drivers/media/platform/mediatek/mdp/Kconfig"
 source "drivers/media/platform/mediatek/vcodec/Kconfig"
