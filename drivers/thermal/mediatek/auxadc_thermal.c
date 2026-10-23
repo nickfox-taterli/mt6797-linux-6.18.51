@@ -84,6 +84,16 @@
 
 #define PTPCORESEL		0x400
 
+/* This board's PL/LK leave the Linux console offsets zero and use only
+ * [0,0x140).  Never claim the tail if a different boot chain owns it.
+ * Double-buffer each bank: frequent OTP reads must not evict other banks.
+ */
+#define MT6797_TRACE_MAGIC	0x32544358 /* XCT2 */
+#define MT6797_TRACE_RECORDS	12
+#define MT6797_TRACE_WORDS	16
+#define MT6797_TRACE_OFFSET	0x800
+#define MT6797_TRACE_SIZE	(64 + MT6797_TRACE_RECORDS * 64)
+
 #define TEMP_MONCTL1_PERIOD_UNIT(x)	((x) & 0x3ff)
 
 #define TEMP_MONCTL2_FILTER_INTERVAL(x)	(((x) & 0x3ff) << 16)
@@ -355,6 +365,11 @@ struct mtk_thermal {
 	/* Protected by the shared thermal/EEM bank spinlock. */
 	u64 bank_transactions, bank_hold_max_ns;
 	u64 bank_disarm_failures, bank_rearm_failures, bank_restore_retries;
+	void __iomem *tc_trace;
+	u32 tc_trace_previous[MT6797_TRACE_RECORDS][MT6797_TRACE_WORDS];
+	u32 tc_trace_sequence[6], tc_trace_generation, tc_trace_previous_generation;
+	u64 tc_trace_last_ns[6];
+	bool tc_trace_previous_valid;
 
 	/* Calibration values */
 	s32 adc_ge;
@@ -888,12 +903,62 @@ static int mt6797_bank_begin(struct mtk_thermal *mt, unsigned int bank,
 	return 0;
 }
 
+static void mt6797_trace_bank(struct mtk_thermal *mt, u64 started)
+{
+	u32 words[MT6797_TRACE_WORDS], bank, sequence;
+	void __iomem *entry;
+	u64 now;
+	int i;
+
+	if (!mt->tc_trace || !mt->hw_critical_temp)
+		return;
+	bank = readl(mt->thermal_base + PTPCORESEL) & 0xf;
+	if (bank >= ARRAY_SIZE(mt->tc_trace_last_ns))
+		return;
+	now = ktime_get_mono_fast_ns();
+	if (now - mt->tc_trace_last_ns[bank] < 10 * NSEC_PER_MSEC)
+		return;
+	mt->tc_trace_last_ns[bank] = now;
+	sequence = ++mt->tc_trace_sequence[bank];
+	words[0] = sequence;
+	words[1] = lower_32_bits(now);
+	words[2] = upper_32_bits(now);
+	words[3] = bank;
+	words[4] = min_t(u64, now - started, U32_MAX);
+	words[5] = readl(mt->thermal_base + TEMP_MSR0);
+	words[6] = readl(mt->thermal_base + TEMP_MSR1);
+	words[7] = readl(mt->thermal_base + TEMP_MSR2);
+	words[8] = readl(mt->thermal_base + TEMP_MSR3);
+	words[9] = readl(mt->thermal_base + 0x00c);
+	/* INTSTS may acknowledge events on read; automatic tracing must not
+	 * consume the interrupt handler's evidence or change that protocol.
+	 */
+	words[10] = U32_MAX;
+	words[11] = readl(mt->thermal_base + 0x0c0);
+	words[12] = readl(mt->thermal_base + 0x0cc);
+	words[13] = readl(mt->thermal_base + TEMP_MSRCTL1);
+	words[14] = readl(mt->thermal_base + PTPCORESEL);
+	entry = mt->tc_trace + 64 + (bank * 2 + (sequence & 1)) * 64;
+	writel(0, entry + 60);
+	for (i = 0; i < MT6797_TRACE_WORDS - 1; i++)
+		writel(words[i], entry + i * 4);
+	/* Last write commits the record. A reset during a write leaves the
+	 * other slot intact; readers reject a sequence/commit mismatch.
+	 */
+	writel(sequence, entry + 60);
+	readl(entry + 60);
+}
+
 static int mt6797_bank_end(struct mtk_thermal *mt,
                           struct mt6797_thermal_bank_cookie *cookie)
 {
 	u64 elapsed;
 	int ret = 0, retry;
 
+	/* Bounded MMIO under the existing shared bank lock, before rearming.
+	 * No extra thread, printk, filesystem I/O or WDT_MODE write.
+	 */
+	mt6797_trace_bank(mt, cookie->hold_started_ns);
 	if (cookie->was_armed) {
 		for (retry = 0; retry < 3; retry++) {
 			ret = mt6797_wdt_thermal_request(mt->hw_watchdog, true);
@@ -1328,12 +1393,39 @@ static ssize_t bank_guard_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(bank_guard);
 
+static ssize_t previous_tc_trace_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	ssize_t len;
+	int i;
+
+	len = sysfs_emit(buf, "available=%d previous_valid=%d generation=%u previous_generation=%u period_ns=10000000\n",
+		!!mt->tc_trace, mt->tc_trace_previous_valid,
+		mt->tc_trace_generation, mt->tc_trace_previous_generation);
+	if (!mt->tc_trace_previous_valid)
+		return len;
+	for (i = 0; i < MT6797_TRACE_RECORDS; i++) {
+		u32 *w = mt->tc_trace_previous[i];
+		bool valid = w[0] && w[0] == w[15] && w[3] == i / 2;
+
+		len += sysfs_emit_at(buf, len,
+			"slot=%d valid=%d seq=%u mono_ns=%llu bank=%u before_trace_ns=%u msr=%08x,%08x,%08x,%08x monint=%08x intsts=%08x protctl=%08x prottc=%08x msrctl1=%08x selector=%08x commit=%u\n",
+			i, valid, w[0], ((u64)w[2] << 32) | w[1], w[3], w[4],
+			w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12],
+			w[13], w[14], w[15]);
+	}
+	return len;
+}
+static DEVICE_ATTR_RO(previous_tc_trace);
+
 static struct attribute *mt6797_thermal_attrs[] = {
 	&dev_attr_bank_temperatures.attr,
 	&dev_attr_eem_status.attr,
 	&dev_attr_hw_critical_temp.attr,
 	&dev_attr_tc_hw_status.attr,
 	&dev_attr_bank_guard.attr,
+	&dev_attr_previous_tc_trace.attr,
 	NULL,
 };
 static const struct attribute_group mt6797_thermal_group = {
@@ -1760,6 +1852,46 @@ static void mtk_thermal_release_periodic_ts(struct mtk_thermal *mt,
 	writel((tmp & (~0x10e)), mt->thermal_base + TEMP_MSRCTL1);
 }
 
+static void mt6797_trace_init(struct mtk_thermal *mt)
+{
+	void __iomem *sram;
+	unsigned int i, j;
+	u32 generation = 0;
+
+	sram = devm_ioremap(mt->dev, 0x12d000, 0xc00);
+	if (!sram)
+		return;
+	if (readl(sram) != 0x43474244 || readl(sram + 4) != 0x40 ||
+	    readl(sram + 8) != 0x80 || readl(sram + 12) != 0x10 ||
+	    readl(sram + 16) != 0xc0 || readl(sram + 20) != 0x100 ||
+	    readl(sram + 24) != 0x40 || readl(sram + 0x2c) ||
+	    readl(sram + 0x30)) {
+		dev_warn(mt->dev, "TC SRAM trace unavailable: boot console layout has another owner\n");
+		return;
+	}
+	mt->tc_trace = sram + MT6797_TRACE_OFFSET;
+	if (readl(mt->tc_trace) == MT6797_TRACE_MAGIC &&
+	    readl(mt->tc_trace + 4) == MT6797_TRACE_WORDS &&
+	    readl(mt->tc_trace + 8) == MT6797_TRACE_RECORDS) {
+		generation = readl(mt->tc_trace + 12);
+		for (i = 0; i < MT6797_TRACE_RECORDS; i++)
+			for (j = 0; j < MT6797_TRACE_WORDS; j++)
+				mt->tc_trace_previous[i][j] =
+					readl(mt->tc_trace + 64 + i * 64 + j * 4);
+		mt->tc_trace_previous_valid = true;
+		mt->tc_trace_previous_generation = generation;
+	}
+	mt->tc_trace_generation = generation + 1;
+	memset_io(mt->tc_trace, 0, MT6797_TRACE_SIZE);
+	writel(MT6797_TRACE_WORDS, mt->tc_trace + 4);
+	writel(MT6797_TRACE_RECORDS, mt->tc_trace + 8);
+	writel(mt->tc_trace_generation, mt->tc_trace + 12);
+	writel(MT6797_TRACE_MAGIC, mt->tc_trace);
+	readl(mt->tc_trace);
+	dev_info(mt->dev, "TC SRAM trace generation=%u previous=%d\n",
+		 mt->tc_trace_generation, mt->tc_trace_previous_valid);
+}
+
 static int mtk_thermal_probe(struct platform_device *pdev)
 {
 	int ret, i, ctrl_id;
@@ -1901,6 +2033,7 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 				return -ENOMEM;
 			}
 			put_device(&wdt->dev);
+			mt6797_trace_init(mt);
 			ret = thermal_zone_get_crit_temp(tzdev, &critical);
 			if (ret || critical > 150000 || critical < 10000)
 				return -EINVAL;
