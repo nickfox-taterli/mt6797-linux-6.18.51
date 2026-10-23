@@ -33,6 +33,13 @@
 #include <linux/interrupt.h>
 #include <linux/soc/mediatek/mt6797-wdt.h>
 #include <linux/sysfs.h>
+#include <linux/cpu.h>
+#include <linux/jiffies.h>
+#include <linux/percpu.h>
+#include <linux/sched.h>
+#include <uapi/linux/sched/types.h>
+#include <linux/smpboot.h>
+#include <linux/timer.h>
 
 #define WDT_MAX_TIMEOUT		31
 #define WDT_MIN_TIMEOUT		2
@@ -102,6 +109,9 @@
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 static unsigned int timeout;
+static bool mt6797_boot_monitor = true;
+module_param(mt6797_boot_monitor, bool, 0444);
+MODULE_PARM_DESC(mt6797_boot_monitor, "Start MT6797 countdown with online-CPU health gate");
 #ifdef CONFIG_FAULT_INJECTION
 /* Explicit one-shot failures for the board's independent-RAM tests only.
  * Defaults are zero and reboot clears them.  No request is changed by a
@@ -109,6 +119,9 @@ static unsigned int timeout;
  */
 static unsigned int tc_fail_hold;
 static unsigned int tc_fail_restore;
+static int health_skip_cpu = -1;
+module_param(health_skip_cpu, int, 0600);
+MODULE_PARM_DESC(health_skip_cpu, "RAM test: omit this CPU's health report (-1 disables)");
 module_param(tc_fail_hold, uint, 0600);
 module_param(tc_fail_restore, uint, 0600);
 MODULE_PARM_DESC(tc_fail_hold, "One-shot TC hold failures (RAM fault tests)");
@@ -128,7 +141,138 @@ struct mtk_wdt_dev {
 	bool ram_console;
 	u32 pl_reason;
 	u32 prev_pl_reason;
+	struct timer_list health_timer;
+	bool health_registered, health_paused, pm_was_running;
+	u64 health_pings, health_rejections;
+	u64 last_hw_ping_ns;
+	cpumask_t health_missing;
 };
+
+/* The MT6797 has one TOPRGU. Use the SMP boot/hotplug framework so CPU
+ * reports are produced by a scheduled, bound FIFO99 thread, as in BSP WDK.
+ * A timer only wakes the threads; it never reports health on their behalf.
+ * The watchdog core is the sole keepalive scheduler and userspace owner.
+ */
+static DEFINE_PER_CPU(struct task_struct *, mt6797_health_tasks);
+static DEFINE_PER_CPU(unsigned long, mt6797_health_seen);
+static DEFINE_PER_CPU(unsigned long, mt6797_health_due);
+static DEFINE_PER_CPU(u64, mt6797_health_reports);
+static struct mtk_wdt_dev *mt6797_health_owner;
+
+static void mt6797_health_setup(unsigned int cpu)
+{
+	struct sched_param param = { .sched_priority = MAX_RT_PRIO - 1 };
+
+	sched_setscheduler_nocheck(current, SCHED_FIFO, &param);
+	WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
+	WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies);
+}
+
+static int mt6797_health_should_run(unsigned int cpu)
+{
+	return time_after_eq(jiffies, READ_ONCE(per_cpu(mt6797_health_due, cpu)));
+}
+
+static void mt6797_health_report(unsigned int cpu)
+{
+	WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies + HZ);
+#ifdef CONFIG_FAULT_INJECTION
+	if (READ_ONCE(health_skip_cpu) == cpu)
+		return;
+#endif
+	WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
+	per_cpu(mt6797_health_reports, cpu)++;
+}
+
+static struct smp_hotplug_thread mt6797_health_threads = {
+	.store = &mt6797_health_tasks,
+	.thread_should_run = mt6797_health_should_run,
+	.thread_fn = mt6797_health_report,
+	.setup = mt6797_health_setup,
+	.unpark = mt6797_health_setup,
+	.thread_comm = "wdtk/%u",
+};
+
+static void mt6797_health_wake(struct timer_list *timer)
+{
+	struct mtk_wdt_dev *wdt = timer_container_of(wdt, timer, health_timer);
+	unsigned int cpu;
+
+	for_each_online_cpu(cpu) {
+		struct task_struct *task = per_cpu(mt6797_health_tasks, cpu);
+
+		if (task)
+			wake_up_process(task);
+	}
+	if (!READ_ONCE(wdt->health_paused))
+		mod_timer(&wdt->health_timer, jiffies + HZ);
+}
+
+static int mt6797_health_check(struct mtk_wdt_dev *wdt)
+{
+	unsigned int cpu;
+	bool missing = false;
+
+	if (!wdt->health_registered || READ_ONCE(wdt->health_paused))
+		return 0;
+	cpus_read_lock();
+	cpumask_clear(&wdt->health_missing);
+	for_each_online_cpu(cpu) {
+		if (time_after(jiffies, READ_ONCE(per_cpu(mt6797_health_seen, cpu)) + 3 * HZ)) {
+			cpumask_set_cpu(cpu, &wdt->health_missing);
+			missing = true;
+		}
+	}
+	cpus_read_unlock();
+	if (missing) {
+		wdt->health_rejections++;
+		dev_warn_ratelimited(wdt->wdt_dev.parent,
+			"withholding keepalive: missing CPU health %*pbl\n",
+			cpumask_pr_args(&wdt->health_missing));
+		return -EAGAIN;
+	}
+	wdt->health_pings++;
+	return 0;
+}
+
+static void mt6797_health_cleanup(void *data)
+{
+	struct mtk_wdt_dev *wdt = data;
+
+	unsigned long flags;
+	u32 mode;
+
+	/* Also covers probe rollback before watchdog registration succeeds. */
+	spin_lock_irqsave(&wdt->lock, flags);
+	mode = readl(wdt->wdt_base + WDT_MODE) & ~WDT_MODE_EN;
+	writel(mode | WDT_MODE_KEY, wdt->wdt_base + WDT_MODE);
+	spin_unlock_irqrestore(&wdt->lock, flags);
+	timer_shutdown_sync(&wdt->health_timer);
+	smpboot_unregister_percpu_thread(&mt6797_health_threads);
+	wdt->health_registered = false;
+	mt6797_health_owner = NULL;
+}
+
+static int mt6797_health_init(struct mtk_wdt_dev *wdt)
+{
+	int ret;
+	unsigned int cpu;
+
+	if (mt6797_health_owner)
+		return -EBUSY;
+	for_each_possible_cpu(cpu) {
+		WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
+		WRITE_ONCE(per_cpu(mt6797_health_due, cpu), jiffies);
+	}
+	ret = smpboot_register_percpu_thread(&mt6797_health_threads);
+	if (ret)
+		return ret;
+	mt6797_health_owner = wdt;
+	wdt->health_registered = true;
+	timer_setup(&wdt->health_timer, mt6797_health_wake, 0);
+	mod_timer(&wdt->health_timer, jiffies + HZ);
+	return devm_add_action_or_reset(wdt->wdt_dev.parent, mt6797_health_cleanup, wdt);
+}
 
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
@@ -451,8 +595,13 @@ static int mtk_wdt_ping(struct watchdog_device *wdt_dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = watchdog_get_drvdata(wdt_dev);
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
+	int ret;
 
+	ret = mt6797_health_check(mtk_wdt);
+	if (ret)
+		return ret;
 	iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
+	WRITE_ONCE(mtk_wdt->last_hw_ping_ns, ktime_get_boottime_ns());
 
 	return 0;
 }
@@ -480,9 +629,7 @@ static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
 			| WDT_LENGTH_KEY;
 	iowrite32(reg, wdt_base + WDT_LENGTH);
 
-	mtk_wdt_ping(wdt_dev);
-
-	return 0;
+	return mtk_wdt_ping(wdt_dev);
 }
 
 static void mtk_wdt_init(struct watchdog_device *wdt_dev)
@@ -697,9 +844,31 @@ static ssize_t registers_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(registers);
 
+static ssize_t cpu_health_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+	unsigned int cpu;
+	ssize_t len;
+
+	len = sysfs_emit(buf, "registered=%d paused=%d pings=%llu rejected=%llu last_hw_ping_ns=%llu max_age_ms=3000 period_ms=1000 owner=watchdog_core\n",
+		wdt->health_registered, wdt->health_paused,
+		wdt->health_pings, wdt->health_rejections,
+		READ_ONCE(wdt->last_hw_ping_ns));
+	cpus_read_lock();
+	for_each_online_cpu(cpu)
+		len += sysfs_emit_at(buf, len, "cpu%u reports=%llu age_ms=%u\n",
+			cpu, READ_ONCE(per_cpu(mt6797_health_reports, cpu)),
+			jiffies_to_msecs(jiffies - READ_ONCE(per_cpu(mt6797_health_seen, cpu))));
+	cpus_read_unlock();
+	return len;
+}
+static DEVICE_ATTR_RO(cpu_health);
+
 static struct attribute *mtk_wdt_vendor_attrs[] = {
 	&dev_attr_boot_reason.attr,
 	&dev_attr_registers.attr,
+	&dev_attr_cpu_health.attr,
 	NULL
 };
 static const struct attribute_group mtk_wdt_vendor_group = {
@@ -813,9 +982,23 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	}
 
 	watchdog_stop_on_reboot(&mtk_wdt->wdt_dev);
+	if (mtk_wdt->vendor_reset && mt6797_boot_monitor) {
+		watchdog_stop_on_unregister(&mtk_wdt->wdt_dev);
+		watchdog_stop_ping_on_suspend(&mtk_wdt->wdt_dev);
+		err = mt6797_health_init(mtk_wdt);
+		if (err)
+			return err;
+		err = mtk_wdt_start(&mtk_wdt->wdt_dev);
+		if (err)
+			return err;
+		set_bit(WDOG_HW_RUNNING, &mtk_wdt->wdt_dev.status);
+	}
 	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
-	if (unlikely(err))
+	if (unlikely(err)) {
+		if (mtk_wdt->health_registered)
+			mtk_wdt_stop(&mtk_wdt->wdt_dev);
 		return err;
+	}
 
 	/* State at probe: nobody has started the countdown unless the boot
 	 * chain left MODE.EN set; report the hardware as it really is.
@@ -857,7 +1040,12 @@ static int mtk_wdt_suspend(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
 
-	if (watchdog_active(&mtk_wdt->wdt_dev))
+	mtk_wdt->pm_was_running = !!(readl(mtk_wdt->wdt_base + WDT_MODE) & WDT_MODE_EN);
+	if (mtk_wdt->health_registered) {
+		WRITE_ONCE(mtk_wdt->health_paused, true);
+		timer_delete_sync(&mtk_wdt->health_timer);
+	}
+	if (mtk_wdt->pm_was_running)
 		mtk_wdt_stop(&mtk_wdt->wdt_dev);
 
 	return 0;
@@ -866,11 +1054,16 @@ static int mtk_wdt_suspend(struct device *dev)
 static int mtk_wdt_resume(struct device *dev)
 {
 	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
+	unsigned int cpu;
 
-	if (watchdog_active(&mtk_wdt->wdt_dev)) {
-		mtk_wdt_start(&mtk_wdt->wdt_dev);
-		mtk_wdt_ping(&mtk_wdt->wdt_dev);
+	if (mtk_wdt->health_registered) {
+		for_each_online_cpu(cpu)
+			WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
+		WRITE_ONCE(mtk_wdt->health_paused, false);
+		mod_timer(&mtk_wdt->health_timer, jiffies + HZ);
 	}
+	if (mtk_wdt->pm_was_running)
+		return mtk_wdt_start(&mtk_wdt->wdt_dev);
 
 	return 0;
 }
