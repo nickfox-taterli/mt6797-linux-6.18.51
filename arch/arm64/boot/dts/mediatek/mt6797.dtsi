@@ -8,6 +8,7 @@
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/pinctrl/mt6797-pinfunc.h>
+#include <dt-bindings/reset/mediatek,mt6797-resets.h>
 
 / {
 	compatible = "mediatek,mt6797";
@@ -187,6 +188,7 @@
 		compatible = "mediatek,mt6797-infracfg", "syscon";
 		reg = <0 0x10001000 0 0x1000>;
 		#clock-cells = <1>;
+		#reset-cells = <1>;
 	};
 
 	dcm: dcm {
@@ -401,6 +403,7 @@
 		clocks = <&infrasys CLK_INFRA_THERM>,
 			 <&infrasys CLK_INFRA_AUXADC>;
 		clock-names = "therm", "auxadc";
+		resets = <&infrasys MT6797_INFRA_THERM_SW_RST>;
 		mediatek,auxadc = <&auxadc>;
 		mediatek,apmixedsys = <&apmixedsys>;
 		nvmem-cells = <&thermal_calibration>;

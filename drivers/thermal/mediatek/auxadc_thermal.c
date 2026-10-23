@@ -1532,14 +1532,6 @@ static int mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 	ret = mtk_thermal_get_bank(bank, &cookie);
 	if (ret)
 		return ret;
-	if (mt->conf->version == MTK_THERMAL_MT6797) {
-		int ret = mt6797_thermal_fast_init(mt);
-
-		if (ret) {
-			mtk_thermal_put_bank(bank, &cookie);
-			return ret;
-		}
-	}
 
 	/* bus clock 66M counting unit is 12 * 15.15ns * 256 = 46.540us */
 	writel(TEMP_MONCTL1_PERIOD_UNIT(12), controller_base + TEMP_MONCTL1);
@@ -1635,14 +1627,114 @@ static int mtk_thermal_init_bank(struct mtk_thermal *mt, int num,
 		writel(conf->sensor_mux_values[conf->bank_data[num].sensors[i]],
 		       mt->thermal_base + conf->adcpnp[i]);
 
-	writel((1 << conf->bank_data[num].num_sensors) - 1,
-	       controller_base + TEMP_MONCTL0);
+	/* MT6797 starts all banks only after every address/mux is programmed. */
+	if (mt->conf->version != MTK_THERMAL_MT6797)
+		writel((1 << conf->bank_data[num].num_sensors) - 1,
+		       controller_base + TEMP_MONCTL0);
 
 	writel(TEMP_ADCWRITECTRL_ADC_PNP_WRITE |
 	       TEMP_ADCWRITECTRL_ADC_MUX_WRITE,
 	       controller_base + TEMP_ADCWRITECTRL);
 
 	return mtk_thermal_put_bank(bank, &cookie);
+}
+
+static int mt6797_stop_all_banks(struct mtk_thermal *mt)
+{
+	struct mt6797_thermal_bank_cookie cookie;
+	u32 value;
+	int i, ret;
+
+	/* MT6797 BSP disables periodic sensing and drains THAHBST0 before
+	 * replacing the AHB target addresses. Wait outside the bank spinlock.
+	 */
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		ret = mtk_thermal_get_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+		writel(0, mt->thermal_base + TEMP_MONCTL0);
+		ret = mtk_thermal_put_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+	}
+	ret = readl_poll_timeout(mt->thermal_base + 0x418, value,
+				 !(value >> 16), 2, 2500);
+	if (ret)
+		return dev_err_probe(mt->dev, ret,
+				     "BSP thermal AHB drain timed out: %#x\n", value);
+	return 0;
+}
+
+static void mt6797_stop_on_release(void *data)
+{
+	struct mtk_thermal *mt = data;
+	int ret;
+
+	/* Later devres mappings (trace) have already been removed. Clock and
+	 * thermal register mappings still exist until after this action.
+	 */
+	mt->tc_trace = NULL;
+	if (mt->hw_watchdog) {
+		ret = mt6797_wdt_thermal_request(mt->hw_watchdog, false);
+		if (ret) {
+			dev_emerg(mt->dev, "cannot stop TC reset request on release: %d\n", ret);
+			emergency_restart();
+			return;
+		}
+	}
+	ret = mt6797_stop_all_banks(mt);
+	if (ret) {
+		dev_emerg(mt->dev, "cannot drain TC before clock release: %d\n", ret);
+		emergency_restart();
+	}
+}
+
+static int mt6797_init_all_banks(struct mtk_thermal *mt, u32 apmixed, u32 auxadc,
+				  void __iomem *auxadc_base)
+{
+	struct mt6797_thermal_bank_cookie cookie;
+	u32 value;
+	int i, ret;
+
+	/* BSP seeds every bank before normal sampling. Mixing one bank's
+	 * real AUXADC traffic with another bank's fast-init is not equivalent.
+	 */
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		ret = mtk_thermal_get_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+		ret = mt6797_thermal_fast_init(mt);
+		if (ret) {
+			mtk_thermal_put_bank(&mt->banks[i], &cookie);
+			return dev_err_probe(mt->dev, ret,
+					     "BSP fast-init timed out in bank%d\n", i);
+		}
+		ret = mtk_thermal_put_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+	}
+	ret = mt6797_stop_all_banks(mt);
+	if (ret)
+		return ret;
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		ret = mtk_thermal_init_bank(mt, i, apmixed, auxadc, 0);
+		if (ret)
+			return ret;
+	}
+	writel(BIT(11), auxadc_base + AUXADC_CON1_SET_V);
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		ret = mtk_thermal_get_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+		writel((1U << mt->conf->bank_data[i].num_sensors) - 1,
+		       mt->thermal_base + TEMP_MONCTL0);
+		value = readl(mt->thermal_base + TEMP_MSRCTL1);
+		writel(value & ~0x10e, mt->thermal_base + TEMP_MSRCTL1);
+		ret = mtk_thermal_put_bank(&mt->banks[i], &cookie);
+		if (ret)
+			return ret;
+	}
+	return 0;
 }
 
 static u64 of_get_phys_base(struct device_node *np)
@@ -2016,6 +2108,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 
 	mt->dev = &pdev->dev;
 	platform_set_drvdata(pdev, mt);
+	for (i = 0; i < mt->conf->num_banks; i++) {
+		mt->banks[i].id = i;
+		mt->banks[i].mt = mt;
+	}
 
 	auxadc = of_parse_phandle(np, "mediatek,auxadc", 0);
 	if (!auxadc) {
@@ -2048,6 +2144,36 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Can't get auxadc phys address\n");
 		return -EINVAL;
 	}
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		struct platform_device *wdt;
+		struct device_node *node;
+
+		/* Resolve the supplier BEFORE starting any autonomous AHB traffic.
+		 * The old late defer left running banks behind when devres gated
+		 * their clocks, then attempted fast-init again on a dirty engine.
+		 */
+		node = of_parse_phandle(np, "mediatek,watchdog", 0);
+		if (node) {
+			wdt = of_find_device_by_node(node);
+			of_node_put(node);
+			if (!wdt)
+				return -EPROBE_DEFER;
+			if (!device_is_bound(&wdt->dev)) {
+				put_device(&wdt->dev);
+				return -EPROBE_DEFER;
+			}
+			mt->hw_watchdog = &wdt->dev;
+			if (!device_link_add(&pdev->dev, &wdt->dev,
+					     DL_FLAG_AUTOREMOVE_CONSUMER)) {
+				put_device(&wdt->dev);
+				return -ENOMEM;
+			}
+			put_device(&wdt->dev);
+			ret = mt6797_wdt_thermal_request(mt->hw_watchdog, false);
+			if (ret)
+				return ret;
+		}
+	}
 
 	ret = device_reset_optional(&pdev->dev);
 	if (ret)
@@ -2065,6 +2191,11 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		ret = PTR_ERR(mt->clk_peri_therm);
 		dev_err(&pdev->dev, "Can't enable peri clk: %d\n", ret);
 		return ret;
+	}
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		ret = devm_add_action_or_reset(&pdev->dev, mt6797_stop_on_release, mt);
+		if (ret)
+			return ret;
 	}
 
 	ret = mtk_thermal_turn_on_buffer(mt, apmixed_base);
@@ -2089,15 +2220,20 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	else
 		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
 
-	for (ctrl_id = 0; ctrl_id < mt->conf->num_controller ; ctrl_id++)
-		for (i = 0; i < mt->conf->num_banks; i++) {
-			ret = mtk_thermal_init_bank(mt, i, apmixed_phys_base,
-						  auxadc_phys_base, ctrl_id);
-			if (ret)
-				return ret;
-		}
-	if (mt->conf->version == MTK_THERMAL_MT6797)
-		writel(BIT(11), auxadc_base + AUXADC_CON1_SET_V);
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		ret = mt6797_init_all_banks(mt, apmixed_phys_base, auxadc_phys_base,
+					  auxadc_base);
+		if (ret)
+			return ret;
+	} else {
+		for (ctrl_id = 0; ctrl_id < mt->conf->num_controller; ctrl_id++)
+			for (i = 0; i < mt->conf->num_banks; i++) {
+				ret = mtk_thermal_init_bank(mt, i, apmixed_phys_base,
+							  auxadc_phys_base, ctrl_id);
+				if (ret)
+					return ret;
+			}
+	}
 
 	tzdev = devm_thermal_of_zone_register(&pdev->dev, 0, mt,
 					      &mtk_thermal_ops);
@@ -2108,27 +2244,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
 	if (mt->conf->version == MTK_THERMAL_MT6797) {
-		struct platform_device *wdt;
-		struct device_node *node;
 		int critical;
 
 		dev_set_drvdata(&pdev->dev, mt);
-		node = of_parse_phandle(np, "mediatek,watchdog", 0);
-		if (node) {
-			wdt = of_find_device_by_node(node);
-			of_node_put(node);
-			if (!wdt)
-				return -EPROBE_DEFER;
-			if (!device_is_bound(&wdt->dev)) {
-				put_device(&wdt->dev);
-				return -EPROBE_DEFER;
-			}
-			mt->hw_watchdog = &wdt->dev;
-			if (!device_link_add(&pdev->dev, &wdt->dev, DL_FLAG_AUTOREMOVE_CONSUMER)) {
-				put_device(&wdt->dev);
-				return -ENOMEM;
-			}
-			put_device(&wdt->dev);
+		if (mt->hw_watchdog) {
 			mt6797_trace_init(mt);
 			ret = thermal_zone_get_crit_temp(tzdev, &critical);
 			if (ret || critical > 150000 || critical < 10000)
