@@ -19,6 +19,7 @@
 #include <dt-bindings/reset/mt8192-resets.h>
 #include <dt-bindings/reset/mt8195-resets.h>
 #include <linux/delay.h>
+#include <linux/arm-smccc.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/io.h>
@@ -146,6 +147,7 @@ struct mtk_wdt_dev {
 	u64 last_hw_ping_ns;
 	u64 bark_count, bark_ns;
 	u32 bark_status;
+	bool secure_capture;
 	cpumask_t health_missing;
 };
 
@@ -282,6 +284,37 @@ static const struct mtk_wdt_data mt6797_data = {
 	.ram_console_phys = 0x0012d000,
 	.ram_console_size = 0xc00,
 };
+
+static int mt6797_enable_secure_capture(struct mtk_wdt_dev *wdt)
+{
+	struct watchdog_device *wdd = &wdt->wdt_dev;
+	struct arm_smccc_res res;
+	unsigned long mask = 0;
+	unsigned int cpu;
+
+	/* This board's diagnostic BL31 ABI claims the reserved SRAM capture
+	 * area and routes SPI169 to EL3. Older firmware keeps normal IRQ mode.
+	 * Cover possible CPUs so later hotplug cannot leave a CPU unrecorded.
+	 */
+	if (wdd->timeout & 1)
+		return -EINVAL;
+	arm_smccc_smc(0xc200067a, 0, 0, 0, 0, 0, 0, 0, &res);
+	if (res.a0 != 0x57444331)
+		return -EOPNOTSUPP;
+	for_each_possible_cpu(cpu) {
+		if (cpu >= 10)
+			return -EINVAL;
+		mask |= BIT(cpu);
+	}
+	arm_smccc_smc(0xc200067a, 1, mask, 0, 0, 0, 0, 0, &res);
+	if (res.a0)
+		return -EIO;
+	wdd->pretimeout = wdd->timeout / 2;
+	wdt->secure_capture = true;
+	dev_info(wdd->parent, "EL3 capture armed, possible CPUs=%#lx, dual=%u/%u sec, watchdog-core owner\n",
+		 mask, wdd->timeout, wdd->pretimeout);
+	return 0;
+}
 
 int mt6797_wdt_thermal_direct(struct device *dev, bool enable)
 {
@@ -913,10 +946,22 @@ static ssize_t cpu_health_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(cpu_health);
 
+static ssize_t secure_capture_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "requested=%d armed=%d\n",
+		of_property_read_bool(dev->of_node, "mediatek,secure-capture"),
+		wdt->secure_capture);
+}
+static DEVICE_ATTR_RO(secure_capture);
+
 static struct attribute *mtk_wdt_vendor_attrs[] = {
 	&dev_attr_boot_reason.attr,
 	&dev_attr_registers.attr,
 	&dev_attr_cpu_health.attr,
+	&dev_attr_secure_capture.attr,
 	NULL
 };
 static const struct attribute_group mtk_wdt_vendor_group = {
@@ -954,6 +999,8 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	struct mtk_wdt_dev *mtk_wdt;
 	const struct mtk_wdt_data *wdt_data;
 	int err, irq;
+	bool secure_capture = of_property_read_bool(dev->of_node,
+						   "mediatek,secure-capture");
 	u32 reg;
 
 	mtk_wdt = devm_kzalloc(dev, sizeof(*mtk_wdt), GFP_KERNEL);
@@ -1045,6 +1092,12 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		err = mt6797_health_init(mtk_wdt);
 		if (err)
 			return err;
+		if (irq > 0 && secure_capture) {
+			err = mt6797_enable_secure_capture(mtk_wdt);
+			if (err)
+				dev_warn(dev, "EL3 capture unavailable (%d); retaining single-stage monitoring\n",
+					 err);
+		}
 		err = mtk_wdt_start(&mtk_wdt->wdt_dev);
 		if (err)
 			return err;
