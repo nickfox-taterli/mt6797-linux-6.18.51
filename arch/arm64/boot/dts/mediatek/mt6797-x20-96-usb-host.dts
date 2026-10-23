@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* X20-96 USB2 host path: SoC SSUSB -> USB2513 hub -> HOST1/HOST2 ports.
+ * Keeps the HDMI/console baseline; only the USB role and board routing change.
+ * USB_SW_SEL (GPIO86, diode-OR'ed with the SW3205-3 "USB HOST SET" strap into
+ * USB_MODE_SEL) is driven high so the TC7USB40 mux routes the SoC data pair
+ * to the hub upstream port instead of the Micro-USB receptacle.
+ */
+/dts-v1/;
+
+#include "mt6797-x20-96-hdmi.dts"
+
+/ {
+	/* VBUS_HOST1/2 are switched by the hub's PRTPWR pins, not by the SoC;
+	 * the mtu3 host path requires a vbus regulator, so model it always-on.
+	 */
+	usb_host_vbus: regulator-usb-host-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb-host-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+};
+
+&pio {
+	/delete-node/ usb-device-route-hog;
+	usb-host-route-hog {
+		gpio-hog;
+		gpios = <86 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb-host-route";
+	};
+};
+
+&usb_device {
+	dr_mode = "host";
+	vbus-supply = <&usb_host_vbus>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+	ranges;
+
+	/* MT6797 xHCI MAC (BSP: 0x11270000, GIC SPI 126, level low). */
+	xhci0: usb@11270000 {
+		compatible = "mediatek,mt6797-xhci", "mediatek,mtk-xhci";
+		reg = <0 0x11270000 0 0x1000>;
+		reg-names = "mac";
+		interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>, <&clk26m>;
+		clock-names = "sys_ck", "ref_ck";
+	};
+};
