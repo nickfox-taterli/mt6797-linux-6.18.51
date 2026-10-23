@@ -15,6 +15,15 @@ description:
 
 allOf:
   - $ref: watchdog.yaml#
+  - if:
+      properties:
+        compatible:
+          not:
+            contains:
+              const: mediatek,mt6797-wdt
+    then:
+      properties:
+        mediatek,secure-capture: false
 
 properties:
   compatible:
@@ -60,6 +69,16 @@ properties:
     description: The Top Reset Generation Unit (TOPRGU) generates reset signals
       and distributes them to each IP. If present, the watchdog timer will be
       reset by TOPRGU once system resets.
+    type: boolean
+
+  mediatek,secure-capture:
+    description: |
+      Opt into the X20 diagnostic BL31 watchdog capture ABI on MT6797.
+      SiP 0xc200067a command 0 returns 0x57444331; command 1 accepts a
+      possible-CPU mask and routes SPI169 to EL3. Firmware captures CPU
+      registers in reserved SRAM 0x12d140..0x12d3ff before the final reset.
+      The driver enables equal watchdog phases only after successful arm.
+      Firmware without this ABI retains single-stage monitoring.
     type: boolean
 
   '#reset-cells':
