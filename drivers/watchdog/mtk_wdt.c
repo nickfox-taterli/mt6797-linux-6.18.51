@@ -32,6 +32,7 @@
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
 #include <linux/soc/mediatek/mt6797-wdt.h>
+#include <linux/sysfs.h>
 
 #define WDT_MAX_TIMEOUT		31
 #define WDT_MIN_TIMEOUT		2
@@ -42,6 +43,8 @@
 
 #define WDT_RST			0x08
 #define WDT_RST_RELOAD		0x1971
+
+#define WDT_STATUS		0x0c
 
 #define WDT_MODE		0x00
 #define WDT_MODE_EN		(1 << 0)
@@ -62,6 +65,36 @@
 
 #define WDT_SWSYSRST_EN		0xfc
 
+#define WDT_INTERVAL		0x10
+#define WDT_NONRST_REG		0x20
+#define WDT_NONRST_REG2		0x24
+#define WDT_REQ_MODE_REG	0x30
+#define WDT_REQ_IRQ_EN_REG	0x34
+#define WDT_DEBUG_CTL		0x40
+#define WDT_LATCH_CTL		0x44
+
+/*
+ * MT6797 vendor boot chain: the preloader decodes the TOPRGU raw status
+ * before the boot chain clears it and keeps the decoded reason (plus the
+ * previous boot's copy) in its SRAM ram console.  Layout per preloader
+ * ram_console.c: 64-byte header (sig "DBGC", off_pl, off_lpl, sz_pl, ...),
+ * then the records whose first word is the decoded reason.
+ */
+#define MT6797_RAM_CONSOLE_SIG		0x43474244	/* "DBGC" */
+#define MT6797_RAM_CONSOLE_HDR_SIZE	64
+
+/* Decoded reboot reasons stored by the preloader (preloader wdt.h). */
+#define MT6797_PL_WDT_HW			BIT(0)
+#define MT6797_PL_WDT_SW			BIT(1)
+#define MT6797_PL_INTERRUPT			BIT(2)
+#define MT6797_PL_SPM_THERMAL			BIT(3)
+#define MT6797_PL_SPM				BIT(4)
+#define MT6797_PL_THERMAL_DIRECT		BIT(5)
+#define MT6797_PL_DEBUG				BIT(6)
+#define MT6797_PL_SECURITY			BIT(7)
+#define MT6797_PL_EINT				BIT(8)
+#define MT6797_PL_SYSRST			BIT(9)
+
 #define DRV_NAME		"mtk-wdt"
 #define DRV_VERSION		"1.0"
 
@@ -69,6 +102,18 @@
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 static unsigned int timeout;
+#ifdef CONFIG_FAULT_INJECTION
+/* Explicit one-shot failures for the board's independent-RAM tests only.
+ * Defaults are zero and reboot clears them.  No request is changed by a
+ * failed hold; failed restore attempts exercise the real bounded retry.
+ */
+static unsigned int tc_fail_hold;
+static unsigned int tc_fail_restore;
+module_param(tc_fail_hold, uint, 0600);
+module_param(tc_fail_restore, uint, 0600);
+MODULE_PARM_DESC(tc_fail_hold, "One-shot TC hold failures (RAM fault tests)");
+MODULE_PARM_DESC(tc_fail_restore, "One-shot TC restore failures (RAM fault tests)");
+#endif
 
 struct mtk_wdt_dev {
 	struct watchdog_device wdt_dev;
@@ -79,12 +124,18 @@ struct mtk_wdt_dev {
 	bool reset_by_toprgu;
 	bool has_swsysrst_en;
 	bool vendor_reset;
+	/* MT6797 SRAM ram console: decoded preloader reboot reasons, if valid */
+	bool ram_console;
+	u32 pl_reason;
+	u32 prev_pl_reason;
 };
 
 struct mtk_wdt_data {
 	int toprgu_sw_rst_num;
 	bool has_swsysrst_en;
 	bool vendor_reset;
+	resource_size_t ram_console_phys;
+	resource_size_t ram_console_size;
 };
 
 static const struct mtk_wdt_data mt2712_data = {
@@ -97,6 +148,8 @@ static const struct mtk_wdt_data mt6735_data = {
 
 static const struct mtk_wdt_data mt6797_data = {
 	.vendor_reset = true,
+	.ram_console_phys = 0x0012d000,
+	.ram_console_size = 0xc00,
 };
 
 int mt6797_wdt_thermal_direct(struct device *dev, bool enable)
@@ -139,6 +192,85 @@ unlock:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_wdt_thermal_direct);
+
+/**
+ * mt6797_wdt_thermal_request() - toggle only the TC direct-reset request
+ * @dev: watchdog device
+ * @enable: arm (true) or disarm (false) REQ_MODE bit 18
+ *
+ * Unlike mt6797_wdt_thermal_direct(), this never writes WDT_MODE: the
+ * preloader documents that MODE writes clear WDT_STATUS, and the per-switch
+ * thermal bank guard must not keep clearing the latch that bark/forensics
+ * paths will depend on.  MODE-side setup (EXTEN/AUTO_START) stays with the
+ * one-shot mt6797_wdt_thermal_direct() at protection-setup time.  The
+ * IRQ-route side (REQ_IRQ_EN bit 18) is left as configured by that setup.
+ */
+int mt6797_wdt_thermal_request(struct device *dev, bool enable)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+	unsigned long flags;
+	u32 mode;
+	int ret = 0;
+
+	if (!wdt || !wdt->vendor_reset)
+		return -ENODEV;
+
+	spin_lock_irqsave(&wdt->lock, flags);
+#ifdef CONFIG_FAULT_INJECTION
+	if (enable && READ_ONCE(tc_fail_restore)) {
+		WRITE_ONCE(tc_fail_restore, tc_fail_restore - 1);
+		spin_unlock_irqrestore(&wdt->lock, flags);
+		return -EAGAIN;
+	}
+#endif
+	mode = readl(wdt->wdt_base + WDT_REQ_MODE_REG) & 0x00ffffff;
+	mode = enable ? mode | BIT(18) : mode & ~BIT(18);
+	writel(0x33000000 | mode, wdt->wdt_base + WDT_REQ_MODE_REG);
+	if ((readl(wdt->wdt_base + WDT_REQ_MODE_REG) & BIT(18)) != (mode & BIT(18)))
+		ret = -EIO;
+	spin_unlock_irqrestore(&wdt->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wdt_thermal_request);
+
+/* Called with the shared thermal/EEM bank lock held.  Preserve an
+ * intentionally disarmed request, and never clear WDT_STATUS here.
+ */
+int mt6797_wdt_thermal_hold(struct device *dev, bool *was_armed)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+	unsigned long flags;
+	u32 original, value;
+	int ret = 0;
+
+	if (!wdt || !wdt->vendor_reset)
+		return -ENODEV;
+	spin_lock_irqsave(&wdt->lock, flags);
+#ifdef CONFIG_FAULT_INJECTION
+	if (READ_ONCE(tc_fail_hold)) {
+		WRITE_ONCE(tc_fail_hold, tc_fail_hold - 1);
+		spin_unlock_irqrestore(&wdt->lock, flags);
+		return -EAGAIN;
+	}
+#endif
+	original = readl(wdt->wdt_base + WDT_REQ_MODE_REG) & 0x00ffffff;
+	*was_armed = !!(original & BIT(18));
+	if (*was_armed) {
+		value = original & ~BIT(18);
+		writel(0x33000000 | value, wdt->wdt_base + WDT_REQ_MODE_REG);
+		if (readl(wdt->wdt_base + WDT_REQ_MODE_REG) & BIT(18)) {
+			/* Abort without changing banks; restore the entry state. */
+			writel(0x33000000 | original,
+			       wdt->wdt_base + WDT_REQ_MODE_REG);
+			ret = readl(wdt->wdt_base + WDT_REQ_MODE_REG) & BIT(18) ?
+				-EIO : -EREMOTEIO;
+		}
+	}
+	spin_unlock_irqrestore(&wdt->lock, flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wdt_thermal_hold);
 
 static const struct mtk_wdt_data mt6795_data = {
 	.toprgu_sw_rst_num = MT6795_TOPRGU_SW_RST_NUM,
@@ -449,6 +581,131 @@ static irqreturn_t mtk_wdt_isr(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
+static const char * const mt6797_pl_reason_names[] = {
+	"wdt_hw", "wdt_sw", "interrupt", "spm_thermal", "spm", "thermal_direct",
+	"debug", "security", "eint", "sysrst",
+};
+
+static int mt6797_pl_reason_str(char *buf, size_t size, u32 reason)
+{
+	int len = 0, i;
+
+	for (i = 0; i < ARRAY_SIZE(mt6797_pl_reason_names); i++)
+		if (reason & BIT(i))
+			len += scnprintf(buf + len, size - len, "%s%s",
+					 len ? "|" : "",
+					 mt6797_pl_reason_names[i]);
+	if (!len)
+		len = scnprintf(buf, size, "unknown(0x%x)", reason);
+
+	return len;
+}
+
+static void mtk_wdt_read_boot_reason(struct mtk_wdt_dev *mtk_wdt,
+				     const struct mtk_wdt_data *wdt_data)
+{
+	void __iomem *sram = ioremap(wdt_data->ram_console_phys,
+				      wdt_data->ram_console_size);
+	u32 sig, off_pl, off_lpl, sz_pl, size = wdt_data->ram_console_size;
+
+	if (!sram)
+		return;
+
+	sig = readl(sram);
+	off_pl = readl(sram + 4);
+	off_lpl = readl(sram + 8);
+	sz_pl = readl(sram + 12);
+
+	/* Same bounds discipline as the validated diagnostic: aligned offsets
+	 * inside the console, and a record that starts with the reason word.
+	 */
+	if (sig == MT6797_RAM_CONSOLE_SIG && sz_pl >= sizeof(u32) &&
+	    !(off_pl & 3) && off_pl >= MT6797_RAM_CONSOLE_HDR_SIZE &&
+	    off_pl <= size - sizeof(u32) &&
+	    !(off_lpl & 3) && off_lpl >= MT6797_RAM_CONSOLE_HDR_SIZE &&
+	    off_lpl <= size - sizeof(u32)) {
+		mtk_wdt->ram_console = true;
+		mtk_wdt->pl_reason = readl(sram + off_pl);
+		mtk_wdt->prev_pl_reason = readl(sram + off_lpl);
+	}
+	iounmap(sram);
+}
+
+static ssize_t boot_reason_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
+	char cur[96], prev[96];
+
+	if (!mtk_wdt->ram_console)
+		return sysfs_emit(buf, "unavailable\n");
+
+	mt6797_pl_reason_str(cur, sizeof(cur), mtk_wdt->pl_reason);
+	mt6797_pl_reason_str(prev, sizeof(prev), mtk_wdt->prev_pl_reason);
+
+	/* Decoded by the preloader; the raw TOPRGU status is cleared by the
+	 * boot chain before Linux starts, so these words are not raw bits.
+	 */
+	return sysfs_emit(buf,
+			  "pl=0x%08x (%s)\nprev_pl=0x%08x (%s)\nbootstatus=0x%x\n",
+			  mtk_wdt->pl_reason, cur,
+			  mtk_wdt->prev_pl_reason, prev,
+			  mtk_wdt->wdt_dev.bootstatus);
+}
+static DEVICE_ATTR_RO(boot_reason);
+
+static ssize_t registers_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct mtk_wdt_dev *mtk_wdt = dev_get_drvdata(dev);
+	void __iomem *base = mtk_wdt->wdt_base;
+	struct watchdog_device *wdd = &mtk_wdt->wdt_dev;
+	u32 mode, length;
+	ssize_t len = 0;
+
+	mode = readl(base + WDT_MODE);
+	length = readl(base + WDT_LENGTH);
+	len += sysfs_emit_at(buf, len,
+			     "mode=0x%08x en=%d irq=%d dual=%d exten=%d auto_restart=%d\n",
+			     mode, !!(mode & WDT_MODE_EN),
+			     !!(mode & WDT_MODE_IRQ_EN),
+			     !!(mode & WDT_MODE_DUAL_EN),
+			     !!(mode & WDT_MODE_EXRST_EN),
+			     !!(mode & WDT_MODE_AUTO_START));
+	/* LENGTH bits [15:5] hold seconds << 6; the low bits are the key. */
+	len += sysfs_emit_at(buf, len, "length=0x%08x countdown=%d sec\n",
+			     length, (length & 0xffe0) >> 11);
+	len += sysfs_emit_at(buf, len,
+			     "status=0x%08x interval=0x%08x swsysrst=0x%08x\n",
+			     readl(base + WDT_STATUS), readl(base + WDT_INTERVAL),
+			     readl(base + WDT_SWSYSRST));
+	len += sysfs_emit_at(buf, len, "nonrst=0x%08x nonrst2=0x%08x\n",
+			     readl(base + WDT_NONRST_REG),
+			     readl(base + WDT_NONRST_REG2));
+	len += sysfs_emit_at(buf, len, "req_mode=0x%08x req_irq_en=0x%08x\n",
+			     readl(base + WDT_REQ_MODE_REG),
+			     readl(base + WDT_REQ_IRQ_EN_REG));
+	len += sysfs_emit_at(buf, len, "debug_ctl=0x%08x latch_ctl=0x%08x\n",
+			     readl(base + WDT_DEBUG_CTL),
+			     readl(base + WDT_LATCH_CTL));
+	len += sysfs_emit_at(buf, len,
+			     "sw: active=%d hw_running=%d timeout=%d pretimeout=%d bootstatus=0x%x\n",
+			     watchdog_active(wdd), watchdog_hw_running(wdd),
+			     wdd->timeout, wdd->pretimeout, wdd->bootstatus);
+
+	return len;
+}
+static DEVICE_ATTR_RO(registers);
+
+static struct attribute *mtk_wdt_vendor_attrs[] = {
+	&dev_attr_boot_reason.attr,
+	&dev_attr_registers.attr,
+	NULL
+};
+static const struct attribute_group mtk_wdt_vendor_group = {
+	.attrs = mtk_wdt_vendor_attrs,
+};
+
 static const struct watchdog_info mtk_wdt_info = {
 	.identity	= DRV_NAME,
 	.options	= WDIOF_SETTIMEOUT |
@@ -480,6 +737,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	struct mtk_wdt_dev *mtk_wdt;
 	const struct mtk_wdt_data *wdt_data;
 	int err, irq;
+	u32 reg;
 
 	mtk_wdt = devm_kzalloc(dev, sizeof(*mtk_wdt), GFP_KERNEL);
 	if (!mtk_wdt)
@@ -493,8 +751,11 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		return PTR_ERR(mtk_wdt->wdt_base);
 
 	wdt_data = of_device_get_match_data(dev);
-	if (wdt_data)
+	if (wdt_data) {
 		mtk_wdt->vendor_reset = wdt_data->vendor_reset;
+		if (wdt_data->ram_console_size)
+			mtk_wdt_read_boot_reason(mtk_wdt, wdt_data);
+	}
 
 	irq = platform_get_irq_optional(pdev, 0);
 	if (irq > 0) {
@@ -527,13 +788,50 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	mtk_wdt_init(&mtk_wdt->wdt_dev);
 
+	if (mtk_wdt->ram_console) {
+		char cur[96], prev[96];
+		u32 r = mtk_wdt->pl_reason;
+
+		/* Map the decoded preloader reason onto the standard
+		 * watchdog boot flags.  A software reboot is a normal boot
+		 * and keeps bootstatus clear.
+		 */
+		if (r & MT6797_PL_WDT_HW)
+			mtk_wdt->wdt_dev.bootstatus |= WDIOF_CARDRESET;
+		if (r & (MT6797_PL_SPM_THERMAL | MT6797_PL_THERMAL_DIRECT))
+			mtk_wdt->wdt_dev.bootstatus |= WDIOF_OVERHEAT;
+
+		mt6797_pl_reason_str(cur, sizeof(cur), r);
+		mt6797_pl_reason_str(prev, sizeof(prev),
+				     mtk_wdt->prev_pl_reason);
+		dev_info(dev,
+			 "preloader reboot reason (SRAM ram console, decoded): this boot 0x%x (%s), previous boot 0x%x (%s)\n",
+			 r, cur, mtk_wdt->prev_pl_reason, prev);
+	} else if (wdt_data && wdt_data->ram_console_size) {
+		dev_warn(dev,
+			 "preloader SRAM ram console missing or invalid; no boot reason available\n");
+	}
+
 	watchdog_stop_on_reboot(&mtk_wdt->wdt_dev);
 	err = devm_watchdog_register_device(dev, &mtk_wdt->wdt_dev);
 	if (unlikely(err))
 		return err;
 
-	dev_info(dev, "Watchdog enabled (timeout=%d sec, nowayout=%d)\n",
-		 mtk_wdt->wdt_dev.timeout, nowayout);
+	/* State at probe: nobody has started the countdown unless the boot
+	 * chain left MODE.EN set; report the hardware as it really is.
+	 */
+	reg = readl(mtk_wdt->wdt_base + WDT_MODE);
+	dev_info(dev,
+		 "Watchdog registered (timeout=%d sec, nowayout=%d, pretimeout=%d): hardware countdown %s\n",
+		 mtk_wdt->wdt_dev.timeout, nowayout, mtk_wdt->wdt_dev.pretimeout,
+		 (reg & WDT_MODE_EN) ? "running (MODE.EN=1)" :
+				       "not running (MODE.EN=0)");
+
+	if (mtk_wdt->ram_console) {
+		err = devm_device_add_group(dev, &mtk_wdt_vendor_group);
+		if (err)
+			return err;
+	}
 
 	wdt_data = of_device_get_match_data(dev);
 	if (wdt_data && wdt_data->toprgu_sw_rst_num) {

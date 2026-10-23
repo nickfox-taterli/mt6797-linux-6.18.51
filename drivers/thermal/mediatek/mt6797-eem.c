@@ -47,23 +47,22 @@ struct mt6797_eem {
 	int last_error;
 };
 
-static unsigned long eem_select(struct mt6797_eem *s, u32 bank)
+static int eem_select(struct mt6797_eem *s, u32 bank,
+                      struct mt6797_thermal_bank_cookie *cookie)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&mt6797_thermal_eem_lock, flags);
-	writel((readl(s->base + EEM_BANK) & ~15) | bank, s->base + EEM_BANK);
-	return flags;
+	return mt6797_thermal_bank_begin(s->thermal, bank, cookie);
 }
 
-static void eem_put(unsigned long flags)
+static int eem_put(struct mt6797_eem *s,
+                   struct mt6797_thermal_bank_cookie *cookie)
 {
-	spin_unlock_irqrestore(&mt6797_thermal_eem_lock, flags);
+	return mt6797_thermal_bank_end(s->thermal, cookie);
 }
 
-static void eem_disable(struct mt6797_eem *s)
+static int eem_disable(struct mt6797_eem *s)
 {
-	unsigned long flags;
+	struct mt6797_thermal_bank_cookie cookie;
+	int ret, error = 0;
 	unsigned int i, j;
 
 	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
@@ -71,47 +70,70 @@ static void eem_disable(struct mt6797_eem *s)
 
 		if (!b->saved_valid)
 			continue;
-		flags = eem_select(s, b->bank);
+		ret = eem_select(s, b->bank, &cookie);
+		if (ret) {
+			s->failures++;
+			s->last_error = ret;
+			error = error ?: ret;
+			continue;
+		}
 		writel(0, s->base + EEM_IRQ_ENABLE);
 		writel(0, s->base + EEM_ENABLE);
 		writel(0xffffffff, s->base + EEM_STATUS);
 		for (j = 0; j < ARRAY_SIZE(saved_regs); j++)
 			writel(b->saved[j], s->base + saved_regs[j]);
-		eem_put(flags);
+		ret = eem_put(s, &cookie);
+		if (ret) {
+			s->failures++;
+			s->last_error = ret;
+			error = error ?: ret;
+		}
 		b->saved_valid = false;
 	}
 	s->monitoring = false;
+	return error;
 }
 
 static int eem_save(struct mt6797_eem *s)
 {
 	unsigned int i, j;
-	unsigned long flags;
+	struct mt6797_thermal_bank_cookie cookie;
+	int ret;
 
 	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
 		struct eem_bank *b = &s->banks[i];
 
-		flags = eem_select(s, b->bank);
+		ret = eem_select(s, b->bank, &cookie);
+		if (ret)
+			return ret;
 		if (readl(s->base + EEM_ENABLE)) {
-			eem_put(flags);
-			eem_disable(s);
-			return -EBUSY;
+			ret = eem_put(s, &cookie);
+			if (ret)
+				return ret;
+			ret = eem_disable(s);
+			return ret ?: -EBUSY;
 		}
 		for (j = 0; j < ARRAY_SIZE(saved_regs); j++)
 			b->saved[j] = readl(s->base + saved_regs[j]);
 		b->saved_valid = true;
-		eem_put(flags);
+		ret = eem_put(s, &cookie);
+		if (ret)
+			return ret;
 	}
 	return 0;
 }
 
-static void eem_phase(struct mt6797_eem *s, struct eem_bank *b,
+static int eem_phase(struct mt6797_eem *s, struct eem_bank *b,
 		      unsigned int phase)
 {
-	unsigned long flags = eem_select(s, b->bank);
+	struct mt6797_thermal_bank_cookie cookie;
+	int ret;
 	u32 p30 = 0, p74 = 0;
 	unsigned int i;
 
+	ret = eem_select(s, b->bank, &cookie);
+	if (ret)
+		return ret;
 	for (i = 0; i < 4; i++) {
 		p30 |= b->percent[i] << (i * 8);
 		p74 |= b->percent[i + 4] << (i * 8);
@@ -138,26 +160,31 @@ static void eem_phase(struct mt6797_eem *s, struct eem_bank *b,
 	/* Poll RAW status; no unhandled interrupt on the shared thermal block. */
 	writel(0, s->base + EEM_IRQ_ENABLE);
 	writel(phase, s->base + EEM_ENABLE);
-	eem_put(flags);
+	return eem_put(s, &cookie);
 }
 
 static int eem_wait_phase(struct mt6797_eem *s, struct eem_bank *b)
 {
-	unsigned long flags;
+	struct mt6797_thermal_bank_cookie cookie;
+	int ret;
 	unsigned int i;
 	u32 status;
 
 	for (i = 0; i < 100; i++) {
-		flags = eem_select(s, b->bank);
+		ret = eem_select(s, b->bank, &cookie);
+		if (ret)
+			return ret;
 		status = readl(s->base + EEM_RAW_STATUS);
 		b->status = status;
 		if (status & (EEM_ERROR_MASK | BIT(0))) {
 			b->vop30 = readl(s->base + 0x248);
 			b->vop74 = readl(s->base + 0x24c);
-			eem_put(flags);
-			return status & EEM_ERROR_MASK ? -EIO : 0;
+			ret = eem_put(s, &cookie);
+			return ret ?: (status & EEM_ERROR_MASK ? -EIO : 0);
 		}
-		eem_put(flags);
+		ret = eem_put(s, &cookie);
+		if (ret)
+			return ret;
 		usleep_range(50, 100);
 	}
 	return -ETIMEDOUT;
@@ -166,7 +193,7 @@ static int eem_wait_phase(struct mt6797_eem *s, struct eem_bank *b)
 static int eem_measure(void *context)
 {
 	struct mt6797_eem *s = context;
-	unsigned long flags;
+	struct mt6797_thermal_bank_cookie cookie;
 	unsigned int i;
 	int ret;
 
@@ -174,29 +201,41 @@ static int eem_measure(void *context)
 	if (ret)
 		return ret;
 	/* All four INIT01 measurements finish before any INIT02/MON phase. */
-	for (i = 0; i < ARRAY_SIZE(s->banks); i++)
-		eem_phase(s, &s->banks[i], 1);
+	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
+		ret = eem_phase(s, &s->banks[i], 1);
+		if (ret)
+			return ret;
+	}
 	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
 		struct eem_bank *b = &s->banks[i];
 
 		ret = eem_wait_phase(s, b);
 		if (ret)
 			return ret;
-		flags = eem_select(s, b->bank);
+		ret = eem_select(s, b->bank, &cookie);
+		if (ret)
+			return ret;
 		b->dc = -(readl(s->base + 0x240) & 0xffff) & 0xffff;
 		b->age = readl(s->base + 0x244) & 0xffff;
 		writel(0, s->base + EEM_ENABLE);
 		writel(1, s->base + EEM_STATUS);
-		eem_put(flags);
+		ret = eem_put(s, &cookie);
+		if (ret)
+			return ret;
 	}
 	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
-		eem_phase(s, &s->banks[i], 5);
+		ret = eem_phase(s, &s->banks[i], 5);
+		if (ret)
+			return ret;
 		ret = eem_wait_phase(s, &s->banks[i]);
 		if (ret)
 			return ret;
 	}
-	for (i = 0; i < ARRAY_SIZE(s->banks); i++)
-		eem_phase(s, &s->banks[i], 2);
+	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
+		ret = eem_phase(s, &s->banks[i], 2);
+		if (ret)
+			return ret;
+	}
 	s->calibrated = true;
 	s->monitoring = true;
 	return 0;
@@ -206,7 +245,8 @@ static void eem_monitor(struct work_struct *work)
 {
 	struct mt6797_eem *s =
 		container_of(to_delayed_work(work), struct mt6797_eem, monitor);
-	unsigned long flags;
+	struct mt6797_thermal_bank_cookie cookie;
+	int ret;
 	unsigned int i;
 
 	mutex_lock(&s->lock);
@@ -215,7 +255,9 @@ static void eem_monitor(struct work_struct *work)
 	for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
 		struct eem_bank *b = &s->banks[i];
 
-		flags = eem_select(s, b->bank);
+		ret = eem_select(s, b->bank, &cookie);
+		if (ret)
+			goto failed;
 		b->status = readl(s->base + EEM_RAW_STATUS);
 		b->vop30 = readl(s->base + 0x248);
 		b->vop74 = readl(s->base + 0x24c);
@@ -223,10 +265,17 @@ static void eem_monitor(struct work_struct *work)
 		    readl(s->base + EEM_ENABLE) != 2)
 			s->failures++;
 		writel(b->status, s->base + EEM_STATUS);
-		eem_put(flags);
+		ret = eem_put(s, &cookie);
+		if (ret)
+			goto failed;
 	}
 	s->samples++;
 	schedule_delayed_work(&s->monitor, HZ);
+	goto unlock;
+failed:
+	s->failures++;
+	s->last_error = ret;
+	s->monitoring = false;
 unlock:
 	mutex_unlock(&s->lock);
 }
@@ -271,7 +320,9 @@ static ssize_t calibrate_store(struct device *dev,
 		return -EINVAL;
 	cancel_delayed_work_sync(&s->monitor);
 	mutex_lock(&s->lock);
-	eem_disable(s);
+	ret = eem_disable(s);
+	if (ret)
+		goto unlock;
 	if (sysfs_streq(buf, "1")) {
 		s->calibrated = false;
 		ret = mt6797_cpufreq_eem_measure(s->cpufreq, eem_measure, s);
@@ -284,6 +335,7 @@ static ssize_t calibrate_store(struct device *dev,
 			schedule_delayed_work(&s->monitor, HZ);
 		}
 	}
+unlock:
 	mutex_unlock(&s->lock);
 	return ret ? ret : count;
 }
@@ -474,13 +526,14 @@ static void eem_remove(struct platform_device *pdev)
 static int eem_suspend(struct device *dev)
 {
 	struct mt6797_eem *s = dev_get_drvdata(dev);
+	int ret;
 
 	cancel_delayed_work_sync(&s->monitor);
 	mutex_lock(&s->lock);
 	s->resume_monitor = s->monitoring;
-	eem_disable(s);
+	ret = eem_disable(s);
 	mutex_unlock(&s->lock);
-	return 0;
+	return ret;
 }
 
 static int eem_resume(struct device *dev)
@@ -494,16 +547,24 @@ static int eem_resume(struct device *dev)
 		goto unlock;
 	ret = eem_save(s);
 	for (i = 0; !ret && i < ARRAY_SIZE(s->banks); i++) {
-		eem_phase(s, &s->banks[i], 5);
-		ret = eem_wait_phase(s, &s->banks[i]);
+		ret = eem_phase(s, &s->banks[i], 5);
+		if (!ret)
+			ret = eem_wait_phase(s, &s->banks[i]);
 	}
 	if (ret) {
 		s->last_error = ret;
 		s->failures++;
 		eem_disable(s);
 	} else {
-		for (i = 0; i < ARRAY_SIZE(s->banks); i++)
-			eem_phase(s, &s->banks[i], 2);
+		for (i = 0; i < ARRAY_SIZE(s->banks); i++) {
+			ret = eem_phase(s, &s->banks[i], 2);
+			if (ret) {
+				s->last_error = ret;
+				s->failures++;
+				eem_disable(s);
+				goto unlock;
+			}
+		}
 		s->monitoring = true;
 		schedule_delayed_work(&s->monitor, HZ);
 	}
