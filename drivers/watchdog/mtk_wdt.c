@@ -40,6 +40,7 @@
 #include <uapi/linux/sched/types.h>
 #include <linux/smpboot.h>
 #include <linux/timer.h>
+#include <linux/nmi.h>
 
 #define WDT_MAX_TIMEOUT		31
 #define WDT_MIN_TIMEOUT		2
@@ -145,6 +146,8 @@ struct mtk_wdt_dev {
 	bool health_registered, health_paused, pm_was_running;
 	u64 health_pings, health_rejections;
 	u64 last_hw_ping_ns;
+	u64 bark_count, bark_ns;
+	u32 bark_status;
 	cpumask_t health_missing;
 };
 
@@ -613,6 +616,12 @@ static int mtk_wdt_set_timeout(struct watchdog_device *wdt_dev,
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
 	u32 reg;
 
+	/* Equal hardware phases can represent only even final timeouts.
+	 * Refuse an unrepresentable request instead of advertising 31s while
+	 * programming two 16s phases. Single-stage mode still supports 31s.
+	 */
+	if (mtk_wdt->vendor_reset && wdt_dev->pretimeout && (timeout & 1))
+		return -EINVAL;
 	wdt_dev->timeout = timeout;
 	/*
 	 * In dual mode, irq will be triggered at timeout / 2
@@ -699,6 +708,9 @@ static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
 	unsigned long flags;
 	u32 reg;
 
+	if (mtk_wdt->vendor_reset && timeout &&
+	    ((wdd->timeout & 1) || timeout != wdd->timeout / 2))
+		return -EINVAL;
 	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = ioread32(wdt_base + WDT_MODE);
 	if (timeout && !wdd->pretimeout) {
@@ -722,6 +734,17 @@ static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
 static irqreturn_t mtk_wdt_isr(int irq, void *arg)
 {
 	struct watchdog_device *wdd = arg;
+	struct mtk_wdt_dev *wdt = watchdog_get_drvdata(wdd);
+
+	if (wdt->vendor_reset) {
+		wdt->bark_status = readl(wdt->wdt_base + WDT_STATUS);
+		wdt->bark_ns = ktime_get_boottime_ns();
+		wdt->bark_count++;
+		/* Leave the second stage counting. No RESTART or MODE write. */
+		dev_emerg(wdd->parent, "WDT pretimeout status=%#x boot_ns=%llu last_ping_ns=%llu; final hardware stage remains armed\n",
+			wdt->bark_status, wdt->bark_ns, READ_ONCE(wdt->last_hw_ping_ns));
+		trigger_all_cpu_backtrace();
+	}
 
 	watchdog_notify_pretimeout(wdd);
 
@@ -839,6 +862,8 @@ static ssize_t registers_show(struct device *dev,
 			     "sw: active=%d hw_running=%d timeout=%d pretimeout=%d bootstatus=0x%x\n",
 			     watchdog_active(wdd), watchdog_hw_running(wdd),
 			     wdd->timeout, wdd->pretimeout, wdd->bootstatus);
+	len += sysfs_emit_at(buf, len, "barks=%llu bark_status=%#x bark_boot_ns=%llu\n",
+		mtk_wdt->bark_count, mtk_wdt->bark_status, mtk_wdt->bark_ns);
 
 	return len;
 }
@@ -934,7 +959,12 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 			return err;
 
 		mtk_wdt->wdt_dev.info = &mtk_wdt_pt_info;
-		mtk_wdt->wdt_dev.pretimeout = WDT_MAX_TIMEOUT / 2;
+		/* Keep bootstrap single-stage. The core's pre-owner keepalive
+		 * interval is timeout/2, exactly the dual bark deadline. Userspace
+		 * can opt into equal dual phases through SETPRETIMEOUT after
+		 * establishing its own faster keepalive cadence.
+		 */
+		mtk_wdt->wdt_dev.pretimeout = mtk_wdt->vendor_reset ? 0 : WDT_MAX_TIMEOUT / 2;
 	} else {
 		if (irq == -EPROBE_DEFER)
 			return -EPROBE_DEFER;
