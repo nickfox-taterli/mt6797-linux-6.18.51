@@ -33,6 +33,12 @@
 	};
 };
 
+&watchdog {
+	/* Explicitly opt into the board's diagnostic BL31 capture ABI. */
+	mediatek,secure-capture;
+	timeout-sec = <30>;
+};
+
 &usb_device {
 	dr_mode = "host";
 	vbus-supply = <&usb_host_vbus>;
