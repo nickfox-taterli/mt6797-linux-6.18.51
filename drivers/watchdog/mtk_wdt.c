@@ -707,10 +707,43 @@ static int mtk_wdt_set_pretimeout(struct watchdog_device *wdd,
 	void __iomem *wdt_base = mtk_wdt->wdt_base;
 	unsigned long flags;
 	u32 reg;
+	int ret;
 
 	if (mtk_wdt->vendor_reset && timeout &&
 	    ((wdd->timeout & 1) || timeout != wdd->timeout / 2))
 		return -EINVAL;
+	if (mtk_wdt->vendor_reset) {
+		if (!!timeout == !!wdd->pretimeout)
+			return 0;
+		ret = mt6797_health_check(mtk_wdt);
+		if (ret)
+			return ret;
+		/* An immediate running single -> dual transition can miss the
+		 * first bark on MT6797. Configure and settle the new mode while
+		 * disabled, then reload and restore MODE.EN.
+		 * This bounded MMIO transaction is the only configuration gap;
+		 * ordinary keepalives and the bark ISR never rewrite MODE.
+		 */
+		spin_lock_irqsave(&mtk_wdt->lock, flags);
+		reg = readl(wdt_base + WDT_MODE);
+		wdd->pretimeout = timeout;
+		if (timeout)
+			reg |= WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN;
+		else
+			reg &= ~(WDT_MODE_IRQ_EN | WDT_MODE_DUAL_EN);
+		writel((reg & ~WDT_MODE_EN) | WDT_MODE_KEY, wdt_base + WDT_MODE);
+		readl(wdt_base + WDT_MODE);
+		/* Cover several 32 kHz cycles before loading the new phase. */
+		udelay(100);
+		writel(WDT_LENGTH_TIMEOUT((wdd->timeout - timeout) << 6) |
+		       WDT_LENGTH_KEY, wdt_base + WDT_LENGTH);
+		writel(WDT_RST_RELOAD, wdt_base + WDT_RST);
+		writel(reg | WDT_MODE_KEY, wdt_base + WDT_MODE);
+		readl(wdt_base + WDT_MODE);
+		WRITE_ONCE(mtk_wdt->last_hw_ping_ns, ktime_get_boottime_ns());
+		spin_unlock_irqrestore(&mtk_wdt->lock, flags);
+		return 0;
+	}
 	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = ioread32(wdt_base + WDT_MODE);
 	if (timeout && !wdd->pretimeout) {
