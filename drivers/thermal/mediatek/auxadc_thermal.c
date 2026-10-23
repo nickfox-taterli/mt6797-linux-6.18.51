@@ -577,6 +577,14 @@ static const struct mtk_thermal_data mt6797_thermal_data = {
 	.adcpnp = mt8173_adcpnp,
 	.sensor_mux_values = mt8173_mux_values,
 	.version = MTK_THERMAL_MT6797,
+	/* BSP TS_CONFIGURE/TS_TURN_ON: power the analog path before the
+	 * first real AUXADC conversion, with the existing 200us settling
+	 * delay in mtk_thermal_turn_on_buffer().  PNP writes alone do not
+	 * provide that interval before starting conversions.
+	 */
+	.apmixed_buffer_ctl_reg = APMIXED_SYS_TS_CON1,
+	.apmixed_buffer_ctl_mask = (u32)~GENMASK(5, 4),
+	.apmixed_buffer_ctl_set = 0,
 };
 
 /*
@@ -1826,19 +1834,27 @@ static const struct of_device_id mtk_thermal_of_match[] = {
 };
 MODULE_DEVICE_TABLE(of, mtk_thermal_of_match);
 
-static void mtk_thermal_turn_on_buffer(struct mtk_thermal *mt,
+static int mtk_thermal_turn_on_buffer(struct mtk_thermal *mt,
 				       void __iomem *apmixed_base)
 {
 	u32 tmp;
 
 	if (!mt->conf->apmixed_buffer_ctl_reg)
-		return;
+		return 0;
 
 	tmp = readl(apmixed_base + mt->conf->apmixed_buffer_ctl_reg);
 	tmp &= mt->conf->apmixed_buffer_ctl_mask;
 	tmp |= mt->conf->apmixed_buffer_ctl_set;
 	writel(tmp, apmixed_base + mt->conf->apmixed_buffer_ctl_reg);
 	udelay(200);
+	if (mt->conf->version == MTK_THERMAL_MT6797) {
+		tmp = readl(apmixed_base + APMIXED_SYS_TS_CON1);
+		if (tmp & GENMASK(5, 4))
+			return dev_err_probe(mt->dev, -EIO,
+				"TS analog buffer did not power on: %#x\n", tmp);
+		dev_info(mt->dev, "TS analog buffer on, 200us settle, TS_CON1=%#x\n", tmp);
+	}
+	return 0;
 }
 
 static void mtk_thermal_release_periodic_ts(struct mtk_thermal *mt,
@@ -1973,7 +1989,9 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	mtk_thermal_turn_on_buffer(mt, apmixed_base);
+	ret = mtk_thermal_turn_on_buffer(mt, apmixed_base);
+	if (ret)
+		return ret;
 
 	if (mt->conf->version == MTK_THERMAL_MT6797) {
 		/* BSP clears immediate and auto channel 11 before bank setup. */
