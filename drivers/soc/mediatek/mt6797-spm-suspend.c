@@ -255,6 +255,11 @@ static int memory_lease(void *ending, bool *quiescent)
 
 static int sleep_begin(suspend_state_t state)
 {
+	/* The suspend core falls back to platform ->begin() for s2idle when
+	 * no platform_s2idle_ops are installed. No PCM/lease is needed there.
+	 */
+	if (state == PM_SUSPEND_TO_IDLE)
+		return 0;
 	if (state != PM_SUSPEND_MEM || !try_module_get(THIS_MODULE))
 		return -ENODEV;
 	s.module_held = true;
