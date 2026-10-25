@@ -216,12 +216,13 @@ static int lab_release(struct inode *inode, struct file *file)
 	struct lab_buffer *buf, *next;
 
 	mutex_lock(&e->lifecycle);
-	/* Stop bus masters before returning their mappings. H264_ResetVENC in
-	 * the BSP library uses active-low 0xa8; VDEC_RESETB is GCON+0x10. */
-	lab_stop(e);
+	/* Reset, retire the IRQ and gate the engine before unmapping DMA.
+	 * VENC can issue an RCPU request after RESETB has been lowered;
+	 * keeping clocks live across dma_free_coherent leaves a use-after-
+	 * unmap window even when the completed image/IRQ was correct. */
+	lab_power_off(e);
 	list_for_each_entry_safe(buf, next, &ctx->buffers, list)
 		lab_dma_free(ctx, buf);
-	lab_power_off(e);
 	e->context = NULL;
 	e->sleeping = false;
 	atomic_set(&e->in_use, 0);
