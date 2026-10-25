@@ -117,6 +117,13 @@ static int lab_power_on(struct lab_engine *e)
 	ret = clk_bulk_prepare_enable(e->num_clks, e->clks);
 	if (ret)
 		goto larb;
+	if (e->encoder) {
+		/* A restored domain can retain the previous HEVC MODE/RCPU
+		 * enable. No bus master may run before the new owner maps DMA. */
+		writel(0, e->regs);
+		writel(0, e->regs + 0xa8);
+		readl(e->regs + 0xa8);
+	}
 	WRITE_ONCE(e->status, 0);
 	reinit_completion(&e->done);
 	e->powered = true;
@@ -140,6 +147,10 @@ static void lab_stop(struct lab_engine *e)
 	}
 	/* Complete the reset and retire the IRQ before clocks or DMA go away. */
 	if (e->encoder) {
+		/* RESETB alone does not retire a retained RCPU enable. Clear
+		 * MODE before reset/free, including process-death and PM paths. */
+		writel(0, e->regs);
+		readl(e->regs);
 		writel(0, e->regs + 0xa8);
 		readl(e->regs + 0xa8);
 	} else {
