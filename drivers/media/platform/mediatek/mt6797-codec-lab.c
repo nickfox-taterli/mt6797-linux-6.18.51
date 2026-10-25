@@ -5,6 +5,7 @@
 #include <linux/completion.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
+#include <linux/io.h>
 #include <linux/iommu.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
@@ -23,6 +24,7 @@
 #define LAB_WAIT _IOWR('X', 3, struct lab_wait)
 #define LAB_LOCK _IO('X', 4)
 #define LAB_UNLOCK _IO('X', 5)
+#define LAB_POWERCYCLE _IO('X', 6)
 #define LAB_DMA_BASE 0x60000000UL
 #define LAB_MAX_BYTES SZ_128M
 static bool diagnostics;
@@ -38,6 +40,7 @@ struct lab_buffer {
 	u32 size, id;
 	unsigned int maps;
 };
+struct lab_file;
 struct lab_engine {
 	struct device *dev, *larb;
 	struct miscdevice misc;
@@ -51,6 +54,9 @@ struct lab_engine {
 	atomic_t in_use;
 	struct completion done;
 	u32 status;
+	struct mutex lifecycle;
+	struct lab_file *context;
+	bool powered, sleeping, irq_live, system_sleep;
 };
 struct lab_file {
 	struct lab_engine *engine;
@@ -95,19 +101,12 @@ static irqreturn_t lab_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int lab_open(struct inode *inode, struct file *file)
+static int lab_power_on(struct lab_engine *e)
 {
-	struct lab_engine *e = container_of(file->private_data, struct lab_engine, misc);
-	struct lab_file *ctx;
-	int ret;
+	int ret = pm_runtime_resume_and_get(e->dev);
 
-	if (atomic_cmpxchg(&e->in_use, 0, 1))
-		return -EBUSY;
-	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
-	if (!ctx) { ret = -ENOMEM; goto unlock; }
-	ret = pm_runtime_resume_and_get(e->dev);
 	if (ret < 0)
-		goto free;
+		return ret;
 	if (e->gcon) {
 		writel(1, e->gcon + 0x10);
 		readl(e->gcon + 0x10);
@@ -118,22 +117,76 @@ static int lab_open(struct inode *inode, struct file *file)
 	ret = clk_bulk_prepare_enable(e->num_clks, e->clks);
 	if (ret)
 		goto larb;
-	lab_diagnose(e);
-	ctx->engine = e;
-	mutex_init(&ctx->mutex);
-	INIT_LIST_HEAD(&ctx->buffers);
-	file->private_data = ctx;
+	WRITE_ONCE(e->status, 0);
 	reinit_completion(&e->done);
+	e->powered = true;
 	enable_irq(e->irq);
+	e->irq_live = true;
 	return 0;
 larb:
 	pm_runtime_put_sync(e->larb);
 put:
 	pm_runtime_put_sync(e->dev);
+	return ret;
+}
+
+static void lab_stop(struct lab_engine *e)
+{
+	if (!e->powered)
+		return;
+	if (e->irq_live) {
+		disable_irq(e->irq);
+		e->irq_live = false;
+	}
+	/* Complete the reset and retire the IRQ before clocks or DMA go away. */
+	if (e->encoder) {
+		writel(0, e->regs + 0xa8);
+		readl(e->regs + 0xa8);
+	} else {
+		writel(0, e->gcon + 0x10);
+		readl(e->gcon + 0x10);
+	}
+}
+
+static void lab_power_off(struct lab_engine *e)
+{
+	if (!e->powered)
+		return;
+	lab_stop(e);
+	clk_bulk_disable_unprepare(e->num_clks, e->clks);
+	pm_runtime_put_sync(e->larb);
+	pm_runtime_put_sync(e->dev);
+	e->powered = false;
+}
+
+static int lab_open(struct inode *inode, struct file *file)
+{
+	struct lab_engine *e = container_of(file->private_data, struct lab_engine, misc);
+	struct lab_file *ctx;
+	int ret;
+
+	if (atomic_cmpxchg(&e->in_use, 0, 1))
+		return -EBUSY;
+	mutex_lock(&e->lifecycle);
+	if (e->system_sleep) { ret = -EBUSY; goto unlock; }
+	ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx) { ret = -ENOMEM; goto unlock; }
+	ret = lab_power_on(e);
+	if (ret)
+		goto free;
+	lab_diagnose(e);
+	ctx->engine = e;
+	mutex_init(&ctx->mutex);
+	INIT_LIST_HEAD(&ctx->buffers);
+	file->private_data = ctx;
+	e->context = ctx;
+	mutex_unlock(&e->lifecycle);
+	return 0;
 free:
 	kfree(ctx);
 unlock:
 	atomic_set(&e->in_use, 0);
+	mutex_unlock(&e->lifecycle);
 	return ret;
 }
 
@@ -151,22 +204,17 @@ static int lab_release(struct inode *inode, struct file *file)
 	struct lab_engine *e = ctx->engine;
 	struct lab_buffer *buf, *next;
 
-	disable_irq(e->irq);
+	mutex_lock(&e->lifecycle);
 	/* Stop bus masters before returning their mappings. H264_ResetVENC in
 	 * the BSP library uses active-low 0xa8; VDEC_RESETB is GCON+0x10. */
-	if (e->encoder) {
-		writel(0, e->regs + 0xa8);
-		readl(e->regs + 0xa8);
-	} else {
-		writel(0, e->gcon + 0x10);
-		readl(e->gcon + 0x10);
-	}
+	lab_stop(e);
 	list_for_each_entry_safe(buf, next, &ctx->buffers, list)
 		lab_dma_free(ctx, buf);
-	clk_bulk_disable_unprepare(e->num_clks, e->clks);
-	pm_runtime_put_sync(e->larb);
-	pm_runtime_put_sync(e->dev);
+	lab_power_off(e);
+	e->context = NULL;
+	e->sleeping = false;
 	atomic_set(&e->in_use, 0);
+	mutex_unlock(&e->lifecycle);
 	kfree(ctx);
 	return 0;
 }
@@ -195,7 +243,9 @@ static long lab_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		wait.status = READ_ONCE(e->status);
 		return copy_to_user(user, &wait, sizeof(wait)) ? -EFAULT : 0;
 	}
+	mutex_lock(&e->lifecycle);
 	mutex_lock(&ctx->mutex);
+	if (!e->powered || e->sleeping) { ret = -EHOSTDOWN; goto out; }
 	if (cmd == LAB_LOCK) {
 		if (ctx->locked) { ret = -EBUSY; goto out; }
 		reinit_completion(&e->done);
@@ -205,6 +255,14 @@ static long lab_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	if (cmd == LAB_UNLOCK) {
 		if (!ctx->locked) { ret = -EINVAL; goto out; }
 		ctx->locked = false;
+		goto out;
+	}
+	/* The product flow powers the VDEC domain off/on between frames;
+	 * replicate it while the coherent mappings stay attached. */
+	if (cmd == LAB_POWERCYCLE) {
+		if (ctx->locked) { ret = -EBUSY; goto out; }
+		lab_power_off(e);
+		ret = lab_power_on(e);
 		goto out;
 	}
 	if (cmd != LAB_ALLOC && cmd != LAB_FREE) { ret = -ENOTTY; goto out; }
@@ -242,6 +300,7 @@ static long lab_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	dev_dbg(e->dev, "DMA id=%u iova=%pad size=%u\n", buf->id, &buf->dma, buf->size);
 out:
 	mutex_unlock(&ctx->mutex);
+	mutex_unlock(&e->lifecycle);
 	return ret;
 }
 
@@ -363,6 +422,7 @@ static int lab_probe(struct platform_device *pdev)
 		return e->irq;
 	init_completion(&e->done);
 	atomic_set(&e->in_use, 0);
+	mutex_init(&e->lifecycle);
 	ret = devm_request_irq(e->dev, e->irq, lab_irq, IRQF_NO_AUTOEN, dev_name(e->dev), e);
 	if (ret)
 		return ret;
@@ -388,10 +448,40 @@ static void lab_remove(struct platform_device *pdev)
 static int lab_suspend(struct device *dev)
 {
 	struct lab_engine *e = dev_get_drvdata(dev);
+	int ret = 0;
 
-	return atomic_read(&e->in_use) ? -EBUSY : 0;
+	mutex_lock(&e->lifecycle);
+	if (e->context && READ_ONCE(e->context->locked)) {
+		ret = -EBUSY;
+	} else {
+		e->system_sleep = true;
+		if (e->context && e->powered) {
+			/* Idle mappings stay owned by their file across sleep. Each
+			 * new job programs fresh registers after LAB_LOCK, so no MMIO
+			 * image needs restoring; coherent pixels stay in RAM. */
+			lab_power_off(e);
+			e->sleeping = true;
+		}
+	}
+	mutex_unlock(&e->lifecycle);
+	return ret;
 }
-static DEFINE_SIMPLE_DEV_PM_OPS(lab_pm, lab_suspend, NULL);
+static int lab_resume(struct device *dev)
+{
+	struct lab_engine *e = dev_get_drvdata(dev);
+	int ret = 0;
+
+	mutex_lock(&e->lifecycle);
+	if (e->sleeping) {
+		ret = lab_power_on(e);
+		if (!ret)
+			e->sleeping = false;
+	}
+	e->system_sleep = false;
+	mutex_unlock(&e->lifecycle);
+	return ret;
+}
+static DEFINE_SIMPLE_DEV_PM_OPS(lab_pm, lab_suspend, lab_resume);
 static const struct of_device_id lab_match[] = {
 	{ .compatible = "mediatek,mt6797-venc-lab" },
 	{ .compatible = "mediatek,mt6797-vdec-lab" }, {},
