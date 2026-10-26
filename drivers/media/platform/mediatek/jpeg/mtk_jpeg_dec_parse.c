@@ -41,98 +41,78 @@ static int read_word_be(struct mtk_jpeg_stream *stream, u32 *word)
 	return 0;
 }
 
-static void read_skip(struct mtk_jpeg_stream *stream, long len)
-{
-	if (len <= 0)
-		return;
-	while (len--)
-		read_byte(stream);
-}
-
 static bool mtk_jpeg_do_parse(struct mtk_jpeg_dec_param *param, u8 *src_addr_va,
 			      u32 src_size)
 {
-	bool notfound = true;
 	struct mtk_jpeg_stream stream;
 
 	stream.addr = src_addr_va;
 	stream.size = src_size;
 	stream.curr = 0;
 
-	while (notfound) {
-		int i, length, byte;
-		u32 word;
+	if (!src_addr_va || read_byte(&stream) != 0xff ||
+	    read_byte(&stream) != JPEG_MARKER_SOI)
+		return false;
+
+	while (stream.curr < stream.size) {
+		int i, byte, marker;
+		u32 length, word;
 
 		byte = read_byte(&stream);
-		if (byte == -1)
-			return false;
 		if (byte != 0xff)
-			continue;
+			return false;
 		do
 			byte = read_byte(&stream);
 		while (byte == 0xff);
-		if (byte == -1)
+		if (byte <= 0 || byte == JPEG_MARKER_EOI ||
+		    byte == JPEG_MARKER_SOS)
 			return false;
-		if (byte == 0)
+		if (byte == JPEG_MARKER_TEM)
 			continue;
 
-		length = 0;
-		switch (byte) {
-		case JPEG_MARKER_SOF0:
-			/* length */
-			if (read_word_be(&stream, &word))
-				break;
-
-			/* precision */
-			if (read_byte(&stream) == -1)
-				break;
-
-			if (read_word_be(&stream, &word))
-				break;
-			param->pic_h = word;
-
-			if (read_word_be(&stream, &word))
-				break;
-			param->pic_w = word;
-
-			param->comp_num = read_byte(&stream);
-			if (param->comp_num != 1 && param->comp_num != 3)
-				break;
-
-			for (i = 0; i < param->comp_num; i++) {
-				param->comp_id[i] = read_byte(&stream);
-				if (param->comp_id[i] == -1)
-					break;
-
-				/* sampling */
-				byte = read_byte(&stream);
-				if (byte == -1)
-					break;
-				param->sampling_w[i] = (byte >> 4) & 0x0F;
-				param->sampling_h[i] = byte & 0x0F;
-
-				param->qtbl_num[i] = read_byte(&stream);
-				if (param->qtbl_num[i] == -1)
-					break;
-			}
-
-			notfound = !(i == param->comp_num);
-			break;
-		case JPEG_MARKER_RST ... JPEG_MARKER_RST + 7:
-		case JPEG_MARKER_SOI:
-		case JPEG_MARKER_EOI:
-		case JPEG_MARKER_TEM:
-			break;
-		default:
-			if (read_word_be(&stream, &word))
-				break;
-			length = (long)word - 2;
-			read_skip(&stream, length);
-			break;
+		marker = byte;
+		/* Only baseline sequential, 8-bit Huffman frames are supported.
+		 * Do not search through unsupported frame entropy for a false SOF0. */
+		if (marker >= 0xc0 && marker <= 0xcf &&
+		    marker != JPEG_MARKER_SOF0 && marker != JPEG_MARKER_DHT)
+			return false;
+		if (read_word_be(&stream, &length) || length < 2 ||
+		    length - 2 > stream.size - stream.curr)
+			return false;
+		if (marker != JPEG_MARKER_SOF0) {
+			stream.curr += length - 2;
+			continue;
 		}
+		if (length < 8 || read_byte(&stream) != 8 ||
+		    read_word_be(&stream, &word) || !word)
+			return false;
+		param->pic_h = word;
+		if (read_word_be(&stream, &word) || !word)
+			return false;
+		param->pic_w = word;
+		param->comp_num = read_byte(&stream);
+		if ((param->comp_num != 1 && param->comp_num != 3) ||
+		    length != 8 + 3 * param->comp_num)
+			return false;
+		for (i = 0; i < param->comp_num; i++) {
+			int j;
+
+			param->comp_id[i] = read_byte(&stream);
+			for (j = 0; j < i; j++)
+				if (param->comp_id[j] == param->comp_id[i])
+					return false;
+			byte = read_byte(&stream);
+			param->sampling_w[i] = byte >> 4;
+			param->sampling_h[i] = byte & 0x0f;
+			param->qtbl_num[i] = read_byte(&stream);
+			if (!param->sampling_w[i] || !param->sampling_h[i] ||
+			    param->qtbl_num[i] > 3)
+				return false;
+		}
+		return true;
 	}
 
-	return !notfound;
+	return false;
 }
 
 bool mtk_jpeg_parse(struct mtk_jpeg_dec_param *param, u8 *src_addr_va,

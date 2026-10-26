@@ -6,6 +6,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/iommu.h>
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
@@ -154,6 +155,17 @@ static void lab_stop(struct lab_engine *e)
 		writel(0, e->regs + 0xa8);
 		readl(e->regs + 0xa8);
 	} else {
+		u32 idle;
+
+		/* Successful userspace submissions stop the decoder bus before
+		 * reading output. Timeout and process-death paths must do it too:
+		 * resetting GCON first can leave the VLD fetcher requesting IOVA 0. */
+		writel(readl(e->regs + 0x100) | 1, e->regs + 0x100);
+		if (readl_poll_timeout(e->regs + 0x104, idle,
+				       (idle & 0x11) == 0x11, 1, 2000))
+			dev_warn(e->dev, "decoder bus stop timed out: %08x\n", idle);
+		writel(0x101, e->regs + 0x1108);
+		readl(e->regs + 0x1108);
 		writel(0, e->gcon + 0x10);
 		readl(e->gcon + 0x10);
 	}
@@ -291,7 +303,7 @@ static long lab_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		}
 		goto out;
 	}
-	if (!req.size || req.size > SZ_32M || ctx->bytes + PAGE_ALIGN(req.size) > LAB_MAX_BYTES ||
+	if (!req.size || req.size > SZ_64M || ctx->bytes + PAGE_ALIGN(req.size) > LAB_MAX_BYTES ||
 	    ctx->next_id >= 0xffff) { ret = -EINVAL; goto out; }
 	buf = kzalloc(sizeof(*buf), GFP_KERNEL);
 	if (!buf) { ret = -ENOMEM; goto out; }

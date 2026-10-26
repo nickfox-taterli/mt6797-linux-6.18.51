@@ -100,6 +100,15 @@ static struct mtk_jpeg_fmt mtk_jpeg_dec_formats[] = {
 		.v_align	= 3,
 		.flags		= MTK_JPEG_FMT_FLAG_CAPTURE,
 	},
+	{
+		.fourcc		= V4L2_PIX_FMT_GREY,
+		.h_sample	= {4},
+		.v_sample	= {4},
+		.colplanes	= 1,
+		.h_align	= 5,
+		.v_align	= 3,
+		.flags		= MTK_JPEG_FMT_FLAG_CAPTURE,
+	},
 };
 
 #define MTK_JPEG_ENC_NUM_FORMATS ARRAY_SIZE(mtk_jpeg_enc_formats)
@@ -283,9 +292,9 @@ static int mtk_jpeg_try_fmt_mplane(struct v4l2_pix_format_mplane *pix_mp,
 	}
 
 	/* other fourcc */
-	pix_mp->height = clamp(round_up(pix_mp->height, fmt->v_align),
+	pix_mp->height = clamp(round_up(pix_mp->height, 1U << fmt->v_align),
 			       MTK_JPEG_MIN_HEIGHT, MTK_JPEG_MAX_HEIGHT);
-	pix_mp->width = clamp(round_up(pix_mp->width, fmt->h_align),
+	pix_mp->width = clamp(round_up(pix_mp->width, 1U << fmt->h_align),
 			      MTK_JPEG_MIN_WIDTH, MTK_JPEG_MAX_WIDTH);
 
 	for (i = 0; i < fmt->colplanes; i++) {
@@ -596,6 +605,8 @@ static int mtk_jpeg_qbuf(struct file *file, void *priv, struct v4l2_buffer *buf)
 
 	if (buf->type != V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
 		goto end;
+	if (!buf->length || !buf->m.planes)
+		return -EINVAL;
 
 	vq = v4l2_m2m_get_vq(fh->m2m_ctx, buf->type);
 	vb = vb2_get_buffer(vq, buf->index);
@@ -717,6 +728,13 @@ static int mtk_jpeg_buf_prepare(struct vb2_buffer *vb)
 
 	for (i = 0; i < q_data->fmt->colplanes; i++) {
 		plane_fmt = q_data->pix_mp.plane_fmt[i];
+		if (vb2_plane_size(vb, i) < plane_fmt.sizeimage)
+			return -EINVAL;
+		/* Compressed OUTPUT bytesused is supplied by QBUF. Parsing the
+		 * allocation instead would also consume padding after a short JPEG. */
+		if (V4L2_TYPE_IS_OUTPUT(vb->type) &&
+		    q_data->fmt->fourcc == V4L2_PIX_FMT_JPEG)
+			continue;
 		if (ctx->enable_exif &&
 		    q_data->fmt->fourcc == V4L2_PIX_FMT_JPEG)
 			vb2_set_plane_payload(vb, i, plane_fmt.sizeimage +
@@ -817,6 +835,11 @@ static void mtk_jpeg_dec_buf_queue(struct vb2_buffer *vb)
 
 	header_valid = mtk_jpeg_parse(param, (u8 *)vb2_plane_vaddr(vb, 0),
 				      vb2_get_plane_payload(vb, 0));
+	if (header_valid &&
+	    !mtk_jpeg_find_format(jpeg->variant->formats,
+				 jpeg->variant->num_formats, param->dst_fourcc,
+				 MTK_JPEG_FMT_FLAG_CAPTURE))
+		header_valid = false;
 	if (!header_valid) {
 		v4l2_err(&jpeg->v4l2_dev, "Header invalid.\n");
 		vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
@@ -869,9 +892,13 @@ static void mtk_jpeg_dec_stop_streaming(struct vb2_queue *q)
 		struct mtk_jpeg_src_buf *src_buf;
 
 		vb = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
-		src_buf = mtk_jpeg_vb2_to_srcbuf(&vb->vb2_buf);
-		mtk_jpeg_set_queue_data(ctx, &src_buf->dec_param);
-		ctx->state = MTK_JPEG_RUNNING;
+		if (vb) {
+			src_buf = mtk_jpeg_vb2_to_srcbuf(&vb->vb2_buf);
+			mtk_jpeg_set_queue_data(ctx, &src_buf->dec_param);
+			ctx->state = MTK_JPEG_RUNNING;
+		} else {
+			ctx->state = MTK_JPEG_INIT;
+		}
 	} else if (V4L2_TYPE_IS_OUTPUT(q->type)) {
 		ctx->state = MTK_JPEG_INIT;
 	}
@@ -899,9 +926,10 @@ static void mtk_jpeg_set_dec_src(struct mtk_jpeg_ctx *ctx,
 				 struct mtk_jpeg_bs *bs)
 {
 	bs->str_addr = vb2_dma_contig_plane_dma_addr(src_buf, 0);
-	bs->end_addr = bs->str_addr +
-		       round_up(vb2_get_plane_payload(src_buf, 0), 16);
 	bs->size = round_up(vb2_plane_size(src_buf, 0), 128);
+	/* The fetcher needs padding after EOI. Keep its write pointer at the
+	 * allocation end; BIT_STREAM_SIZE still receives the actual bytesused. */
+	bs->end_addr = bs->str_addr + vb2_plane_size(src_buf, 0);
 }
 
 static int mtk_jpeg_set_dec_dst(struct mtk_jpeg_ctx *ctx,
@@ -998,7 +1026,7 @@ static void mtk_jpeg_dec_device_run(void *priv)
 	unsigned long flags;
 	struct mtk_jpeg_src_buf *jpeg_src_buf;
 	struct mtk_jpeg_bs bs;
-	struct mtk_jpeg_fb fb;
+	struct mtk_jpeg_fb fb = {};
 	int ret;
 
 	src_buf = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
@@ -1017,8 +1045,10 @@ static void mtk_jpeg_dec_device_run(void *priv)
 		goto dec_end;
 
 	mtk_jpeg_set_dec_src(ctx, &src_buf->vb2_buf, &bs);
-	if (mtk_jpeg_set_dec_dst(ctx, &jpeg_src_buf->dec_param, &dst_buf->vb2_buf, &fb))
+	if (mtk_jpeg_set_dec_dst(ctx, &jpeg_src_buf->dec_param, &dst_buf->vb2_buf, &fb)) {
+		pm_runtime_put(jpeg->dev);
 		goto dec_end;
+	}
 
 	schedule_delayed_work(&jpeg->job_timeout_work,
 			      msecs_to_jiffies(MTK_JPEG_HW_TIMEOUT_MSEC));
@@ -1691,7 +1721,7 @@ static void mtk_jpegdec_worker(struct work_struct *work)
 	struct mtk_jpeg_dev *jpeg = ctx->jpeg;
 	int ret, i, hw_id = 0;
 	struct mtk_jpeg_bs bs;
-	struct mtk_jpeg_fb fb;
+	struct mtk_jpeg_fb fb = {};
 	unsigned long flags;
 
 	for (i = 0; i < MTK_JPEGDEC_HW_MAX; i++)

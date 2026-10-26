@@ -99,13 +99,12 @@ static int mtk_jpeg_decide_format(struct mtk_jpeg_dec_param *param)
 
 static void mtk_jpeg_calc_mcu(struct mtk_jpeg_dec_param *param)
 {
-	u32 factor_w, factor_h;
 	u32 i, comp, blk;
 
-	factor_w = 2 + param->sampling_w[0];
-	factor_h = 2 + param->sampling_h[0];
-	param->mcu_w = (param->pic_w + (1 << factor_w) - 1) >> factor_w;
-	param->mcu_h = (param->pic_h + (1 << factor_h) - 1) >> factor_h;
+	param->mcu_w = DIV_ROUND_UP(param->pic_w,
+				  MTK_JPEG_DCTSIZE * param->sampling_w[0]);
+	param->mcu_h = DIV_ROUND_UP(param->pic_h,
+				  MTK_JPEG_DCTSIZE * param->sampling_h[0]);
 	param->total_mcu = param->mcu_w * param->mcu_h;
 	param->unit_num = ((param->pic_w + 7) >> 3) * ((param->pic_h + 7) >> 3);
 	param->blk_num = 0;
@@ -164,7 +163,7 @@ static void mtk_jpeg_calc_dma_group(struct mtk_jpeg_dec_param *param)
 static int mtk_jpeg_calc_dst_size(struct mtk_jpeg_dec_param *param)
 {
 	u32 i, padding_w;
-	u32 ds_row_h[3];
+	u32 ds_row_h[3] = {};
 	u32 brz_w[3];
 
 	brz_w[0] = 0;
@@ -183,6 +182,8 @@ static int mtk_jpeg_calc_dst_size(struct mtk_jpeg_dec_param *param)
 					    MTK_JPEG_DCTSIZE);
 		param->img_stride[i] = i ? round_up(param->comp_w[i], 16)
 					: round_up(param->comp_w[i], 32);
+		if (param->img_stride[i] > U16_MAX)
+			return -1;
 		ds_row_h[i] = (MTK_JPEG_DCTSIZE * param->sampling_h[i]);
 	}
 	param->dec_w = param->img_stride[0];
