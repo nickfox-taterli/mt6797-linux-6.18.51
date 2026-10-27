@@ -27,6 +27,7 @@ struct mt6797_otp {
 	struct freq_qos_request qos;
 	struct mutex lock;
 	struct hrtimer timer;
+	struct workqueue_struct *wq;
 	struct work_struct work;
 	u32 saved[12], mts, bts, score, frequency;
 	unsigned int target, limit;
@@ -87,7 +88,7 @@ static void otp_work(struct work_struct *work)
 	u64 now = ktime_get_ns();
 	u32 mux, percent;
 	unsigned int limit = OTP_MAX_KHZ;
-	int temp, ret = 0;
+	int temp, ret = 0, bank_ret;
 
 	cpus_read_lock();
 	mutex_lock(&s->lock);
@@ -102,10 +103,19 @@ static void otp_work(struct work_struct *work)
 	}
 	if (!s->programmed || !(otp_read(0) & BIT(0)))
 		ret = otp_program(s);
-	if (!ret)
-		ret = mt6797_thermal_bank_temp(s->thermal, 0, &temp);
-	if (ret) {
+	/* Read the bank even when OTP programming failed. The TC SRAM trace
+	 * archive is the WDT forensic record; a degraded OTP tick must not
+	 * silently stop all bank transactions (observed on the board as a
+	 * whole boot with an empty trace and no kernel message). */
+	bank_ret = mt6797_thermal_bank_temp(s->thermal, 0, &temp);
+	if (ret || bank_ret) {
 		s->failures++;
+		/* First failure and then a slow heartbeat: silent clamping of the
+		 * big cluster to the minimum is invisible without this. */
+		if (s->failures <= 2 || s->failures % 1000 == 0)
+			dev_warn_ratelimited(s->dev,
+				"tick failing: program=%d bank=%d, policy8 clamped to %u kHz (samples=%llu failures=%llu)\n",
+				ret, bank_ret, OTP_MIN_KHZ, s->samples, s->failures);
 		limit = OTP_MIN_KHZ;
 		goto update;
 	}
@@ -161,7 +171,12 @@ static enum hrtimer_restart otp_tick(struct hrtimer *timer)
 {
 	struct mt6797_otp *s = container_of(timer, struct mt6797_otp, timer);
 
-	queue_work_on(0, system_highpri_wq, &s->work);
+	/* Unbound queue: the 5 ms tick performs SMC OTP access and the WDT
+	 * thermal-request disable/enable around every TC bank switch. Pinning
+	 * that to CPU0 (the tick/timekeeping and IRQ-affinity owner) put the
+	 * hottest MMIO/SMC path in the system on the one CPU whose loss is
+	 * always fatal. The BSP PID semantics do not depend on the CPU. */
+	queue_work(s->wq, &s->work);
 	hrtimer_forward_now(timer, ns_to_ktime(OTP_PERIOD_NS));
 	return HRTIMER_RESTART;
 }
@@ -284,6 +299,12 @@ static int otp_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 	platform_set_drvdata(pdev, s);
+	s->wq = alloc_workqueue("mt6797-otp", WQ_UNBOUND | WQ_HIGHPRI, 1);
+	if (!s->wq) {
+		freq_qos_remove_request(&s->qos);
+		cpufreq_cpu_put(s->policy);
+		return -ENOMEM;
+	}
 	s->enabled = true;
 	hrtimer_start(&s->timer, ns_to_ktime(OTP_PERIOD_NS), HRTIMER_MODE_REL);
 	dev_info(dev, "BSP PID target=150C MTS=%u BTS=%u; manual OPP QoS actuator\n",
@@ -296,6 +317,7 @@ static void otp_remove(struct platform_device *pdev)
 	struct mt6797_otp *s = platform_get_drvdata(pdev);
 
 	otp_stop(s);
+	destroy_workqueue(s->wq);
 	freq_qos_remove_request(&s->qos);
 	cpufreq_cpu_put(s->policy);
 }
