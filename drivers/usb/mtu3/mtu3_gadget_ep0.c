@@ -704,6 +704,8 @@ irqreturn_t mtu3_ep0_isr(struct mtu3 *mtu)
 
 	int_status = mtu3_readl(mbase, U3D_EPISR);
 	int_status &= mtu3_readl(mbase, U3D_EPIER);
+	if (int_status & (EP0ISR | SETUPENDISR))
+		mtu3_trace_usb_diag(mtu, 2);
 	mtu3_writel(mbase, U3D_EPISR, int_status); /* W1C */
 
 	/* only handle ep0's */

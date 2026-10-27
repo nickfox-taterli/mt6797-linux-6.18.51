@@ -67,6 +67,61 @@ TRACE_EVENT(mtu3_u2_common_isr,
 	)
 );
 
+TRACE_EVENT(mtu3_usb_diag,
+	TP_PROTO(u32 phase, u32 level1, u32 level1_en,
+		 u32 ep_status, u32 ep_enable, u32 ep0csr, u32 rxcount,
+		 u32 u2_status, u32 u2_enable,
+		 u32 link_status, u32 link_enable,
+		 u32 device_conf, u32 power, u32 ep0_state,
+		 u32 speed, u32 connected),
+	TP_ARGS(phase, level1, level1_en, ep_status, ep_enable, ep0csr, rxcount,
+		u2_status, u2_enable, link_status, link_enable,
+		device_conf, power, ep0_state, speed, connected),
+	TP_STRUCT__entry(
+		__field(u32, phase)
+		__field(u32, level1)
+		__field(u32, level1_en)
+		__field(u32, ep_status)
+		__field(u32, ep_enable)
+		__field(u32, ep0csr)
+		__field(u32, rxcount)
+		__field(u32, u2_status)
+		__field(u32, u2_enable)
+		__field(u32, link_status)
+		__field(u32, link_enable)
+		__field(u32, device_conf)
+		__field(u32, power)
+		__field(u32, ep0_state)
+		__field(u32, speed)
+		__field(u32, connected)
+	),
+	TP_fast_assign(
+		__entry->phase = phase;
+		__entry->level1 = level1;
+		__entry->level1_en = level1_en;
+		__entry->ep_status = ep_status;
+		__entry->ep_enable = ep_enable;
+		__entry->ep0csr = ep0csr;
+		__entry->rxcount = rxcount;
+		__entry->u2_status = u2_status;
+		__entry->u2_enable = u2_enable;
+		__entry->link_status = link_status;
+		__entry->link_enable = link_enable;
+		__entry->device_conf = device_conf;
+		__entry->power = power;
+		__entry->ep0_state = ep0_state;
+		__entry->speed = speed;
+		__entry->connected = connected;
+	),
+	TP_printk("phase=%u lv1=%08x/%08x ep=%08x/%08x csr=%08x rx=%u u2=%08x/%08x link=%08x/%08x conf=%08x pm=%08x ep0_state=%u speed=%u connected=%u",
+		__entry->phase, __entry->level1, __entry->level1_en,
+		__entry->ep_status, __entry->ep_enable, __entry->ep0csr,
+		__entry->rxcount, __entry->u2_status, __entry->u2_enable,
+		__entry->link_status, __entry->link_enable,
+		__entry->device_conf, __entry->power, __entry->ep0_state,
+		__entry->speed, __entry->connected)
+);
+
 TRACE_EVENT(mtu3_qmu_isr,
 	TP_PROTO(u32 done_intr, u32 exp_intr),
 	TP_ARGS(done_intr, exp_intr),

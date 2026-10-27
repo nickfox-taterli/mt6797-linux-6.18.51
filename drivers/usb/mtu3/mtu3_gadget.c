@@ -770,4 +770,8 @@ void mtu3_gadget_reset(struct mtu3 *mtu)
 		mtu3_gadget_disconnect(mtu);
 	else
 		mtu3_state_reset(mtu);
+
+	/* This generation configures EP0 on every USB bus reset. */
+	if (mtu->ssusb->is_mt6797)
+		mtu3_ep0_reset(mtu);
 }

@@ -225,6 +225,7 @@ struct otg_switch_mtk {
  * @mac_base: register base address of device MAC, exclude xHCI's
  * @ippc_base: register base address of IP Power and Clock interface (IPPC)
  * @vusb33: usb3.3V shared by device/host IP
+ * @is_mt6797: USB2 device with PHY-managed clocks and legacy reset sequencing
  * @dr_mode: works in which mode:
  *		host only, device only or dual-role mode
  * @u2_ports: number of usb2.0 host ports
@@ -250,6 +251,7 @@ struct ssusb_mtk {
 	int wakeup_irq;
 	/* common power & clock */
 	struct regulator *vusb33;
+	bool is_mt6797;
 	struct clk_bulk_data clks[BULK_CLKS_CNT];
 	/* otg */
 	struct otg_switch_mtk otg_switch;
@@ -431,9 +433,11 @@ void mtu3_dev_on_off(struct mtu3 *mtu, int is_on);
 int mtu3_gadget_setup(struct mtu3 *mtu);
 void mtu3_gadget_cleanup(struct mtu3 *mtu);
 void mtu3_gadget_reset(struct mtu3 *mtu);
+void mtu3_ep0_reset(struct mtu3 *mtu);
 void mtu3_gadget_suspend(struct mtu3 *mtu);
 void mtu3_gadget_resume(struct mtu3 *mtu);
 void mtu3_gadget_disconnect(struct mtu3 *mtu);
+void mtu3_trace_usb_diag(struct mtu3 *mtu, u32 phase);
 
 irqreturn_t mtu3_ep0_isr(struct mtu3 *mtu);
 extern const struct usb_ep_ops mtu3_ep0_ops;

@@ -12,6 +12,7 @@
 #include <dt-bindings/reset/mt2712-resets.h>
 #include <dt-bindings/reset/mediatek,mt6735-wdt.h>
 #include <dt-bindings/reset/mediatek,mt6795-resets.h>
+#include <dt-bindings/reset/mediatek,mt6797-resets.h>
 #include <dt-bindings/reset/mt7986-resets.h>
 #include <dt-bindings/reset/mt8183-resets.h>
 #include <dt-bindings/reset/mt8186-resets.h>
@@ -32,6 +33,7 @@
 #include <linux/types.h>
 #include <linux/watchdog.h>
 #include <linux/interrupt.h>
+#include <linux/soc/mediatek/mt6797-toprgu.h>
 #include <linux/soc/mediatek/mt6797-wdt.h>
 #include <linux/sysfs.h>
 #include <linux/cpu.h>
@@ -280,6 +282,7 @@ static const struct mtk_wdt_data mt6735_data = {
 };
 
 static const struct mtk_wdt_data mt6797_data = {
+	.toprgu_sw_rst_num = MT6797_TOPRGU_SW_RST_NUM,
 	.vendor_reset = true,
 	.ram_console_phys = 0x0012d000,
 	.ram_console_size = 0xc00,
@@ -398,6 +401,56 @@ int mt6797_wdt_thermal_request(struct device *dev, bool enable)
 }
 EXPORT_SYMBOL_GPL(mt6797_wdt_thermal_request);
 
+int mt6797_wdt_reset_request(struct device *dev, u32 request, bool enable)
+{
+	struct mtk_wdt_dev *wdt = dev_get_drvdata(dev);
+	unsigned long flags;
+	u32 mode, irq;
+	int ret = 0;
+
+	if (!wdt || !wdt->vendor_reset)
+		return -ENODEV;
+	if (!request || (request & ~0x00ffffff))
+		return -EINVAL;
+
+	spin_lock_irqsave(&wdt->lock, flags);
+	mode = readl(wdt->wdt_base + WDT_REQ_MODE_REG) & 0x00ffffff;
+	irq = readl(wdt->wdt_base + WDT_REQ_IRQ_EN_REG) & 0x00ffffff;
+	mode = enable ? mode | request : mode & ~request;
+	irq &= ~request;
+	writel(0x44000000 | irq, wdt->wdt_base + WDT_REQ_IRQ_EN_REG);
+	writel(0x33000000 | mode, wdt->wdt_base + WDT_REQ_MODE_REG);
+	if ((readl(wdt->wdt_base + WDT_REQ_MODE_REG) & request) !=
+	    (mode & request) ||
+	    (readl(wdt->wdt_base + WDT_REQ_IRQ_EN_REG) & request))
+		ret = -EIO;
+	spin_unlock_irqrestore(&wdt->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(mt6797_wdt_reset_request);
+
+static int mt6797_request_init(struct mtk_wdt_dev *wdt)
+{
+	unsigned long flags;
+	u32 mode, irq;
+	int ret = 0;
+
+	spin_lock_irqsave(&wdt->lock, flags);
+	mode = readl(wdt->wdt_base + WDT_REQ_MODE_REG) & 0x00ffffff;
+	irq = readl(wdt->wdt_base + WDT_REQ_IRQ_EN_REG) & 0x00ffffff;
+	mode &= ~BIT(2);
+	irq |= BIT(2);
+	writel(0x33000000 | mode, wdt->wdt_base + WDT_REQ_MODE_REG);
+	writel(0x44000000 | irq, wdt->wdt_base + WDT_REQ_IRQ_EN_REG);
+	if ((readl(wdt->wdt_base + WDT_REQ_MODE_REG) & BIT(2)) ||
+	    !(readl(wdt->wdt_base + WDT_REQ_IRQ_EN_REG) & BIT(2)))
+		ret = -EIO;
+	spin_unlock_irqrestore(&wdt->lock, flags);
+
+	return ret;
+}
+
 /* Called with the shared thermal/EEM bank lock held.  Preserve an
  * intentionally disarmed request, and never clear WDT_STATUS here.
  */
@@ -499,6 +552,9 @@ static int toprgu_reset_update(struct reset_controller_dev *rcdev,
 	struct mtk_wdt_dev *data =
 		 container_of(rcdev, struct mtk_wdt_dev, rcdev);
 
+	if (data->vendor_reset)
+		return mt6797_toprgu_update(id, assert);
+
 	spin_lock_irqsave(&data->lock, flags);
 
 	if (assert && data->has_swsysrst_en)
@@ -582,13 +638,16 @@ static int mtk_wdt_restart(struct watchdog_device *wdt_dev,
 	spin_lock_irqsave(&mtk_wdt->lock, flags);
 	reg = readl(wdt_base + WDT_MODE);
 	if (mtk_wdt->vendor_reset) {
+		const char *cmd = data;
+
 		/* Match the MT6797 vendor wdt_arch_reset() sequence. */
 		iowrite32(WDT_RST_RELOAD, wdt_base + WDT_RST);
 		reg = readl(wdt_base + WDT_MODE);
 		reg &= ~(WDT_MODE_AUTO_START | WDT_MODE_IRQ_EN |
 			 WDT_MODE_EN | WDT_MODE_DUAL_EN);
 		reg |= WDT_MODE_EXRST_EN;
-		if (action)
+		/* action is enum reboot_mode, not the BSP bypass boolean. */
+		if (!cmd || (strcmp(cmd, "bootloader") && strcmp(cmd, "fastboot")))
 			reg |= WDT_MODE_AUTO_START;
 	} else {
 		/* Enable reset in order to issue a system reset instead of an IRQ. */
@@ -1055,6 +1114,16 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 
 	watchdog_set_drvdata(&mtk_wdt->wdt_dev, mtk_wdt);
 
+	mtk_wdt->disable_wdt_extrst =
+		of_property_read_bool(dev->of_node, "mediatek,disable-extrst");
+	mtk_wdt->reset_by_toprgu =
+		of_property_read_bool(dev->of_node, "mediatek,reset-by-toprgu");
+	if (mtk_wdt->vendor_reset) {
+		err = mt6797_request_init(mtk_wdt);
+		if (err)
+			return err;
+	}
+
 	mtk_wdt_init(&mtk_wdt->wdt_dev);
 
 	if (mtk_wdt->ram_console) {
@@ -1069,7 +1138,7 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 		 * otherwise dual-stage A0000000 becomes IRQ-only. Its decoded
 		 * INTERRUPT flag is WDT, not a normal reboot. Preserve that input.
 		 */
-		if (r & (MT6797_PL_WDT_HW | MT6797_PL_INTERRUPT))
+		if (r & (MT6797_PL_WDT_HW | MT6797_PL_INTERRUPT | MT6797_PL_SPM))
 			mtk_wdt->wdt_dev.bootstatus |= WDIOF_CARDRESET;
 		if (r & (MT6797_PL_SPM_THERMAL | MT6797_PL_THERMAL_DIRECT))
 			mtk_wdt->wdt_dev.bootstatus |= WDIOF_OVERHEAT;
@@ -1136,12 +1205,6 @@ static int mtk_wdt_probe(struct platform_device *pdev)
 	if (wdt_data) {
 		mtk_wdt->has_swsysrst_en = wdt_data->has_swsysrst_en;
 	}
-
-	mtk_wdt->disable_wdt_extrst =
-		of_property_read_bool(dev->of_node, "mediatek,disable-extrst");
-
-	mtk_wdt->reset_by_toprgu =
-		of_property_read_bool(dev->of_node, "mediatek,reset-by-toprgu");
 
 	return 0;
 }

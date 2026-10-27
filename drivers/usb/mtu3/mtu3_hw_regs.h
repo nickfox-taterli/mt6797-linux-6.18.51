@@ -406,6 +406,7 @@
 #define ISO_UPDATE		BIT(7)
 #define SOFT_CONN		BIT(6)
 #define HS_ENABLE		BIT(5)
+#define HS_MODE			BIT(4)
 #define RESUME			BIT(2)
 #define SUSPENDM_ENABLE		BIT(0)
 
@@ -495,6 +496,9 @@
 #define SSUSB_XHCI_RST_B_STS		BIT(11)
 #define SSUSB_SYS125_RST_B_STS		BIT(10)
 #define SSUSB_REF_RST_B_STS		BIT(8)
+#define SSUSB_DEV_RST_B_STS		BIT(3)
+#define SSUSB_DEV_BMU_RST_B_STS		BIT(2)
+#define SSUSB_DEV_QMU_RST_B_STS		BIT(1)
 #define SSUSB_SYSPLL_STABLE		BIT(0)
 
 /* U3D_SSUSB_IP_PW_STS2 */
@@ -536,6 +540,12 @@
 
 /* U3D_SSUSB_DEV_RST_CTRL */
 #define SSUSB_DEV_SW_RST		BIT(0)
+
+/* U3D_SSUSB_REF_CK_CTRL */
+#define SSUSB_REF_MAC_CK_GATE_EN		BIT(0)
+#define SSUSB_REF_PHY_CK_GATE_EN		BIT(1)
+#define SSUSB_REF_CK_GATE_EN		BIT(2)
+#define SSUSB_REF_MAC3_CK_GATE_EN		BIT(3)
 
 /* U3D_SSUSB_IP_TRUNK_VERS */
 #define IP_TRUNK_VERS(x)		(((x) >> 16) & 0xffff)

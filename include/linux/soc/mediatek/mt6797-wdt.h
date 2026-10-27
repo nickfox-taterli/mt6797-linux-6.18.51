@@ -11,6 +11,7 @@ struct device;
 int mt6797_wdt_thermal_direct(struct device *dev, bool enable);
 int mt6797_wdt_thermal_request(struct device *dev, bool enable);
 int mt6797_wdt_thermal_hold(struct device *dev, bool *was_armed);
+int mt6797_wdt_reset_request(struct device *dev, u32 request, bool enable);
 #else
 static inline int mt6797_wdt_thermal_direct(struct device *dev, bool enable)
 {
@@ -21,6 +22,12 @@ static inline int mt6797_wdt_thermal_request(struct device *dev, bool enable)
 	return -EOPNOTSUPP;
 }
 static inline int mt6797_wdt_thermal_hold(struct device *dev, bool *was_armed)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int mt6797_wdt_reset_request(struct device *dev, u32 request,
+					   bool enable)
 {
 	return -EOPNOTSUPP;
 }

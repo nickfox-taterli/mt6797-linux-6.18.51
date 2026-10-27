@@ -26,18 +26,22 @@ int ssusb_check_clocks(struct ssusb_mtk *ssusb, u32 ex_clks)
 	u32 value, check_val;
 	int ret;
 
-	check_val = ex_clks | SSUSB_SYS125_RST_B_STS | SSUSB_SYSPLL_STABLE |
-			SSUSB_REF_RST_B_STS;
+	check_val = ex_clks | SSUSB_SYS125_RST_B_STS;
+	if (!ssusb->is_mt6797)
+		check_val |= SSUSB_SYSPLL_STABLE | SSUSB_REF_RST_B_STS;
 
 	ret = readl_poll_timeout(ibase + U3D_SSUSB_IP_PW_STS1, value,
-			(check_val == (value & check_val)), 100, 20000);
+			(check_val == (value & check_val)),
+			ssusb->is_mt6797 ? 1000 : 100,
+			ssusb->is_mt6797 ? 10000 : 20000);
 	if (ret) {
 		dev_err(ssusb->dev, "clks of sts1 are not stable!\n");
 		return ret;
 	}
 
 	ret = readl_poll_timeout(ibase + U3D_SSUSB_IP_PW_STS2, value,
-			(value & SSUSB_U2_MAC_SYS_RST_B_STS), 100, 10000);
+			(value & SSUSB_U2_MAC_SYS_RST_B_STS),
+			ssusb->is_mt6797 ? 1000 : 100, 10000);
 	if (ret) {
 		dev_err(ssusb->dev, "mac2 clock is not stable\n");
 		return ret;
@@ -128,6 +132,20 @@ static void ssusb_phy_power_off(struct ssusb_mtk *ssusb)
 		phy_power_off(ssusb->phys[i]);
 }
 
+/* MT6797 sequences these clocks between VA10 and the analog power switch. */
+static int ssusb_clks_enable(struct ssusb_mtk *ssusb)
+{
+	if (ssusb->is_mt6797)
+		return 0;
+	return clk_bulk_prepare_enable(BULK_CLKS_CNT, ssusb->clks);
+}
+
+static void ssusb_clks_disable(struct ssusb_mtk *ssusb)
+{
+	if (!ssusb->is_mt6797)
+		clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
+}
+
 static int ssusb_rscs_init(struct ssusb_mtk *ssusb)
 {
 	int ret = 0;
@@ -138,7 +156,7 @@ static int ssusb_rscs_init(struct ssusb_mtk *ssusb)
 		goto vusb33_err;
 	}
 
-	ret = clk_bulk_prepare_enable(BULK_CLKS_CNT, ssusb->clks);
+	ret = ssusb_clks_enable(ssusb);
 	if (ret)
 		goto clks_err;
 
@@ -159,7 +177,7 @@ static int ssusb_rscs_init(struct ssusb_mtk *ssusb)
 phy_err:
 	ssusb_phy_exit(ssusb);
 phy_init_err:
-	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
+	ssusb_clks_disable(ssusb);
 clks_err:
 	regulator_disable(ssusb->vusb33);
 vusb33_err:
@@ -168,10 +186,10 @@ vusb33_err:
 
 static void ssusb_rscs_exit(struct ssusb_mtk *ssusb)
 {
-	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
-	regulator_disable(ssusb->vusb33);
 	ssusb_phy_power_off(ssusb);
 	ssusb_phy_exit(ssusb);
+	ssusb_clks_disable(ssusb);
+	regulator_disable(ssusb->vusb33);
 }
 
 static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
@@ -344,6 +362,7 @@ static int mtu3_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, ssusb);
 	ssusb->dev = dev;
+	ssusb->is_mt6797 = of_device_is_compatible(node, "mediatek,mt6797-mtu3");
 
 	ret = get_ssusb_rscs(pdev, ssusb);
 	if (ret)
@@ -379,7 +398,9 @@ static int mtu3_probe(struct platform_device *pdev)
 		goto comm_exit;
 	}
 
-	ssusb_ip_sw_reset(ssusb);
+	/* MT6797 releases IP reset during device enable, without a global pulse. */
+	if (!ssusb->is_mt6797)
+		ssusb_ip_sw_reset(ssusb);
 	ssusb_u3_drd_check(ssusb);
 
 	if (IS_ENABLED(CONFIG_USB_MTU3_HOST))
@@ -544,7 +565,7 @@ static int mtu3_suspend_common(struct device *dev, pm_message_t msg)
 		goto sleep_err;
 
 	ssusb_phy_power_off(ssusb);
-	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
+	ssusb_clks_disable(ssusb);
 	ssusb_wakeup_set(ssusb, true);
 	return 0;
 
@@ -562,7 +583,7 @@ static int mtu3_resume_common(struct device *dev, pm_message_t msg)
 	dev_dbg(dev, "%s\n", __func__);
 
 	ssusb_wakeup_set(ssusb, false);
-	ret = clk_bulk_prepare_enable(BULK_CLKS_CNT, ssusb->clks);
+	ret = ssusb_clks_enable(ssusb);
 	if (ret)
 		goto clks_err;
 
@@ -573,7 +594,7 @@ static int mtu3_resume_common(struct device *dev, pm_message_t msg)
 	return resume_ip_and_ports(ssusb, msg);
 
 phy_err:
-	clk_bulk_disable_unprepare(BULK_CLKS_CNT, ssusb->clks);
+	ssusb_clks_disable(ssusb);
 clks_err:
 	return ret;
 }
@@ -613,6 +634,7 @@ static const struct dev_pm_ops mtu3_pm_ops = {
 #define DEV_PM_OPS (IS_ENABLED(CONFIG_PM) ? &mtu3_pm_ops : NULL)
 
 static const struct of_device_id mtu3_of_match[] = {
+	{ .compatible = "mediatek,mt6797-mtu3" },
 	{.compatible = "mediatek,mt8173-mtu3",},
 	{.compatible = "mediatek,mtu3",},
 	{},
