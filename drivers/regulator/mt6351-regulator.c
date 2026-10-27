@@ -19,6 +19,9 @@
 #define MT6351_LDO_VCN28_CON0	0x0a0c
 #define MT6351_LDO_VCN33_CON3	0x0a98
 #define MT6351_LDO_VCN33_CON4	0x0a9a
+#define MT6351_LDO_VUSB33_CON0	0x0a16
+#define MT6351_LDO_VA10_CON0	0x0a6e
+#define MT6351_VA10_ANA_CON0	0x0b10
 
 static const unsigned int mt6351_vmch_voltages[] = {
 	3000000,
@@ -127,6 +130,50 @@ static const struct regulator_ops mt6351_vcn_ops = {
 	.is_enabled = regulator_is_enabled_regmap,
 };
 
+/* MT6797 BSP selector 1 is the specified 0.95 V VA10 setting. */
+static const unsigned int mt6351_va10_voltages[] = {
+	0,
+	950000,
+};
+
+static const struct regulator_ops mt6351_va10_ops = {
+	.list_voltage = regulator_list_voltage_table,
+	.map_voltage = regulator_map_voltage_iterate,
+	.set_voltage_sel = regulator_set_voltage_sel_regmap,
+	.get_voltage_sel = regulator_get_voltage_sel_regmap,
+	.enable = regulator_enable_regmap,
+	.disable = regulator_disable_regmap,
+	.is_enabled = regulator_is_enabled_regmap,
+};
+
+static const struct regulator_desc mt6351_vusb33_desc = {
+	.name = "vusb33",
+	.of_match = "ldo_vusb33",
+	.regulators_node = of_match_ptr("regulators"),
+	.type = REGULATOR_VOLTAGE,
+	.owner = THIS_MODULE,
+	.n_voltages = 1,
+	.fixed_uV = 3300000,
+	.enable_reg = MT6351_LDO_VUSB33_CON0,
+	.enable_mask = BIT(1),
+	.ops = &mt6351_vcn_ops,
+};
+
+static const struct regulator_desc mt6351_va10_desc = {
+	.name = "va10",
+	.of_match = "ldo_va10",
+	.regulators_node = of_match_ptr("regulators"),
+	.type = REGULATOR_VOLTAGE,
+	.owner = THIS_MODULE,
+	.n_voltages = ARRAY_SIZE(mt6351_va10_voltages),
+	.volt_table = mt6351_va10_voltages,
+	.vsel_reg = MT6351_VA10_ANA_CON0,
+	.vsel_mask = 0x7 << 8,
+	.enable_reg = MT6351_LDO_VA10_CON0,
+	.enable_mask = BIT(1),
+	.ops = &mt6351_va10_ops,
+};
+
 #define MT6351_VCN18_UV 1800000
 #define MT6351_VCN28_UV 2800000
 #define MT6351_VCN33_BT_UV 3300000
@@ -177,6 +224,8 @@ static int mt6351_regulator_probe(struct platform_device *pdev)
 		&mt6351_vrf12_desc,
 		&mt6351_vmipi_desc,
 		&mt6351_vldo28_desc,
+		&mt6351_vusb33_desc,
+		&mt6351_va10_desc,
 		&mt6351_vemc_desc,
 		&mt6351_vmch_desc,
 		&mt6351_vmc_desc,

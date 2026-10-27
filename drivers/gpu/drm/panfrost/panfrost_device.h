@@ -101,6 +101,9 @@ struct panfrost_compatible {
 	/* Only required if num_pm_domains > 1. */
 	const char * const *pm_domain_names;
 
+	bool reset_on_init;
+	bool reset_only_init;
+
 	/* Vendor implementation quirks callback */
 	void (*vendor_quirk)(struct panfrost_device *pfdev);
 

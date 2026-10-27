@@ -274,10 +274,8 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 	int ret;
 
 	ret = pm_runtime_resume_and_get(mtkd->ddev.dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(chan->device->dev);
+	if (ret < 0)
 		return ret;
-	}
 
 	mtk_uart_apdma_write(c, VFF_ADDR, 0);
 	mtk_uart_apdma_write(c, VFF_THRE, 0);
@@ -299,6 +297,9 @@ static int mtk_uart_apdma_alloc_chan_resources(struct dma_chan *chan)
 
 	if (mtkd->support_33bits)
 		mtk_uart_apdma_write(c, VFF_ADDR2, VFF_ADDR2_CLR_B);
+
+	/* Keep the controller powered until this channel is released. */
+	return 0;
 
 err_pm:
 	pm_runtime_put_noidle(mtkd->ddev.dev);

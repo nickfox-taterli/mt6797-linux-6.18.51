@@ -240,6 +240,8 @@ struct clk_hw *mtk_clk_register_ref2usb_tx(const char *name,
 void mtk_clk_unregister_ref2usb_tx(struct clk_hw *hw);
 
 struct mtk_clk_desc {
+	/* Number of onecell provider slots, for sparse or 1-based clock IDs. */
+	size_t num_clk_ids;
 	const struct mtk_gate *clks;
 	size_t num_clks;
 	const struct mtk_composite *composite_clks;

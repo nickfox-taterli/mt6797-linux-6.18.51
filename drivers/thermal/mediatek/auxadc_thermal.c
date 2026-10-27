@@ -2311,7 +2311,7 @@ static int mt6797_restore_thermal(struct mtk_thermal *mt)
 	ret = mt6797_hw_protect(mt, critical);
 	if (ret)
 		return ret;
-	return mt6797_wdt_thermal_request(mt->hw_watchdog, true);
+	return mt6797_wdt_reset_request(mt->hw_watchdog, BIT(18), true);
 }
 
 static int mtk_thermal_suspend(struct device *dev)

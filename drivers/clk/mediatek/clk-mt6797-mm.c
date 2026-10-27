@@ -81,6 +81,7 @@ static const struct mtk_gate mm_clks[] = {
 };
 
 static const struct mtk_clk_desc mm_desc = {
+	.num_clk_ids = CLK_MM_NR,
 	.clks = mm_clks,
 	.num_clks = ARRAY_SIZE(mm_clks),
 };

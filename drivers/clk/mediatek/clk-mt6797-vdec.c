@@ -38,6 +38,7 @@ static const struct mtk_gate vdec_clks[] = {
 };
 
 static const struct mtk_clk_desc vdec_desc = {
+	.num_clk_ids = CLK_VDEC_NR,
 	.clks = vdec_clks,
 	.num_clks = ARRAY_SIZE(vdec_clks),
 };

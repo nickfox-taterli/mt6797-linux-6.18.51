@@ -30,6 +30,7 @@
 
 #include <linux/mt6797-consys.h>
 #include <linux/mt6797-stp-session.h>
+#include <linux/soc/mediatek/mt6797-toprgu.h>
 
 #define CONSYS_CHIP_ID			0x0279
 
@@ -38,9 +39,7 @@
 #define CONSYS_MCU_CFG_ACR_OFF		0x0110
 #define CONSYS_MCU_CFG_ACR_MBIST	BIT(18)
 /* AP_RGU_BASE */
-#define CONSYS_RGU_SWSYSRST_OFF		0x0018
-#define CONSYS_RGU_KEY			(0x88u << 24)
-#define CONSYS_RGU_RST_BIT		BIT(12)
+#define CONSYS_RGU_RST_ID		12
 /* TOPCKGEN_BASE */
 #define CONSYS_TOPAXI_PROT_EN_OFF	0x1220
 #define CONSYS_TOPAXI_PROT_STA1_OFF	0x1228
@@ -150,16 +149,14 @@ static int consys_wait_ack_clear(struct mt6797_consys *cs, u32 off, u32 mask)
 	return ret;
 }
 
-static void consys_rgu_sw_rst(struct mt6797_consys *cs, bool assert)
+static int consys_rgu_sw_rst(struct mt6797_consys *cs, bool assert)
 {
-	u32 val = readl(cs->rgu + CONSYS_RGU_SWSYSRST_OFF);
+	int ret = mt6797_toprgu_update(CONSYS_RGU_RST_ID, assert);
 
-	if (assert)
-		val |= CONSYS_RGU_RST_BIT;
-	else
-		val &= ~CONSYS_RGU_RST_BIT;
-	val |= CONSYS_RGU_KEY;
-	writel(val, cs->rgu + CONSYS_RGU_SWSYSRST_OFF);
+	if (ret)
+		dev_err(cs->dev, "TOPRGU MCU reset %s failed: %d\n",
+			assert ? "assert" : "deassert", ret);
+	return ret;
 }
 
 static int consys_axi_protect(struct mt6797_consys *cs, bool enable)
@@ -206,7 +203,9 @@ static int consys_cleanup_locked(struct mt6797_consys *cs)
 	}
 
 	if (cs->stages & CONSYS_STAGE_RGU_RELEASED) {
-		consys_rgu_sw_rst(cs, true);
+		tmp = consys_rgu_sw_rst(cs, true);
+		if (tmp)
+			return tmp;
 		cs->stages &= ~CONSYS_STAGE_RGU_RELEASED;
 	}
 
@@ -336,7 +335,9 @@ static int consys_power_on_locked(struct mt6797_consys *cs)
 	cs->stages |= CONSYS_STAGE_SLEEP_MASK;
 
 	/* Step 2: hold the ConSys MCU in software reset during power-up. */
-	consys_rgu_sw_rst(cs, true);
+	ret = consys_rgu_sw_rst(cs, true);
+	if (ret)
+		goto err_cleanup;
 	cs->stages |= CONSYS_STAGE_RGU_RESET;
 
 	/* Step 3: unmask SPM power-on control for the CONN domain. */
@@ -412,7 +413,9 @@ static int consys_power_on_locked(struct mt6797_consys *cs)
 	val = readl(cs->mcu + CONSYS_MCU_CFG_ACR_OFF);
 	writel(val | CONSYS_MCU_CFG_ACR_MBIST, cs->mcu + CONSYS_MCU_CFG_ACR_OFF);
 
-	consys_rgu_sw_rst(cs, false);
+	ret = consys_rgu_sw_rst(cs, false);
+	if (ret)
+		goto err_cleanup;
 	cs->stages &= ~CONSYS_STAGE_RGU_RESET;
 	cs->stages |= CONSYS_STAGE_RGU_RELEASED;
 	msleep(20);
@@ -442,7 +445,8 @@ static int consys_power_off_locked(struct mt6797_consys *cs)
 	cs->last_error = ret;
 	if (ret)
 		dev_err(cs->dev, "ConSys power-off cleanup failed: %d\n", ret);
-	dev_info(cs->dev, "ConSys powered off\n");
+	else
+		dev_info(cs->dev, "ConSys powered off\n");
 	return ret;
 }
 

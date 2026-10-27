@@ -21,6 +21,7 @@
 #include <linux/regmap.h>
 #include <linux/soc/mediatek/mt6797-dcm.h>
 #include <linux/soc/mediatek/mt6797-vcorefs.h>
+#include <linux/soc/mediatek/mt6797-wdt.h>
 #include <linux/suspend.h>
 #include <linux/unaligned.h>
 
@@ -44,7 +45,8 @@ static const u32 offsets[] = {
 	CPU_DVFS_REQ,	       SPM_SW_FLAG,	      SPM_SW_RSV_0,
 	SPM_SW_RSV_1,	       SPM_SW_RSV_4,	      SPM_SW_RSV_5,
 	SPM_PASR_DPD_1,	       SPM_PASR_DPD_2,	      SPM_MAS_PAUSE_MASK_B,
-	SPM_MAS_PAUSE2_MASK_B, PCM_TIMER_VAL,	      PCM_REG_DATA_INI,
+	SPM_MAS_PAUSE2_MASK_B, PCM_TIMER_VAL,	      PCM_WDT_VAL,
+	PCM_REG_DATA_INI,
 	MP0_CPU0_WFI_EN,       MP0_CPU1_WFI_EN,	      MP0_CPU2_WFI_EN,
 	MP0_CPU3_WFI_EN,       MP1_CPU0_WFI_EN,	      MP1_CPU1_WFI_EN,
 	MP1_CPU2_WFI_EN,       MP1_CPU3_WFI_EN,	      MP2_CPU0_WFI_EN,
@@ -54,7 +56,7 @@ static const u32 pmic_regs[] = {
 	0x0600, 0x0608, 0x060a, 0x0204, 0x045c, 0x06a8
 };
 static struct {
-	struct device *dev, *vcorefs, *dcm;
+	struct device *dev, *vcorefs, *dcm, *watchdog;
 	void __iomem *spm, *pwrap, *phy, *cirq, *gic;
 	phys_addr_t polarity[2];
 	u32 cirq_saved[3][7], cirq_control, cirq_pending[7];
@@ -70,10 +72,11 @@ static struct {
 	u32 con0, con1, ptr, len;
 	u32 r12, raw, debug, timer, r13, flags;
 	u32 wake_after_ms, cycle_wake_ms;
+	u32 wdt_value, wdt_ticks, wdt_con1;
 	unsigned long cycles, resumes, failures;
 	int irq, last_error;
 	bool prepared, active, safe, owned, dcm_lease, module_held, pinned;
-	bool irq_enabled;
+	bool irq_enabled, wdt_armed, wdt_request_owned;
 } s;
 
 static u32 rd(u32 offset)
@@ -91,6 +94,70 @@ static int wait(u32 offset, u32 mask, u32 value)
 	return readl_poll_timeout_atomic(s.spm + offset, actual,
 					 (actual & mask) == value, 1, WAIT_US);
 }
+
+static int pcm_wdt_disarm(void)
+{
+	if (!s.wdt_armed)
+		return 0;
+
+	s.wdt_con1 = rd(PCM_CON1);
+	s.wdt_ticks = rd(PCM_WDT_OUT);
+	wr(PCM_CON1, KEY | (s.wdt_con1 & ~PCM_WDT_EN));
+	if (rd(PCM_CON1) & PCM_WDT_EN)
+		return -EIO;
+	s.wdt_armed = false;
+	return 0;
+}
+
+static int pcm_wdt_arm(void)
+{
+	u32 con1, timer, value;
+	int ret;
+
+	if (s.wdt_armed || s.wdt_request_owned)
+		return -EBUSY;
+	con1 = rd(PCM_CON1) & ~(PCM_WDT_EN | PCM_WDT_WAKE_MODE);
+	wr(PCM_CON1, KEY | con1);
+	if (rd(PCM_CON1) & (PCM_WDT_EN | PCM_WDT_WAKE_MODE))
+		return -EIO;
+	timer = rd(PCM_TIMER_VAL);
+	if (timer > PCM_TIMER_MAX) {
+		timer = PCM_TIMER_MAX;
+		wr(PCM_TIMER_VAL, timer);
+	}
+	value = timer + PCM_WDT_TIMEOUT;
+	wr(PCM_WDT_VAL, value);
+	wr(PCM_CON1, KEY | con1 | PCM_WDT_EN);
+	s.wdt_armed = true;
+	s.wdt_value = value;
+	s.wdt_ticks = rd(PCM_WDT_OUT);
+	s.wdt_con1 = rd(PCM_CON1);
+	if (rd(PCM_TIMER_VAL) != timer || rd(PCM_WDT_VAL) != value ||
+	    (s.wdt_con1 & (PCM_WDT_EN | PCM_WDT_WAKE_MODE)) != PCM_WDT_EN) {
+		ret = pcm_wdt_disarm();
+		return ret ?: -EIO;
+	}
+	return 0;
+}
+
+static int spm_wdt_request(bool enable)
+{
+	int ret;
+
+	if (enable) {
+		if (s.wdt_request_owned)
+			return -EBUSY;
+		s.wdt_request_owned = true;
+		return mt6797_wdt_reset_request(s.watchdog, BIT(1), true);
+	}
+	if (!s.wdt_request_owned)
+		return 0;
+	ret = mt6797_wdt_reset_request(s.watchdog, BIT(1), false);
+	if (!ret)
+		s.wdt_request_owned = false;
+	return ret;
+}
+
 static int stop_pcm(void)
 {
 	int ret;
@@ -424,16 +491,23 @@ static int sleep_enter(suspend_state_t state)
 		s.last_error = ret;
 		return ret;
 	}
-	wr(PCM_REG_DATA_INI, 0);
-	wr(PCM_PWR_IO_EN, BIT(0) | BIT(7));
-	s.active = true;
-	s.safe = false;
-	wr(PCM_CON0, KEY | BIT(2) | BIT(3) | BIT(0));
-	wr(PCM_CON0, KEY | BIT(2) | BIT(3));
-	ret = cpu_pm_enter();
+	ret = pcm_wdt_arm();
+	if (!ret)
+		ret = spm_wdt_request(true);
 	if (!ret) {
-		ret = psci_cpu_suspend_enter(SLEEP_STATE);
-		cpu_pm_exit();
+		dev_info(s.dev, "PCM WDT armed: timer=%u compare=%u timeout=30s\n",
+			 rd(PCM_TIMER_VAL), s.wdt_value);
+		wr(PCM_REG_DATA_INI, 0);
+		wr(PCM_PWR_IO_EN, BIT(0) | BIT(7));
+		s.active = true;
+		s.safe = false;
+		wr(PCM_CON0, KEY | BIT(2) | BIT(3) | BIT(0));
+		wr(PCM_CON0, KEY | BIT(2) | BIT(3));
+		ret = cpu_pm_enter();
+		if (!ret) {
+			ret = psci_cpu_suspend_enter(SLEEP_STATE);
+			cpu_pm_exit();
+		}
 	}
 	/* A zero return from cpu_suspend requires the warm cpu_resume path. */
 	if (!ret)
@@ -444,6 +518,12 @@ static int sleep_enter(suspend_state_t state)
 	s.timer = rd(0x150);
 	s.r13 = rd(0x134);
 	s.flags = rd(SPM_SW_FLAG);
+	stopped = pcm_wdt_disarm();
+	if (!ret)
+		ret = stopped;
+	stopped = spm_wdt_request(false);
+	if (!ret)
+		ret = stopped;
 	cirq_finish();
 	stopped = stop_pcm();
 	if (!ret)
@@ -462,31 +542,39 @@ static void sleep_finish(void)
 		disable_irq(s.irq);
 		s.irq_enabled = false;
 	}
+	ret = pcm_wdt_disarm();
+	if (ret)
+		s.last_error = ret;
+	ret = spm_wdt_request(false);
+	if (ret)
+		s.last_error = ret;
 	if (s.prepared && !s.safe) {
 		ret = stop_pcm();
 		if (ret)
 			s.last_error = ret;
 	}
-	restore();
+	if (!s.wdt_armed && !s.wdt_request_owned)
+		restore();
 	if (s.dcm_lease) {
 		ret = mt6797_dcm_memory_transaction(s.dcm, memory_lease, &s);
 		if (ret)
 			s.last_error = ret;
-		if (s.safe && !ret)
+		if (s.safe && !ret && !s.wdt_armed && !s.wdt_request_owned)
 			s.dcm_lease = false;
 	}
-	if (s.owned && s.safe && !s.dcm_lease) {
+	if (s.owned && s.safe && !s.dcm_lease &&
+	    !s.wdt_armed && !s.wdt_request_owned) {
 		ret = mt6797_vcorefs_release_sleep(s.vcorefs, s.dev);
 		if (ret)
 			s.last_error = ret;
 		else
 			s.owned = false;
 	}
-	/* An unacknowledged PCM retains DMA, mappings and exclusive ownership. */
-	if (s.owned && !s.pinned) {
+	/* Incomplete PCM or TOPRGU cleanup retains all exclusive resources. */
+	if ((s.owned || s.wdt_armed || s.wdt_request_owned) && !s.pinned) {
 		__module_get(THIS_MODULE);
 		s.pinned = true;
-		dev_err(s.dev, "PCM not released: %d; resources retained\n",
+		dev_err(s.dev, "PCM/TOPRGU not released: %d; resources retained\n",
 			s.last_error);
 	}
 }
@@ -547,10 +635,12 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr,
 	return sysfs_emit(buf,
 		"cycles=%lu resumes=%lu failures=%lu last_error=%d owned=%u safe=%u dcm_lease=%u\n"
 		"wake=%08x raw=%08x debug=%08x timer_ticks=%u r13=%08x flags=%08x\n"
+		"pcm_wdt=armed:%u request_owned:%u compare:%08x ticks:%u con1:%08x\n"
 		"cpu_powerdown=1 infra_powerdown=requested infra_off_verified=0 manual_cpu_rails=retained\n"
 		"cirq_cycles=%lu cirq_flushed=%lu cirq_enabled=%u pending=%08x,%08x,%08x,%08x,%08x,%08x,%08x\n",
 		s.cycles, s.resumes, s.failures, s.last_error, s.owned, s.safe,
 		s.dcm_lease, s.r12, s.raw, s.debug, s.timer, s.r13, s.flags,
+		s.wdt_armed, s.wdt_request_owned, s.wdt_value, s.wdt_ticks, s.wdt_con1,
 		s.cirq_cycles, s.cirq_flushed, s.cirq_enabled,
 		s.cirq_pending[0], s.cirq_pending[1], s.cirq_pending[2],
 		s.cirq_pending[3], s.cirq_pending[4], s.cirq_pending[5],
@@ -658,6 +748,25 @@ static int sleep_probe(struct platform_device *pdev)
 	s.phy = resources.phy;
 	s.dummy_address = resources.dummy_address;
 	s.safe = true;
+	np = of_parse_phandle(dev->of_node, "mediatek,watchdog", 0);
+	provider = np ? of_find_device_by_node(np) : NULL;
+	of_node_put(np);
+	if (!provider) {
+		ret = -EPROBE_DEFER;
+		goto failed;
+	}
+	ret = devm_add_action_or_reset(dev, sleep_put_device, &provider->dev);
+	if (ret)
+		goto failed;
+	if (!device_is_bound(&provider->dev)) {
+		ret = -EPROBE_DEFER;
+		goto failed;
+	}
+	s.watchdog = &provider->dev;
+	if (!device_link_add(dev, s.watchdog, DL_FLAG_AUTOREMOVE_CONSUMER)) {
+		ret = -ENOMEM;
+		goto failed;
+	}
 	cirq_clock = devm_clk_get_enabled(dev, "cirq");
 	if (IS_ERR(cirq_clock)) {
 		ret = PTR_ERR(cirq_clock);

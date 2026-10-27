@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -1329,8 +1330,9 @@ static void mtk_jpeg_destroy_workqueue(void *data)
 static int mtk_jpeg_probe(struct platform_device *pdev)
 {
 	struct mtk_jpeg_dev *jpeg;
+	struct dev_pm_domain_list *pd_list;
 	struct device_node *child;
-	int num_child = 0;
+	int num_child = 0, num_pds;
 	int ret;
 
 	jpeg = devm_kzalloc(&pdev->dev, sizeof(*jpeg), GFP_KERNEL);
@@ -1343,6 +1345,16 @@ static int mtk_jpeg_probe(struct platform_device *pdev)
 	jpeg->variant = of_device_get_match_data(jpeg->dev);
 
 	platform_set_drvdata(pdev, jpeg);
+
+	/* MT6797 JPEG engines need both the MM SMI and VENC power domains. */
+	num_pds = of_count_phandle_with_args(pdev->dev.of_node, "power-domains",
+					     "#power-domain-cells");
+	if (num_pds > 1) {
+		ret = devm_pm_domain_attach_list(&pdev->dev, NULL, &pd_list);
+		if (ret < 0)
+			return dev_err_probe(&pdev->dev, ret,
+					     "failed to attach power domains\n");
+	}
 
 	ret = devm_of_platform_populate(&pdev->dev);
 	if (ret) {
@@ -1900,7 +1912,19 @@ static struct clk_bulk_data mtk_jpeg_clocks[] = {
 	{ .id = "jpgenc" },
 };
 
+static struct clk_bulk_data mt6797_jpeg_enc_clocks[] = {
+	{ .id = "jpgenc-smi" },
+	{ .id = "jpgenc-larb" },
+	{ .id = "jpgenc" },
+};
+
 static struct clk_bulk_data mt8173_jpeg_dec_clocks[] = {
+	{ .id = "jpgdec-smi" },
+	{ .id = "jpgdec" },
+};
+
+static struct clk_bulk_data mt6797_jpeg_dec_clocks[] = {
+	{ .id = "jpgdec-larb" },
 	{ .id = "jpgdec-smi" },
 	{ .id = "jpgdec" },
 };
@@ -1936,6 +1960,37 @@ static const struct mtk_jpeg_variant mtk_jpeg_drvdata = {
 	.multi_core = false,
 };
 
+static const struct mtk_jpeg_variant mt6797_jpeg_enc_drvdata = {
+	.clks = mt6797_jpeg_enc_clocks,
+	.num_clks = ARRAY_SIZE(mt6797_jpeg_enc_clocks),
+	.formats = mtk_jpeg_enc_formats,
+	.num_formats = MTK_JPEG_ENC_NUM_FORMATS,
+	.qops = &mtk_jpeg_enc_qops,
+	.irq_handler = mtk_jpeg_enc_irq,
+	.hw_reset = mtk_jpeg_enc_reset,
+	.m2m_ops = &mtk_jpeg_enc_m2m_ops,
+	.dev_name = "mtk-jpeg-enc",
+	.ioctl_ops = &mtk_jpeg_enc_ioctl_ops,
+	.out_q_default_fourcc = V4L2_PIX_FMT_YUYV,
+	.cap_q_default_fourcc = V4L2_PIX_FMT_JPEG,
+	.multi_core = false,
+};
+
+static const struct mtk_jpeg_variant mt6797_jpeg_dec_drvdata = {
+	.clks = mt6797_jpeg_dec_clocks,
+	.num_clks = ARRAY_SIZE(mt6797_jpeg_dec_clocks),
+	.formats = mtk_jpeg_dec_formats,
+	.num_formats = MTK_JPEG_DEC_NUM_FORMATS,
+	.qops = &mtk_jpeg_dec_qops,
+	.irq_handler = mtk_jpeg_dec_irq,
+	.hw_reset = mtk_jpeg_dec_reset,
+	.m2m_ops = &mtk_jpeg_dec_m2m_ops,
+	.dev_name = "mtk-jpeg-dec",
+	.ioctl_ops = &mtk_jpeg_dec_ioctl_ops,
+	.out_q_default_fourcc = V4L2_PIX_FMT_JPEG,
+	.cap_q_default_fourcc = V4L2_PIX_FMT_YUV420M,
+};
+
 static struct mtk_jpeg_variant mtk8195_jpegenc_drvdata = {
 	.formats = mtk_jpeg_enc_formats,
 	.num_formats = MTK_JPEG_ENC_NUM_FORMATS,
@@ -1964,12 +2019,20 @@ static const struct mtk_jpeg_variant mtk8195_jpegdec_drvdata = {
 
 static const struct of_device_id mtk_jpeg_match[] = {
 	{
+		.compatible = "mediatek,mt6797-jpgdec",
+		.data = &mt6797_jpeg_dec_drvdata,
+	},
+	{
 		.compatible = "mediatek,mt8173-jpgdec",
 		.data = &mt8173_jpeg_drvdata,
 	},
 	{
 		.compatible = "mediatek,mt2701-jpgdec",
 		.data = &mt8173_jpeg_drvdata,
+	},
+	{
+		.compatible = "mediatek,mt6797-jpgenc",
+		.data = &mt6797_jpeg_enc_drvdata,
 	},
 	{
 		.compatible = "mediatek,mtk-jpgenc",

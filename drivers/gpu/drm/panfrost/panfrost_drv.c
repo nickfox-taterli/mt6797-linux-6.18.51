@@ -804,6 +804,7 @@ static void panfrost_remove(struct platform_device *pdev)
 	pm_runtime_disable(pfdev->dev);
 	panfrost_device_fini(pfdev);
 	pm_runtime_set_suspended(pfdev->dev);
+	pm_runtime_put_noidle(pfdev->dev);
 
 	drm_dev_put(ddev);
 }
@@ -876,6 +877,8 @@ static const struct panfrost_compatible mt6797_data = {
 	.supply_names = default_supplies,
 	.num_pm_domains = ARRAY_SIZE(mt6797_pm_domains),
 	.pm_domain_names = mt6797_pm_domains,
+	.reset_on_init = true,
+	.reset_only_init = true,
 	.pm_features = BIT(GPU_PM_RT),
 };
 

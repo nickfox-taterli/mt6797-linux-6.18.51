@@ -10,6 +10,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/iopoll.h>
+#include <linux/math64.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
@@ -18,6 +19,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
+#include <linux/regulator/consumer.h>
 
 #include "phy-mtk-io.h"
 
@@ -74,6 +76,9 @@
 #define PA6_RG_U2_SQTH		GENMASK(3, 0)
 
 #define U3P_U2PHYACR4		0x020
+#define P2C_RG_DP_100K_MODE		BIT(18)
+#define P2C_RG_DM_100K_EN		BIT(17)
+#define P2C_RG_DP_100K_EN		BIT(16)
 #define P2C_RG_USB20_GPIO_CTL		BIT(9)
 #define P2C_USB20_GPIO_MODE		BIT(8)
 #define P2C_U2_GPIO_CTR_MSK	(P2C_RG_USB20_GPIO_CTL | P2C_USB20_GPIO_MODE)
@@ -88,6 +93,9 @@
 
 #define U3D_U2PHYDCR0		0x060
 #define P2C_RG_SIF_U2PLL_FORCE_ON	BIT(24)
+
+#define U3P_U2PHYDCR1		0x064
+#define P2C_RG_SW_PLLMODE		GENMASK(19, 18)
 
 #define U3P_U2PHYDTM0		0x068
 #define P2C_FORCE_UART_EN		BIT(26)
@@ -116,6 +124,8 @@
 #define P2C_RG_SESSEND			BIT(4)
 #define P2C_RG_AVALID			BIT(2)
 #define P2C_RG_IDDIG			BIT(1)
+
+#define U3P_U2PHYDMON0		0x070
 
 #define U3P_U2PHYBC12C		0x080
 #define P2C_RG_CHGDT_EN		BIT(0)
@@ -266,6 +276,17 @@
 #define RG_PHY_SW_SATA		0x3
 
 #define TPHY_CLKS_CNT	2
+#define MT6797_USB_CLKS_CNT	3
+
+/* MT6797 uses the PMIC VA10 rail and the SIF2 analog power switch. */
+#define MT6797_VUSB10_ON_REG		0x04
+#define MT6797_VUSB10_ON		BIT(29)
+#define MT6797_U2_ISO_ENABLE		BIT(31)
+#define MT6797_U2_EOP_CTL		GENMASK(19, 16)
+#define MT6797_U2_FORCE_VBUSVALID	BIT(13)
+#define MT6797_U2_FORCE_SESSEND		BIT(12)
+#define MT6797_U2_FORCE_AVALID		BIT(10)
+#define MT6797_CHIP_USB_MODE		GENMASK(3, 0)
 
 #define USER_BUF_LEN(count) min_t(size_t, 8, (count))
 
@@ -289,6 +310,7 @@ enum mtk_phy_version {
  */
 struct mtk_phy_pdata {
 	bool avoid_rx_sen_degradation;
+	bool mt6797_usb_analog;
 	bool sw_pll_48m_to_26m;
 	bool sw_efuse_supported;
 	u8 slew_ref_clock_mhz;
@@ -344,7 +366,70 @@ struct mtk_tphy {
 	int nphys;
 	int src_ref_clk; /* MHZ, reference clock for slew rate calibrate */
 	int src_coef; /* coefficient for slew rate calibrate */
+	void __iomem *usb_analog_base;
+	struct regulator *va10;
+	bool va10_enabled;
+	struct clk_bulk_data usb_clks[MT6797_USB_CLKS_CNT];
 };
+
+static int mt6797_usb_analog_enable(struct mtk_tphy *tphy)
+{
+	u32 before, after;
+	int ret;
+
+	if (!tphy->pdata->mt6797_usb_analog || tphy->va10_enabled)
+		return 0;
+
+	/*
+	 * The MT6797 project PHY enables VA10 at 0.95 V, waits 50 us, then
+	 * sets PHYA REG1 bit 29. The MT8173 background-LDO registers and
+	 * devinfo[31] calibration are not part of this SoC's sequence.
+	 */
+	ret = regulator_enable(tphy->va10);
+	if (ret)
+		return ret;
+
+	ret = regulator_set_voltage(tphy->va10, 950000, 950000);
+	if (ret)
+		goto va10_err;
+
+	/* Enable ref, bus, then sys; disable in the reverse order. */
+	ret = clk_bulk_prepare_enable(MT6797_USB_CLKS_CNT, tphy->usb_clks);
+	if (ret)
+		goto va10_err;
+
+	udelay(50);
+	before = readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
+	writel(before | MT6797_VUSB10_ON,
+	       tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
+	after = readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
+	dev_info(tphy->dev,
+		 "MT6797 USB analog power: VA10 enabled=%d voltage=%d PHYA-REG1=%#x->%#x\n",
+		 regulator_is_enabled(tphy->va10),
+		 regulator_get_voltage(tphy->va10), before, after);
+	tphy->va10_enabled = true;
+	return 0;
+
+va10_err:
+	regulator_disable(tphy->va10);
+	return ret;
+}
+
+static void mt6797_usb_analog_disable(struct mtk_tphy *tphy)
+{
+	u32 value;
+
+	if (!tphy->pdata->mt6797_usb_analog || !tphy->va10_enabled)
+		return;
+
+	value = readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
+	writel(value & ~MT6797_VUSB10_ON,
+	       tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
+	udelay(10);
+	clk_bulk_disable_unprepare(MT6797_USB_CLKS_CNT, tphy->usb_clks);
+	regulator_disable(tphy->va10);
+	tphy->va10_enabled = false;
+}
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 
@@ -678,6 +763,36 @@ static void phy_debugfs_init(struct mtk_phy_instance *inst)
 
 #endif
 
+static void mt6797_u2_slew_rate_calibrate(struct mtk_tphy *tphy,
+					 struct mtk_phy_instance *instance)
+{
+	void __iomem *fmreg = instance->u2_banks.fmreg;
+	void __iomem *com = instance->u2_banks.com;
+	u32 fm_out = 0, calibration;
+	int i;
+
+	mtk_phy_set_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HSTX_SRCAL_EN);
+	udelay(1);
+	mtk_phy_set_bits(fmreg + U3P_U2FREQ_FMMONR1, P2F_RG_FRCK_EN);
+	mtk_phy_update_field(fmreg + U3P_U2FREQ_FMCR0, P2F_RG_CYCLECNT, 1024);
+	mtk_phy_set_bits(fmreg + U3P_U2FREQ_FMCR0, P2F_RG_FREQDET_EN);
+	mdelay(1);
+	for (i = 0; i < 10; i++) {
+		fm_out = readl(fmreg + U3P_U2FREQ_VALUE);
+		if (fm_out)
+			break;
+		mdelay(1);
+	}
+	mtk_phy_clear_bits(fmreg + U3P_U2FREQ_FMCR0, P2F_RG_FREQDET_EN);
+	mtk_phy_clear_bits(fmreg + U3P_U2FREQ_FMMONR1, P2F_RG_FRCK_EN);
+	/* The MT6797 implementation truncates; it does not round to nearest. */
+	calibration = fm_out ? div64_u64(1024 * 26 * 28, (u64)fm_out * 1000) : 4;
+	mtk_phy_update_field(com + U3P_USBPHYACR5, PA5_RG_U2_HSTX_SRCTRL, calibration);
+	mtk_phy_clear_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HSTX_SRCAL_EN);
+	dev_info(tphy->dev, "USB2 slew calibration: fm_out=%u srctrl=%u\n",
+		 fm_out, calibration);
+}
+
 static void hs_slew_rate_calibrate(struct mtk_tphy *tphy,
 	struct mtk_phy_instance *instance)
 {
@@ -835,7 +950,6 @@ static void u2_phy_instance_init(struct mtk_tphy *tphy,
 
 	mtk_phy_set_bits(com + U3P_USBPHYACR0, PA0_RG_USB20_INTR_EN);
 
-	/* disable switch 100uA current to SSUSB */
 	mtk_phy_clear_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HS_100U_U3_EN);
 
 	mtk_phy_clear_bits(com + U3P_U2PHYACR4, P2C_U2_GPIO_CTR_MSK);
@@ -921,6 +1035,101 @@ static void u2_phy_instance_exit(struct mtk_tphy *tphy,
 
 		mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_SUSPENDM);
 	}
+}
+
+static void mt6797_u2_phy_init(struct mtk_tphy *tphy,
+			      struct mtk_phy_instance *instance)
+{
+	void __iomem *com = instance->u2_banks.com;
+
+	mtk_phy_clear_bits(com + U3P_USBPHYACR6, MT6797_U2_ISO_ENABLE);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYACR4, P2C_U2_GPIO_CTR_MSK);
+	mtk_phy_clear_bits(com + U3P_USBPHYACR6, PA6_RG_U2_BC11_SW_EN);
+	mtk_phy_set_bits(com + U3P_U2PHYACR4, P2C_RG_DP_100K_MODE);
+	mtk_phy_clear_bits(com + U3P_U2PHYACR4,
+			   P2C_RG_DP_100K_EN | P2C_RG_DM_100K_EN);
+	/* Route the shared 100 uA source to SSUSB in the default USB mode. */
+	mtk_phy_set_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HS_100U_U3_EN);
+	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
+	mtk_phy_update_field(com + U3P_USBPHYACR6, PA6_RG_U2_SQTH, 2);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_SUSPENDM);
+	mtk_phy_update_field(com + U3P_U2PHYDMON0, MT6797_U2_EOP_CTL, 9);
+	udelay(800);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM1,
+			 MT6797_U2_FORCE_VBUSVALID | MT6797_U2_FORCE_AVALID |
+			 MT6797_U2_FORCE_SESSEND);
+}
+
+static void mt6797_u2_phy_recover(struct mtk_tphy *tphy,
+				 struct mtk_phy_instance *instance)
+{
+	void __iomem *com = instance->u2_banks.com;
+	void __iomem *chip = tphy->sif_base + SSUSB_SIFSLV_V1_CHIP;
+	void __iomem *spllc = tphy->sif_base + SSUSB_SIFSLV_V1_SPLLC;
+	void __iomem *phya = tphy->usb_analog_base;
+
+	mtk_phy_clear_bits(com + U3P_USBPHYACR6, MT6797_U2_ISO_ENABLE);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYACR4, P2C_U2_GPIO_CTR_MSK);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_SUSPENDM);
+
+	/* Release the UTMI values before handing control back to the MAC. */
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0,
+			   P2C_RG_DPPULLDOWN | P2C_RG_DMPULLDOWN | P2C_RG_XCVRSEL |
+			   P2C_RG_TERMSEL | P2C_RG_DATAIN);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0,
+			   P2C_FORCE_DP_PULLDOWN | P2C_FORCE_DM_PULLDOWN |
+			   P2C_FORCE_XCVRSEL | P2C_FORCE_TERMSEL | P2C_FORCE_DATAIN);
+	mtk_phy_clear_bits(com + U3P_USBPHYACR6, PA6_RG_U2_BC11_SW_EN);
+	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
+	mtk_phy_update_field(com + U3P_USBPHYACR6, PA6_RG_U2_SQTH, 2);
+	mtk_phy_set_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HS_100U_U3_EN);
+	mtk_phy_update_field(com + U3P_U2PHYDMON0, MT6797_U2_EOP_CTL, 9);
+
+	/* Shared XTAL, bias and reset controls are also required by USB2. */
+	mtk_phy_update_field(phya + U3P_U3_PHYA_DA_REG0, P3A_RG_XTAL_EXT_EN_U3, 2);
+	mtk_phy_set_bits(spllc + U3P_SPLLC_XTALCTL3, XC3_RG_U3_XTAL_RX_PWD);
+	mtk_phy_set_bits(chip + U3P_U3_CHIP_GPIO_CTLE, MT6797_CHIP_USB_MODE);
+	mtk_phy_update_field(phya + U3P_U3_PHYA_REG0, P3A_RG_IEXT_INTR, 0x2d);
+	writel(0, chip + U3P_U3_CHIP_GPIO_CTLD);
+	udelay(800);
+
+	mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_RG_VBUSVALID | P2C_RG_AVALID);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND);
+}
+
+static void mt6797_u2_phy_savecurrent(struct mtk_tphy *tphy,
+				     struct mtk_phy_instance *instance)
+{
+	void __iomem *com = instance->u2_banks.com;
+	void __iomem *chip = tphy->sif_base + SSUSB_SIFSLV_V1_CHIP;
+
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_FORCE_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_UART_EN);
+	mtk_phy_clear_bits(com + U3P_U2PHYACR4, P2C_U2_GPIO_CTR_MSK);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM0, P2C_RG_SUSPENDM | P2C_FORCE_SUSPENDM);
+	/* Keep the USBPLL running until the forced UTMI state is stable. */
+	udelay(2000);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM0, P2C_RG_DPPULLDOWN | P2C_RG_DMPULLDOWN);
+	mtk_phy_update_field(com + U3P_U2PHYDTM0, P2C_RG_XCVRSEL, 1);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM0, P2C_RG_TERMSEL);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_RG_DATAIN);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM0,
+			 P2C_FORCE_DP_PULLDOWN | P2C_FORCE_DM_PULLDOWN |
+			 P2C_FORCE_XCVRSEL | P2C_FORCE_TERMSEL | P2C_FORCE_DATAIN);
+	/* BC1.1 is set, rather than cleared, in the low-power sequence. */
+	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_BC11_SW_EN);
+	mtk_phy_clear_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
+	mtk_phy_clear_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HS_100U_U3_EN);
+	writel(P3C_FORCE_IP_SW_RST, chip + U3P_U3_CHIP_GPIO_CTLD);
+	udelay(800);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM0, P2C_RG_SUSPENDM);
+	udelay(1);
+	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_VBUSVALID | P2C_RG_AVALID);
+	mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND);
 }
 
 static void u2_phy_instance_set_mode(struct mtk_tphy *tphy,
@@ -1371,11 +1580,18 @@ static int mtk_phy_init(struct phy *phy)
 	if (ret)
 		return ret;
 
+	ret = mt6797_usb_analog_enable(tphy);
+	if (ret)
+		goto clks_err;
+
 	phy_efuse_set(instance);
 
 	switch (instance->type) {
 	case PHY_TYPE_USB2:
-		u2_phy_instance_init(tphy, instance);
+		if (tphy->pdata->mt6797_usb_analog)
+			mt6797_u2_phy_init(tphy, instance);
+		else
+			u2_phy_instance_init(tphy, instance);
 		u2_phy_props_set(tphy, instance);
 		break;
 	case PHY_TYPE_USB3:
@@ -1392,21 +1608,62 @@ static int mtk_phy_init(struct phy *phy)
 		break;
 	default:
 		dev_err(tphy->dev, "incompatible PHY type\n");
-		clk_bulk_disable_unprepare(TPHY_CLKS_CNT, instance->clks);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto analog_err;
 	}
 
 	return 0;
+
+analog_err:
+	mt6797_usb_analog_disable(tphy);
+clks_err:
+	clk_bulk_disable_unprepare(TPHY_CLKS_CNT, instance->clks);
+	return ret;
 }
 
 static int mtk_phy_power_on(struct phy *phy)
 {
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
+	int ret;
 
 	if (instance->type == PHY_TYPE_USB2) {
-		u2_phy_instance_power_on(tphy, instance);
-		hs_slew_rate_calibrate(tphy, instance);
+		struct u2phy_banks *u2_banks = &instance->u2_banks;
+		void __iomem *com = u2_banks->com;
+
+		ret = mt6797_usb_analog_enable(tphy);
+		if (ret)
+			return ret;
+		if (tphy->pdata->mt6797_usb_analog)
+			mt6797_u2_phy_recover(tphy, instance);
+		else
+			u2_phy_instance_power_on(tphy, instance);
+		if (tphy->pdata->mt6797_usb_analog)
+			mt6797_u2_slew_rate_calibrate(tphy, instance);
+		else
+			hs_slew_rate_calibrate(tphy, instance);
+		if (tphy->pdata->mt6797_usb_analog) {
+			dev_info(tphy->dev,
+				 "MT6797 U2 PHY state idx=%u PHYA1=%08x ACR0=%08x ACR1=%08x ACR2=%08x ACR5=%08x ACR6=%08x DTM0=%08x DTM1=%08x DMON0=%08x\n",
+				 instance->index,
+				 readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG),
+				 readl(com + U3P_USBPHYACR0),
+				 readl(com + U3P_USBPHYACR1),
+				 readl(com + U3P_USBPHYACR2),
+				 readl(com + U3P_USBPHYACR5),
+				 readl(com + U3P_USBPHYACR6),
+				 readl(com + U3P_U2PHYDTM0),
+				 readl(com + U3P_U2PHYDTM1),
+				 readl(com + U3P_U2PHYDMON0));
+			dev_info(tphy->dev,
+				 "MT6797 U2 shared state ACR4=%08x PHYA0=%08x DA0=%08x XTALCTL3=%08x CHIP_C=%08x CHIP_E=%08x\n",
+				 readl(com + U3P_U2PHYACR4),
+				 readl(tphy->usb_analog_base + U3P_U3_PHYA_REG0),
+				 readl(tphy->usb_analog_base + U3P_U3_PHYA_DA_REG0),
+				 readl(tphy->sif_base + SSUSB_SIFSLV_V1_SPLLC + U3P_SPLLC_XTALCTL3),
+				 readl(tphy->sif_base + SSUSB_SIFSLV_V1_CHIP + U3P_U3_CHIP_GPIO_CTLD),
+				 readl(tphy->sif_base + SSUSB_SIFSLV_V1_CHIP + U3P_U3_CHIP_GPIO_CTLE));
+		}
 	} else if (instance->type == PHY_TYPE_PCIE) {
 		pcie_phy_instance_power_on(tphy, instance);
 	}
@@ -1419,10 +1676,16 @@ static int mtk_phy_power_off(struct phy *phy)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
-	if (instance->type == PHY_TYPE_USB2)
-		u2_phy_instance_power_off(tphy, instance);
-	else if (instance->type == PHY_TYPE_PCIE)
+	if (instance->type == PHY_TYPE_USB2) {
+		if (tphy->pdata->mt6797_usb_analog)
+			mt6797_u2_phy_savecurrent(tphy, instance);
+		else
+			u2_phy_instance_power_off(tphy, instance);
+	} else if (instance->type == PHY_TYPE_PCIE) {
 		pcie_phy_instance_power_off(tphy, instance);
+	}
+	if (instance->type == PHY_TYPE_USB2)
+		mt6797_usb_analog_disable(tphy);
 
 	return 0;
 }
@@ -1432,8 +1695,13 @@ static int mtk_phy_exit(struct phy *phy)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
-	if (instance->type == PHY_TYPE_USB2)
+	if (instance->type == PHY_TYPE_USB2) {
+		/* init() can be unwound before the first power_on(). */
+		if (tphy->pdata->mt6797_usb_analog && tphy->va10_enabled)
+			mt6797_u2_phy_savecurrent(tphy, instance);
 		u2_phy_instance_exit(tphy, instance);
+	}
+	mt6797_usb_analog_disable(tphy);
 
 	clk_bulk_disable_unprepare(TPHY_CLKS_CNT, instance->clks);
 	return 0;
@@ -1447,6 +1715,36 @@ static int mtk_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	if (instance->type == PHY_TYPE_USB2)
 		u2_phy_instance_set_mode(tphy, instance, mode);
 
+	return 0;
+}
+
+static int mtk_phy_connect(struct phy *phy, int port)
+{
+	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
+	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
+	void __iomem *com = instance->u2_banks.com;
+
+	if (!tphy->pdata->mt6797_usb_analog || instance->type != PHY_TYPE_USB2 ||
+	    !tphy->va10_enabled)
+		return 0;
+
+	mtk_phy_set_bits(com + U3P_U2PHYDCR1, BIT(18));
+	dev_info(tphy->dev, "USB2 connected PLL mode: %08x\n",
+		 readl(com + U3P_U2PHYDCR1));
+	return 0;
+}
+
+static int mtk_phy_disconnect(struct phy *phy, int port)
+{
+	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
+	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
+	void __iomem *com = instance->u2_banks.com;
+
+	if (!tphy->pdata->mt6797_usb_analog || instance->type != PHY_TYPE_USB2 ||
+	    !tphy->va10_enabled)
+		return 0;
+
+	mtk_phy_clear_bits(com + U3P_U2PHYDCR1, P2C_RG_SW_PLLMODE);
 	return 0;
 }
 
@@ -1515,6 +1813,8 @@ static const struct phy_ops mtk_tphy_ops = {
 	.power_on	= mtk_phy_power_on,
 	.power_off	= mtk_phy_power_off,
 	.set_mode	= mtk_phy_set_mode,
+	.connect	= mtk_phy_connect,
+	.disconnect	= mtk_phy_disconnect,
 	.owner		= THIS_MODULE,
 };
 
@@ -1545,6 +1845,13 @@ static const struct mtk_phy_pdata mt8173_pdata = {
 	.version = MTK_PHY_V1,
 };
 
+static const struct mtk_phy_pdata mt6797_pdata = {
+	.slew_ref_clock_mhz = 26,
+	.slew_rate_coefficient = 28,
+	.version = MTK_PHY_V1,
+	.mt6797_usb_analog = true,
+};
+
 static const struct mtk_phy_pdata mt8195_pdata = {
 	.sw_pll_48m_to_26m = true,
 	.sw_efuse_supported = true,
@@ -1552,6 +1859,7 @@ static const struct mtk_phy_pdata mt8195_pdata = {
 };
 
 static const struct of_device_id mtk_tphy_id_table[] = {
+	{ .compatible = "mediatek,mt6797-tphy", .data = &mt6797_pdata },
 	{ .compatible = "mediatek,mt2701-u3phy", .data = &tphy_v1_pdata },
 	{ .compatible = "mediatek,mt2712-u3phy", .data = &tphy_v2_pdata },
 	{ .compatible = "mediatek,mt8173-u3phy", .data = &mt8173_pdata },
@@ -1569,6 +1877,7 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 	struct device_node *np = dev->of_node;
 	struct phy_provider *provider;
 	struct resource *sif_res;
+	struct resource *usb_analog_res;
 	struct mtk_tphy *tphy;
 	struct resource res;
 	int port, ret;
@@ -1589,8 +1898,39 @@ static int mtk_tphy_probe(struct platform_device *pdev)
 
 	tphy->dev = dev;
 	platform_set_drvdata(pdev, tphy);
+	if (tphy->pdata->mt6797_usb_analog) {
+		tphy->usb_clks[0].id = "ref";
+		tphy->usb_clks[1].id = "bus";
+		tphy->usb_clks[2].id = "sys";
+		ret = devm_clk_bulk_get(dev, MT6797_USB_CLKS_CNT, tphy->usb_clks);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to get USB clocks\n");
+
+		tphy->va10 = devm_regulator_get(dev, "va10");
+		if (IS_ERR(tphy->va10))
+			return dev_err_probe(dev, PTR_ERR(tphy->va10),
+					     "failed to get VA10 regulator\n");
+
+		/* MT6797 USB2 also uses the shared PHYA and PHYA_DA controls. */
+		usb_analog_res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
+		if (!usb_analog_res)
+			return dev_err_probe(dev, -EINVAL,
+					     "missing USB analog register window\n");
+		if (resource_size(usb_analog_res) < U3P_U3_PHYA_DA_REG0 + sizeof(u32))
+			return dev_err_probe(dev, -EINVAL,
+					     "USB analog window does not cover PHYA_DA\n");
+
+		tphy->usb_analog_base = devm_ioremap_resource(dev, usb_analog_res);
+		if (IS_ERR(tphy->usb_analog_base))
+			return PTR_ERR(tphy->usb_analog_base);
+		dev_info(dev, "MT6797 USB analog resource %pR\n", usb_analog_res);
+	}
 
 	sif_res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (tphy->pdata->mt6797_usb_analog &&
+	    (!sif_res || resource_size(sif_res) < SSUSB_SIFSLV_V1_CHIP +
+						  U3P_U3_CHIP_GPIO_CTLE + sizeof(u32)))
+		return dev_err_probe(dev, -EINVAL, "missing shared USB register window\n");
 	/* SATA phy of V1 needn't it if not shared with PCIe or USB */
 	if (sif_res && tphy->pdata->version == MTK_PHY_V1) {
 		/* get banks shared by multiple phys */

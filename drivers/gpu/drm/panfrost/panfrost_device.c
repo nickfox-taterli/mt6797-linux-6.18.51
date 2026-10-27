@@ -3,6 +3,7 @@
 /* Copyright 2019 Linaro, Ltd, Rob Herring <robh@kernel.org> */
 
 #include <linux/clk.h>
+#include <linux/delay.h>
 #include <linux/reset.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -20,10 +21,22 @@
 
 static int panfrost_reset_init(struct panfrost_device *pfdev)
 {
+	int ret;
+
 	pfdev->rstc = devm_reset_control_array_get_optional_exclusive(pfdev->dev);
 	if (IS_ERR(pfdev->rstc)) {
 		dev_err(pfdev->dev, "get reset failed %ld\n", PTR_ERR(pfdev->rstc));
 		return PTR_ERR(pfdev->rstc);
+	}
+	if (pfdev->comp->reset_on_init) {
+		if (!pfdev->rstc) {
+			dev_err(pfdev->dev, "required reset is missing\n");
+			return -ENODEV;
+		}
+		ret = reset_control_assert(pfdev->rstc);
+		if (ret)
+			return ret;
+		udelay(1);
 	}
 
 	return reset_control_deassert(pfdev->rstc);
@@ -31,7 +44,13 @@ static int panfrost_reset_init(struct panfrost_device *pfdev)
 
 static void panfrost_reset_fini(struct panfrost_device *pfdev)
 {
-	reset_control_assert(pfdev->rstc);
+	int ret;
+
+	if (pfdev->comp->reset_only_init)
+		return;
+	ret = reset_control_assert(pfdev->rstc);
+	if (ret)
+		dev_err(pfdev->dev, "reset fini failed %d\n", ret);
 }
 
 static int panfrost_clk_init(struct panfrost_device *pfdev)
@@ -408,12 +427,44 @@ void panfrost_device_reset(struct panfrost_device *pfdev)
 	panfrost_job_enable_interrupts(pfdev);
 }
 
+static int panfrost_runtime_restore(struct panfrost_device *pfdev)
+{
+	int ret, reset_ret;
+
+	if (pfdev->comp->reset_only_init)
+		return -EOPNOTSUPP;
+	ret = reset_control_deassert(pfdev->rstc);
+	if (ret)
+		return ret;
+	ret = clk_enable(pfdev->clock);
+	if (ret)
+		goto err_reset;
+	if (pfdev->bus_clock) {
+		ret = clk_enable(pfdev->bus_clock);
+		if (ret)
+			goto err_clock;
+	}
+	panfrost_device_reset(pfdev);
+	panfrost_devfreq_resume(pfdev);
+	return 0;
+
+err_clock:
+	clk_disable(pfdev->clock);
+err_reset:
+	reset_ret = reset_control_assert(pfdev->rstc);
+	if (reset_ret)
+		dev_err(pfdev->dev, "reset after failed recovery failed %d\n",
+			reset_ret);
+	return ret;
+}
+
 static int panfrost_device_runtime_resume(struct device *dev)
 {
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
 	int ret;
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) &&
+	    !pfdev->comp->reset_only_init) {
 		ret = reset_control_deassert(pfdev->rstc);
 		if (ret)
 			return ret;
@@ -435,17 +486,29 @@ static int panfrost_device_runtime_resume(struct device *dev)
 	return 0;
 
 err_bus_clk:
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) &&
+	    !pfdev->comp->reset_only_init)
 		clk_disable(pfdev->clock);
 err_clk:
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT))
-		reset_control_assert(pfdev->rstc);
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) &&
+	    !pfdev->comp->reset_only_init) {
+		int reset_ret = reset_control_assert(pfdev->rstc);
+
+		if (reset_ret) {
+			dev_err(pfdev->dev, "reset rollback failed %d\n", reset_ret);
+			ret = panfrost_runtime_restore(pfdev);
+			if (ret)
+				dev_err(pfdev->dev, "runtime resume recovery failed %d\n",
+					ret);
+		}
+	}
 	return ret;
 }
 
 static int panfrost_device_runtime_suspend(struct device *dev)
 {
 	struct panfrost_device *pfdev = dev_get_drvdata(dev);
+	int ret;
 
 	if (!panfrost_job_is_idle(pfdev))
 		return -EBUSY;
@@ -456,12 +519,19 @@ static int panfrost_device_runtime_suspend(struct device *dev)
 	panfrost_gpu_suspend_irq(pfdev);
 	panfrost_gpu_power_off(pfdev);
 
-	if (pfdev->comp->pm_features & BIT(GPU_PM_RT)) {
+	if (pfdev->comp->pm_features & BIT(GPU_PM_RT) &&
+	    !pfdev->comp->reset_only_init) {
 		if (pfdev->bus_clock)
 			clk_disable(pfdev->bus_clock);
 
 		clk_disable(pfdev->clock);
-		reset_control_assert(pfdev->rstc);
+		ret = reset_control_assert(pfdev->rstc);
+		if (ret) {
+			dev_err(pfdev->dev, "runtime reset failed %d\n", ret);
+			if (panfrost_runtime_restore(pfdev))
+				dev_err(pfdev->dev, "runtime suspend recovery failed\n");
+			return ret;
+		}
 	}
 
 	return 0;

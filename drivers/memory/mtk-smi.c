@@ -241,6 +241,17 @@ static int mtk_smi_larb_config_port_mt8173(struct device *dev)
 static int mtk_smi_larb_config_port_mt6797(struct device *dev)
 {
 	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
+	static const struct mtk_smi_reg_pair larb1_init[] = {
+		{0x14, 0x7f0}, {0x24, 0x370246},
+		{0x200, 1}, {0x204, 1}, {0x208, 1}, {0x20c, 1}, {0x210, 1},
+		{0x214, 1}, {0x218, 1}, {0x21c, 1}, {0x220, 1}, {0x224, 1},
+	};
+	static const struct mtk_smi_reg_pair larb3_init[] = {
+		{0x14, 0x7f0}, {0x24, 0x370246},
+		{0x200, 1}, {0x204, 1}, {0x208, 1}, {0x20c, 1}, {0x210, 1},
+		{0x214, 1}, {0x218, 1}, {0x21c, 1}, {0x220, 1}, {0x224, 1},
+		{0x228, 1}, {0x22c, 1}, {0x230, 1}, {0x234, 1}, {0x238, 1},
+	};
 	static const struct mtk_smi_reg_pair larb5_init[] = {
 		{0x14, 0x7f0}, {0x24, 0x370246},
 		{0x100, 0xb}, {0x104, 0xb}, {0x108, 0xb}, {0x118, 0xb},
@@ -250,9 +261,19 @@ static int mtk_smi_larb_config_port_mt6797(struct device *dev)
 	};
 	unsigned int i;
 
-	if (larb->larbid == 5)
+	if (larb->larbid == 1) {
+		for (i = 0; i < ARRAY_SIZE(larb1_init); i++)
+			writel_relaxed(larb1_init[i].value,
+				       larb->base + larb1_init[i].offset);
+	} else if (larb->larbid == 3) {
+		for (i = 0; i < ARRAY_SIZE(larb3_init); i++)
+			writel_relaxed(larb3_init[i].value,
+				       larb->base + larb3_init[i].offset);
+	} else if (larb->larbid == 5) {
 		for (i = 0; i < ARRAY_SIZE(larb5_init); i++)
-			writel_relaxed(larb5_init[i].value, larb->base + larb5_init[i].offset);
+			writel_relaxed(larb5_init[i].value,
+				       larb->base + larb5_init[i].offset);
+	}
 	for (i = 0; i < 4; i++)
 		writel_relaxed(0x44444444, larb->base + 0xfd0 + i * 4);
 	/* All consumers attached by this driver use non-secure translations. */

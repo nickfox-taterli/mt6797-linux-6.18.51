@@ -16,6 +16,8 @@
 #include <linux/io.h>
 #include <linux/psci.h>
 #include <linux/mm.h>
+#include <linux/soc/mediatek/mt6797-toprgu.h>
+#include <dt-bindings/reset/mediatek,mt6797-resets.h>
 
 #include <uapi/linux/psci.h>
 
@@ -62,12 +64,8 @@ static int __init cpu_psci_cpu_prepare(unsigned int cpu)
 #define MT6797_SPM_BASE_ADDR			0x10006000
 #define MT6797_SPM_MP2_CPUSYS_PWR_CON		0x0218
 #define MT6797_SPM_CPU_EXT_BUCK_ISO		0x0290
-#define MT6797_WDT_BASE_ADDR			0x10007000
-#define MT6797_WDT_SWSYSRST			0x0018
 #define MT6797_IDVFS_BASE_ADDR			0x10222000
 #define MT6797_IDVFS_MP2_PLL_CON0		0x04a0
-#define MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST	0x0800
-#define MT6797_WDT_SWSYS_RST_KEY			0x88000000
 #define MTK_SIP_KERNEL_IDVFS_BIGIDVFSSRAMLDOSET	0xc20003bf
 
 /* The vendor MT6797 I2C6 controller is left clocked for the vproc buck. */
@@ -266,24 +264,21 @@ out:
 static int mt6797_big_cluster_prepare(void)
 {
 	static bool prepared;
+	bool pwrap_asserted = false;
 	void __iomem *spm;
-	void __iomem *wdt;
 	void __iomem *idvfs;
 	struct arm_smccc_res res;
-	u32 tmp;
+	int ret;
 
 	if (prepared)
 		return 0;
 
 	spm = ioremap(MT6797_SPM_BASE_ADDR, PAGE_SIZE);
-	wdt = ioremap(MT6797_WDT_BASE_ADDR, PAGE_SIZE);
 	idvfs = ioremap(MT6797_IDVFS_BASE_ADDR, PAGE_SIZE);
-	if (!spm || !wdt || !idvfs) {
+	if (!spm || !idvfs) {
 		pr_err("MT6797 SMP: unable to map MP2 power registers\n");
 		if (idvfs)
 			iounmap(idvfs);
-		if (wdt)
-			iounmap(wdt);
 		if (spm)
 			iounmap(spm);
 		return -ENOMEM;
@@ -295,29 +290,25 @@ static int mt6797_big_cluster_prepare(void)
 
 	/* The vendor sequence deliberately performs this read as a barrier. */
 	(void)readl(idvfs + MT6797_IDVFS_MP2_PLL_CON0);
-
-	tmp = readl(wdt + MT6797_WDT_SWSYSRST);
-	writel(tmp | MT6797_WDT_SWSYS_RST_KEY |
-	       MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST,
-	       wdt + MT6797_WDT_SWSYSRST);
+	ret = mt6797_toprgu_update(MT6797_TOPRGU_PWRAP_SPI_CTL_RST, true);
+	if (ret)
+		goto out;
+	pwrap_asserted = true;
 
 	/* Vendor cpu_power_on_buck(hotplug=1) enables the external vproc buck. */
 	if (mt6797_da9214_enable_buck()) {
 		pr_err("MT6797 SMP: DA9214 buck B enable failed\n");
-		iounmap(idvfs);
-		iounmap(wdt);
-		iounmap(spm);
-		return -EIO;
+		ret = -EIO;
+		goto out;
 	}
 	udelay(1000);
 
 	writel(readl(spm + MT6797_SPM_CPU_EXT_BUCK_ISO) & ~0x3U,
 	       spm + MT6797_SPM_CPU_EXT_BUCK_ISO);
-
-	tmp = readl(wdt + MT6797_WDT_SWSYSRST);
-	writel((tmp & ~MT6797_WDT_SWSYS_RST_PWRAP_SPI_CTL_RST) |
-	       MT6797_WDT_SWSYS_RST_KEY,
-	       wdt + MT6797_WDT_SWSYSRST);
+	ret = mt6797_toprgu_update(MT6797_TOPRGU_PWRAP_SPI_CTL_RST, false);
+	if (ret)
+		goto out;
+	pwrap_asserted = false;
 
 	udelay(240);
 	arm_smccc_smc(MTK_SIP_KERNEL_IDVFS_BIGIDVFSSRAMLDOSET,
@@ -327,13 +318,21 @@ static int mt6797_big_cluster_prepare(void)
 			(long)res.a0);
 	udelay(240);
 
-	iounmap(idvfs);
-	iounmap(wdt);
-	iounmap(spm);
 	prepared = true;
 	pr_info("MT6797 SMP: MP2 power preconditioning complete\n");
+out:
+	if (pwrap_asserted) {
+		int cleanup_ret;
 
-	return 0;
+		cleanup_ret = mt6797_toprgu_update(MT6797_TOPRGU_PWRAP_SPI_CTL_RST,
+						   false);
+		if (cleanup_ret)
+			pr_err("MT6797 SMP: PWRAP reset cleanup failed: %d\n",
+			       cleanup_ret);
+	}
+	iounmap(idvfs);
+	iounmap(spm);
+	return ret;
 }
 #endif
 
