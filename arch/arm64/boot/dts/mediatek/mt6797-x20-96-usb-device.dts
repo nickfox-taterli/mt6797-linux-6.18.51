@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Fixed USB2 peripheral path for the X20-96 board. */
+/dts-v1/;
+
+#include "mt6797-x20-96-uart1.dts"
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/gpio/gpio.h>
+
+&pio {
+	usb-device-route-hog {
+		gpio-hog;
+		gpios = <86 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "usb-device-route";
+	};
+};
+
+&pmic {
+	regulators {
+		mt6351_vusb33: ldo_vusb33 {
+			regulator-name = "vusb33";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		mt6351_va10: ldo_va10 {
+			regulator-name = "va10";
+			regulator-min-microvolt = <950000>;
+			regulator-max-microvolt = <950000>;
+		};
+	};
+};
+
+/ {
+	usb2_phy: t-phy@11290000 {
+		compatible = "mediatek,mt6797-tphy",
+			     "mediatek,generic-tphy-v1";
+		/* Shared SIF ends before the separately managed U2 port window. */
+		reg = <0 0x11290000 0 0x800>,
+		      <0 0x11290b00 0 0x104>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		va10-supply = <&mt6351_va10>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_REF>,
+			 <&infrasys CLK_INFRA_SSUSB_BUS>,
+			 <&infrasys CLK_INFRA_SSUSB_SYS>;
+		clock-names = "ref", "bus", "sys";
+		mediatek,src-ref-clk-mhz = <26>;
+		mediatek,src-coef = <28>;
+		status = "okay";
+
+		usb2_phy0: usb-phy@11290800 {
+			reg = <0 0x11290800 0 0x100>;
+			clocks = <&clk26m>;
+			clock-names = "ref";
+			#phy-cells = <1>;
+			status = "okay";
+		};
+	};
+
+	usb_device: usb@11271000 {
+		compatible = "mediatek,mt6797-mtu3", "mediatek,mtu3";
+		reg = <0 0x11271000 0 0x3000>,
+		      <0 0x11280700 0 0x100>;
+		reg-names = "mac", "ippc";
+		interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "device";
+		phys = <&usb2_phy0 PHY_TYPE_USB2>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>,
+			 <&infrasys CLK_INFRA_SSUSB_REF>,
+			 <&infrasys CLK_INFRA_SSUSB_BUS>;
+		clock-names = "sys_ck", "ref_ck", "mcu_ck";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
+		vusb33-supply = <&mt6351_vusb33>;
+		dr_mode = "peripheral";
+		maximum-speed = "high-speed";
+		mediatek,u3p-dis-msk = <1>;
+		status = "okay";
+	};
+};

@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* UART1 on CON7001 with the MT6797 UART APDMA TX/RX channels. */
+/dts-v1/;
+
+#include "mt6797-x20-96-io-i2c5.dts"
+
+&uart1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins_a>;
+	dmas = <&uart_apdma 2>, <&uart_apdma 3>;
+	dma-names = "tx", "rx";
+};
+
+/ {
+	uart_apdma: dma-controller@11000600 {
+		compatible = "mediatek,mt6795-uart-dma",
+			     "mediatek,mt6577-uart-dma";
+		reg = <0 0x11000600 0 0x80>, /* UART0 TX */
+		      <0 0x11000680 0 0x80>, /* UART0 RX */
+		      <0 0x11000700 0 0x80>, /* UART1 TX */
+		      <0 0x11000780 0 0x80>, /* UART1 RX */
+		      <0 0x11000800 0 0x80>, /* UART2 TX */
+		      <0 0x11000880 0 0x80>, /* UART2 RX */
+		      <0 0x11000900 0 0x80>, /* UART3 TX */
+		      <0 0x11000980 0 0x80>; /* UART3 RX */
+		interrupts = <GIC_SPI 108 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 109 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 110 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 111 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 112 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 113 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 114 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 115 IRQ_TYPE_LEVEL_LOW>;
+		dma-requests = <8>;
+		clocks = <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "apdma";
+		#dma-cells = <1>;
+	};
+};

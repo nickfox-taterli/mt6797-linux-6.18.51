@@ -74,6 +74,7 @@ properties:
               - mediatek,mt7623-tphy
               - mediatek,mt7622-tphy
               - mediatek,mt8516-tphy
+              - mediatek,mt6797-tphy
           - const: mediatek,generic-tphy-v1
       - items:
           - enum:
@@ -99,10 +100,12 @@ properties:
 
   reg:
     description:
-      Register shared by multiple ports, exclude port's private register.
-      It is needed for T-PHY V1, such as mt2701 and mt8173, but not for
-      T-PHY V2/V3, such as mt2712.
-    maxItems: 1
+      Register shared by multiple ports, excluding each port's private
+      register. It is needed for T-PHY V1, such as mt2701 and mt8173, but not
+      for T-PHY V2/V3, such as mt2712. MT6797 requires a second window for
+      its shared USB analog power, bias and XTAL controls (PHYA and PHYA_DA).
+    minItems: 1
+    maxItems: 2
 
   "#address-cells":
     enum: [1, 2]
@@ -135,6 +138,21 @@ properties:
       perspective of USB hardware design, even if MTCMOS is added to the
       TPHY, it should remain always on.
     maxItems: 1
+
+  va10-supply:
+    description: MT6797 USB analog 0.95 V rail
+
+  clocks:
+    items:
+      - description: MT6797 USB reference clock
+      - description: MT6797 USB bus clock
+      - description: MT6797 USB system clock
+
+  clock-names:
+    items:
+      - const: ref
+      - const: bus
+      - const: sys
 
 # Required child node:
 patternProperties:
@@ -282,6 +300,29 @@ required:
   - "#address-cells"
   - "#size-cells"
   - ranges
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: mediatek,mt6797-tphy
+    then:
+      properties:
+        reg:
+          minItems: 2
+      required:
+        - reg
+        - va10-supply
+        - clocks
+        - clock-names
+    else:
+      properties:
+        reg:
+          maxItems: 1
+        va10-supply: false
+        clocks: false
+        clock-names: false
 
 additionalProperties: false
 

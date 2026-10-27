@@ -85,6 +85,7 @@
 		clocks = <&infrasys CLK_INFRA_SYS_CIRQ>;
 		clock-names = "cirq";
 		mediatek,vcorefs = <&vcorefs>;
+		mediatek,watchdog = <&watchdog>;
 		mediatek,gic = <&gic>;
 		mediatek,sysirq = <&sysirq>;
 		interrupt-parent = <&sysirq>;

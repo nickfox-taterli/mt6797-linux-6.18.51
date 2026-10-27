@@ -19,6 +19,7 @@ properties:
           - enum:
               - mediatek,mt8173-jpgdec
               - mediatek,mt2701-jpgdec
+              - mediatek,mt6797-jpgdec
       - items:
           - enum:
               - mediatek,mt7623-jpgdec
@@ -32,16 +33,21 @@ properties:
     maxItems: 1
 
   clocks:
-    maxItems: 2
     minItems: 2
+    maxItems: 3
 
   clock-names:
+    minItems: 2
+    maxItems: 3
     items:
-      - const: jpgdec-smi
-      - const: jpgdec
+      enum:
+        - jpgdec-larb
+        - jpgdec-smi
+        - jpgdec
 
   power-domains:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   iommus:
     minItems: 2

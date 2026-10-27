@@ -20,6 +20,7 @@ properties:
           - mediatek,mt8183-jpgenc
           - mediatek,mt8186-jpgenc
           - mediatek,mt8188-jpgenc
+          - mediatek,mt6797-jpgenc
       - const: mediatek,mtk-jpgenc
   reg:
     maxItems: 1
@@ -28,14 +29,21 @@ properties:
     maxItems: 1
 
   clocks:
-    maxItems: 1
+    minItems: 1
+    maxItems: 3
 
   clock-names:
+    minItems: 1
+    maxItems: 3
     items:
-      - const: jpgenc
+      enum:
+        - jpgenc-smi
+        - jpgenc-larb
+        - jpgenc
 
   power-domains:
-    maxItems: 1
+    minItems: 1
+    maxItems: 2
 
   iommus:
     minItems: 2

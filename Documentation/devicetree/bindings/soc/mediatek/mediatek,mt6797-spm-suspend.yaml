@@ -41,6 +41,10 @@ properties:
     $ref: /schemas/types.yaml#/definitions/phandle
     description: VCORE controller providing resources and exclusive PCM ownership
 
+  mediatek,watchdog:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: TOPRGU providing the SPM/SCPSYS reset request during deep sleep
+
   interrupts:
     maxItems: 1
 
@@ -54,6 +58,7 @@ required:
   - mediatek,vcorefs
   - mediatek,gic
   - mediatek,sysirq
+  - mediatek,watchdog
   - interrupts
   - wakeup-source
 

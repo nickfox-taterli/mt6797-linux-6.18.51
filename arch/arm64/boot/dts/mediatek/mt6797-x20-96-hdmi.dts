@@ -100,6 +100,7 @@
 			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,
 			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE3>;
 		power-domain-names = "core0", "core1", "core2", "core3";
+		resets = <&watchdog MT6797_TOPRGU_MFG_SW_RST>;
 	};
 };
 
@@ -117,7 +118,7 @@
 		clocks = <&mmsys CLK_MM_SMI_COMMON>;
 		clock-names = "bclk";
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
-		mediatek,larbs = <&smi_larb5>;
+		mediatek,larbs = <&smi_larb1>, <&smi_larb3>, <&smi_larb5>;
 		#iommu-cells = <1>;
 	};
 	smi_common: smi@14022000 {
@@ -127,6 +128,27 @@
 		clock-names = "apb", "smi";
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
 	};
+	smi_larb1: larb@16010000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x16010000 0 0x10000>;
+		interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vdecsys CLK_VDEC_CKEN>,
+			 <&vdecsys CLK_VDEC_LARB1_CKEN>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <1>;
+	};
+	smi_larb3: larb@17001000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x17001000 0 0x1000>;
+		interrupts = <GIC_SPI 236 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_1>, <&vencsys CLK_VENC_1>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <3>;
+	};
 	smi_larb5: larb@14021000 {
 		compatible = "mediatek,mt6797-smi-larb";
 		reg = <0 0x14021000 0 0x1000>;
@@ -135,6 +157,32 @@
 		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
 		mediatek,smi = <&smi_common>;
 		mediatek,larb-id = <5>;
+	};
+	jpgenc: jpeg-encoder@17003000 {
+		compatible = "mediatek,mt6797-jpgenc", "mediatek,mtk-jpgenc";
+		reg = <0 0x17003000 0 0x1000>;
+		interrupts = <GIC_SPI 237 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>,
+			 <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_2>;
+		clock-names = "jpgenc-smi", "jpgenc-larb", "jpgenc";
+		/* MT6797 routes JPEG memory through both MM SMI and VENC domains. */
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>,
+				<&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u 101>, <&m4u 102>; /* LARB3 JPEG encoder ports 5/6 */
+	};
+	jpgdec: jpeg-decoder@17004000 {
+		compatible = "mediatek,mt6797-jpgdec";
+		reg = <0 0x17004000 0 0x1000>;
+		interrupts = <GIC_SPI 239 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_0>,
+			 <&mmsys CLK_MM_SMI_COMMON>,
+			 <&vencsys CLK_VENC_3>;
+		clock-names = "jpgdec-larb", "jpgdec-smi", "jpgdec";
+		/* MT6797 routes JPEG memory through both MM SMI and VENC domains. */
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>,
+				<&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u 103>, <&m4u 104>; /* LARB3 JPEG decoder ports 7/8 */
 	};
 	disp_rdma1: rdma@14010000 {
 		compatible = "mediatek,mt6797-disp-rdma";

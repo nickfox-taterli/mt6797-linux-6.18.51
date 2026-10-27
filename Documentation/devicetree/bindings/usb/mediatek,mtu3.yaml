@@ -21,6 +21,7 @@ properties:
   compatible:
     items:
       - enum:
+          - mediatek,mt6797-mtu3
           - mediatek,mt2712-mtu3
           - mediatek,mt8173-mtu3
           - mediatek,mt8183-mtu3
