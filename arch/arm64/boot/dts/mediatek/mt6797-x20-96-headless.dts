@@ -109,7 +109,7 @@
 	chosen {
 		stdout-path = "serial0:921600n8";
 		/* Loader overrides this for initramfs rescue; fallback is eMMC. */
-		bootargs = "console=ttyS0,921600n8 earlycon=mtk8250,mmio32,0x11002000 root=PARTUUID=8273e1ab-846f-4468-b999-ee2ea8e50a16 rootwait loglevel=8 printk.time=1";
+		bootargs = "console=ttyS0,921600n8 root=PARTUUID=8273e1ab-846f-4468-b999-ee2ea8e50a16 rootwait printk.time=1";
 	};
 
 	thermal-zones {
