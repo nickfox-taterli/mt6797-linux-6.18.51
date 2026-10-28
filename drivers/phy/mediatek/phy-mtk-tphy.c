@@ -403,7 +403,7 @@ static int mt6797_usb_analog_enable(struct mtk_tphy *tphy)
 	writel(before | MT6797_VUSB10_ON,
 	       tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
 	after = readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG);
-	dev_info(tphy->dev,
+	dev_dbg(tphy->dev,
 		 "MT6797 USB analog power: VA10 enabled=%d voltage=%d PHYA-REG1=%#x->%#x\n",
 		 regulator_is_enabled(tphy->va10),
 		 regulator_get_voltage(tphy->va10), before, after);
@@ -789,7 +789,7 @@ static void mt6797_u2_slew_rate_calibrate(struct mtk_tphy *tphy,
 	calibration = fm_out ? div64_u64(1024 * 26 * 28, (u64)fm_out * 1000) : 4;
 	mtk_phy_update_field(com + U3P_USBPHYACR5, PA5_RG_U2_HSTX_SRCTRL, calibration);
 	mtk_phy_clear_bits(com + U3P_USBPHYACR5, PA5_RG_U2_HSTX_SRCAL_EN);
-	dev_info(tphy->dev, "USB2 slew calibration: fm_out=%u srctrl=%u\n",
+	dev_dbg(tphy->dev, "USB2 slew calibration: fm_out=%u srctrl=%u\n",
 		 fm_out, calibration);
 }
 
@@ -1643,7 +1643,7 @@ static int mtk_phy_power_on(struct phy *phy)
 		else
 			hs_slew_rate_calibrate(tphy, instance);
 		if (tphy->pdata->mt6797_usb_analog) {
-			dev_info(tphy->dev,
+			dev_dbg(tphy->dev,
 				 "MT6797 U2 PHY state idx=%u PHYA1=%08x ACR0=%08x ACR1=%08x ACR2=%08x ACR5=%08x ACR6=%08x DTM0=%08x DTM1=%08x DMON0=%08x\n",
 				 instance->index,
 				 readl(tphy->usb_analog_base + MT6797_VUSB10_ON_REG),
@@ -1655,7 +1655,7 @@ static int mtk_phy_power_on(struct phy *phy)
 				 readl(com + U3P_U2PHYDTM0),
 				 readl(com + U3P_U2PHYDTM1),
 				 readl(com + U3P_U2PHYDMON0));
-			dev_info(tphy->dev,
+			dev_dbg(tphy->dev,
 				 "MT6797 U2 shared state ACR4=%08x PHYA0=%08x DA0=%08x XTALCTL3=%08x CHIP_C=%08x CHIP_E=%08x\n",
 				 readl(com + U3P_U2PHYACR4),
 				 readl(tphy->usb_analog_base + U3P_U3_PHYA_REG0),
@@ -1729,7 +1729,7 @@ static int mtk_phy_connect(struct phy *phy, int port)
 		return 0;
 
 	mtk_phy_set_bits(com + U3P_U2PHYDCR1, BIT(18));
-	dev_info(tphy->dev, "USB2 connected PLL mode: %08x\n",
+	dev_dbg(tphy->dev, "USB2 connected PLL mode: %08x\n",
 		 readl(com + U3P_U2PHYDCR1));
 	return 0;
 }
