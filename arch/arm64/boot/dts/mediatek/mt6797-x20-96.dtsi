@@ -1228,7 +1228,12 @@
 	};
 };
 
-/* BSP external-display memory path: SMI larb5 port2, one shared MM M4U. */
+/* BSP external-display memory path: SMI larb5 port2, one shared MM M4U.
+ * The full scanout chain RDMA1→DSC0→DPI0 stays described: the mtk-drm
+ * mt6797 path requires DSC0 and dropping the node unbinds the whole card.
+ * DSC has no driver here, which keeps the MM genpd sync_state deferred -
+ * a known headless leftover to be resolved with the display path itself.
+ */
 / {
 	aliases {
 		rdma1 = &disp_rdma1;
