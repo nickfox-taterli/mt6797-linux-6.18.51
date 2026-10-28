@@ -2,12 +2,9 @@
 #ifndef __LINUX_SOC_MEDIATEK_MT6797_THERMAL_EEM_H
 #define __LINUX_SOC_MEDIATEK_MT6797_THERMAL_EEM_H
 
-#include <linux/spinlock.h>
 #include <linux/types.h>
 
-/* MT6797 thermal and EEM share the PTPCORESEL bank-select register. */
-extern spinlock_t mt6797_thermal_eem_lock;
-
+/* MT6797 thermal and EEM share the PTPCORESEL bank transaction. */
 struct device;
 struct mt6797_thermal_bank_cookie {
 	unsigned long flags;

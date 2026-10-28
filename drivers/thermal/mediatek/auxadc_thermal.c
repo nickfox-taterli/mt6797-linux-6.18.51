@@ -329,8 +329,7 @@ struct mtk_thermal_bank {
 	int id;
 };
 
-DEFINE_SPINLOCK(mt6797_thermal_eem_lock);
-EXPORT_SYMBOL_GPL(mt6797_thermal_eem_lock);
+static DEFINE_SPINLOCK(mt6797_thermal_eem_lock);
 
 struct mtk_thermal_data {
 	s32 num_banks;
@@ -2344,7 +2343,7 @@ static int mtk_thermal_suspend(struct device *dev)
 	}
 	mt->pm_suspended = true;
 	mt->pm_suspends++;
-	dev_info(dev, "BSP suspend: banks stopped, AHB drained, TS buffer off\n");
+	dev_dbg(dev, "BSP suspend: banks stopped, AHB drained, TS buffer off\n");
 	return 0;
 
 restore:
@@ -2380,7 +2379,7 @@ static int mtk_thermal_resume(struct device *dev)
 	mt->pm_suspended = false;
 	mt->pm_resumes++;
 	mt->pm_last_error = 0;
-	dev_info(dev, "BSP resume: controller reset, banks seeded, protection=%dmC\n",
+	dev_dbg(dev, "BSP resume: controller reset, banks seeded, protection=%dmC\n",
 		 mt->hw_critical_temp);
 	return 0;
 }
