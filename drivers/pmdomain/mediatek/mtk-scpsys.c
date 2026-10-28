@@ -154,6 +154,9 @@ struct scp_domain {
 	struct clk *clk[MAX_CLKS];
 	const struct scp_domain_data *data;
 	struct regulator *supply;
+	/* Retained votes let MT6797 retry safely after an incomplete rollback. */
+	bool gpu_supply_held;
+	bool gpu_clocks_held;
 };
 
 struct scp_ctrl_reg {
@@ -192,7 +195,8 @@ struct scp_soc_ops {
 	int (*gpu_sram_rail_init)(struct scp *scp,
 				  const struct scp_domain_data *domains, int num);
 	/** Rail enable/disable around the domain owning GPU_SRAM_RAIL. */
-	int (*gpu_sram_rail_enable)(struct scp_domain *scpd);
+	int (*gpu_sram_rail_enable)(struct scp_domain *scpd, u32 *previous);
+	int (*gpu_sram_rail_restore)(struct scp_domain *scpd, u32 previous);
 	int (*gpu_sram_rail_disable)(struct scp_domain *scpd);
 };
 
@@ -348,26 +352,42 @@ static int scpsys_bus_protect_disable(struct scp_domain *scpd)
 			scp->bus_prot_reg_update);
 }
 
+static int scpsys_power_off(struct generic_pm_domain *genpd);
+
 static int scpsys_power_on(struct generic_pm_domain *genpd)
 {
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
 	void __iomem *ctl_addr = scp->base + scpd->data->ctl_offs;
-	u32 val;
-	int ret, tmp;
+	u32 val, previous_rail = 0;
+	bool gpu_rail = scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL);
+	int original_on = 0, ret, tmp;
 
-	if (scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL)) {
-		ret = scp->ops->gpu_sram_rail_enable(scpd);
+	if (gpu_rail) {
+		original_on = scpsys_domain_is_on(scpd);
+		if (original_on < 0) {
+			dev_err(scp->dev, "domain %s has inconsistent power status\n", genpd->name);
+			return original_on;
+		}
+		ret = scp->ops->gpu_sram_rail_enable(scpd, &previous_rail);
 		if (ret)
 			return ret;
 	}
-	ret = scpsys_regulator_enable(scpd);
-	if (ret < 0)
-		return ret;
+	if (!gpu_rail || !scpd->gpu_supply_held) {
+		ret = scpsys_regulator_enable(scpd);
+		if (ret < 0)
+			goto err_rail;
+		if (gpu_rail)
+			scpd->gpu_supply_held = true;
+	}
 
-	ret = scpsys_clk_enable(scpd->clk, MAX_CLKS);
-	if (ret)
-		goto err_clk;
+	if (!gpu_rail || !scpd->gpu_clocks_held) {
+		ret = scpsys_clk_enable(scpd->clk, MAX_CLKS);
+		if (ret)
+			goto err_clk;
+		if (gpu_rail)
+			scpd->gpu_clocks_held = true;
+	}
 
 	/* subsys power on */
 	val = readl(ctl_addr);
@@ -410,10 +430,48 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	return 0;
 
 err_pwr_ack:
+	if (gpu_rail) {
+		/* A boot-on domain must not lose rails after a failed attach.
+		 * For a previously-off domain, request a full power-off first;
+		 * never drop its supply while the hardware state is uncertain.
+		 */
+		if (original_on) {
+			dev_err(scp->dev, "domain %s was already on; keeping supplies enabled\n",
+				genpd->name);
+			goto out_error;
+		}
+		tmp = scpsys_power_off(genpd);
+		if (tmp) {
+			dev_err(scp->dev, "domain %s rollback incomplete: %d\n",
+				genpd->name, tmp);
+			goto out_error;
+		}
+		goto err_rail;
+	}
 	scpsys_clk_disable(scpd->clk, MAX_CLKS);
 err_clk:
-	scpsys_regulator_disable(scpd);
+	if (gpu_rail && original_on) {
+		dev_err(scp->dev, "domain %s was already on; keeping supply enabled\n",
+			genpd->name);
+		goto out_error;
+	}
+	tmp = scpsys_regulator_disable(scpd);
+	if (tmp < 0) {
+		dev_err(scp->dev, "domain %s regulator rollback failed: %d\n",
+			genpd->name, tmp);
+		goto out_error;
+	}
+	if (gpu_rail)
+		scpd->gpu_supply_held = false;
+err_rail:
+	if (gpu_rail) {
+		tmp = scp->ops->gpu_sram_rail_restore(scpd, previous_rail);
+		if (tmp)
+			dev_err(scp->dev, "domain %s SRAM rail rollback failed: %d\n",
+				genpd->name, tmp);
+	}
 
+out_error:
 	dev_err(scp->dev, "Failed to power on domain %s\n", genpd->name);
 
 	return ret;
@@ -424,6 +482,7 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	struct scp_domain *scpd = container_of(genpd, struct scp_domain, genpd);
 	struct scp *scp = scpd->scp;
 	void __iomem *ctl_addr = scp->base + scpd->data->ctl_offs;
+	bool gpu_rail = scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL);
 	u32 val;
 	int ret, tmp;
 
@@ -465,13 +524,21 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	if (ret < 0)
 		goto out;
 
-	scpsys_clk_disable(scpd->clk, MAX_CLKS);
+	if (!gpu_rail || scpd->gpu_clocks_held) {
+		scpsys_clk_disable(scpd->clk, MAX_CLKS);
+		if (gpu_rail)
+			scpd->gpu_clocks_held = false;
+	}
 
-	ret = scpsys_regulator_disable(scpd);
-	if (ret < 0)
-		goto out;
+	if (!gpu_rail || scpd->gpu_supply_held) {
+		ret = scpsys_regulator_disable(scpd);
+		if (ret < 0)
+			goto out;
+		if (gpu_rail)
+			scpd->gpu_supply_held = false;
+	}
 
-	if (scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL))
+	if (gpu_rail)
 		return scp->ops->gpu_sram_rail_disable(scpd);
 	return 0;
 
@@ -549,19 +616,6 @@ static struct scp *init_scp(struct platform_device *pdev,
 
 	pd_data->num_domains = soc->num_domains;
 
-	/*
-	 * SoC-shared rails are set up once the resolved domain supplies say
-	 * the SoC actually carries them (MT6797 keys the GPU SRAM rail
-	 * defaults to the external GPU buck).
-	 */
-	if (soc->ops && soc->ops->gpu_sram_rail_init) {
-		int ret = soc->ops->gpu_sram_rail_init(scp, scp_domain_data,
-						       soc->num_domains);
-
-		if (ret)
-			return ERR_PTR(ret);
-	}
-
 	init_clks(pdev, clk);
 
 	for (i = 0; i < soc->num_domains; i++) {
@@ -593,6 +647,17 @@ static struct scp *init_scp(struct platform_device *pdev,
 			genpd->flags |= GENPD_FLAG_ACTIVE_WAKEUP;
 	}
 
+	/* Do not program SoC-shared rails before every supply and clock has
+	 * resolved: a deferred or failed probe must leave hardware untouched.
+	 */
+	if (soc->ops && soc->ops->gpu_sram_rail_init) {
+		int ret = soc->ops->gpu_sram_rail_init(scp, scp_domain_data,
+						       soc->num_domains);
+
+		if (ret)
+			return ERR_PTR(ret);
+	}
+
 	return scp;
 }
 
@@ -618,8 +683,20 @@ static void mtk_register_power_domains(struct platform_device *pdev,
 		 * unused GPU core rails keep their BSP off state).
 		 */
 		on = scpsys_domain_is_on(scpd) > 0;
-		if (!scp->preserve_boot_off || on)
-			on = !WARN_ON(genpd->power_on(genpd) < 0);
+		if (!scp->preserve_boot_off || on) {
+			ret = genpd->power_on(genpd);
+			if (!WARN_ON(ret < 0)) {
+				on = true;
+			} else if (scp->preserve_boot_off && on && scp->ops &&
+				   MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL)) {
+				/* Do not report an active or transitioning boot domain
+				 * as off after failing to acquire its Linux resources.
+				 */
+				on = scpsys_domain_is_on(scpd) != 0;
+			} else {
+				on = false;
+			}
+		}
 
 		pm_genpd_init(genpd, NULL, !on);
 	}
@@ -880,11 +957,23 @@ static int mt6797_gpu_sram_rail_init(struct scp *scp,
 	return 0;
 }
 
-static int mt6797_gpu_sram_rail_enable(struct scp_domain *scpd)
+static int mt6797_gpu_sram_rail_enable(struct scp_domain *scpd, u32 *previous)
 {
+	int ret;
+
+	ret = regmap_read(scpd->scp->infracfg, MT6797_INFRA_MFG_SRAM_EN, previous);
+	if (ret)
+		return ret;
+	*previous &= MT6797_INFRA_MFG_SRAM_EN_MASK;
 	return regmap_update_bits(scpd->scp->infracfg, MT6797_INFRA_MFG_SRAM_EN,
 				  MT6797_INFRA_MFG_SRAM_EN_MASK,
 				  MT6797_INFRA_MFG_SRAM_EN_MASK);
+}
+
+static int mt6797_gpu_sram_rail_restore(struct scp_domain *scpd, u32 previous)
+{
+	return regmap_update_bits(scpd->scp->infracfg, MT6797_INFRA_MFG_SRAM_EN,
+				  MT6797_INFRA_MFG_SRAM_EN_MASK, previous);
 }
 
 static int mt6797_gpu_sram_rail_disable(struct scp_domain *scpd)
@@ -896,6 +985,7 @@ static int mt6797_gpu_sram_rail_disable(struct scp_domain *scpd)
 static const struct scp_soc_ops mt6797_soc_ops = {
 	.gpu_sram_rail_init = mt6797_gpu_sram_rail_init,
 	.gpu_sram_rail_enable = mt6797_gpu_sram_rail_enable,
+	.gpu_sram_rail_restore = mt6797_gpu_sram_rail_restore,
 	.gpu_sram_rail_disable = mt6797_gpu_sram_rail_disable,
 };
 
