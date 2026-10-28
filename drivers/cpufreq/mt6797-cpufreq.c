@@ -861,6 +861,25 @@ static int mt6797_set_big_pll(const struct mt6797_freq_method *method)
 	return (long)res.a0 < 0 ? (int)res.a0 : 0;
 }
 
+/* The caller holds the CPU DVFS mutex and hardware semaphore, with BIG
+ * parked on the backup clock. Never select a PLL whose restoration failed.
+ */
+static int mt6797_restore_big_pll(struct mt6797_cpufreq *data,
+				  const struct mt6797_cluster *cluster,
+				  const struct mt6797_freq_method *old)
+{
+	int ret = mt6797_set_big_pll(old);
+
+	if (ret)
+		return ret;
+	udelay(20);
+	mt6797_set_clkdiv(data, cluster, old->clk_div);
+	ret = mt6797_sync_dcm(data, cluster, old->khz);
+	if (!ret)
+		mt6797_clock_switch(data, cluster, 1);
+	return ret;
+}
+
 static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 					 struct mt6797_cluster *cluster,
 					 const struct mt6797_freq_method *old,
@@ -894,6 +913,14 @@ static int mt6797_set_rate_locked(struct mt6797_cpufreq *data,
 	if (cluster->id == 2) {
 		mt6797_clock_switch(data, cluster, 2);
 		ret = mt6797_set_big_pll(target);
+		if (ret) {
+			int restore = mt6797_restore_big_pll(data, cluster, old);
+
+			if (restore)
+				dev_err(data->dev, "BIG PLL rollback failed: %d; kept on backup clock\n",
+					restore);
+			goto out_semaphore;
+		}
 		udelay(20);
 		mt6797_clock_switch(data, cluster, 1);
 	} else if (fhctl) {
