@@ -926,6 +926,15 @@ config MEDIATEK_WATCHDOG
 	  To compile this driver as a module, choose M here: the
 	  module will be called mtk_wdt.
 
+config MT6797_WDT_FAULT_INJECTION
+	bool "MT6797 watchdog fault injection for isolated tests"
+	depends on MEDIATEK_WATCHDOG && FAULT_INJECTION
+	default n
+	help
+	  Expose one-shot thermal request failures and CPU health-report
+	  suppression for isolated recovery tests. Do not enable on production
+	  systems; the watchdog and thermal protection remain enabled without it.
+
 config DIGICOLOR_WATCHDOG
 	tristate "Conexant Digicolor SoCs watchdog support"
 	depends on ARCH_DIGICOLOR || COMPILE_TEST

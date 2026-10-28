@@ -116,7 +116,7 @@ static unsigned int timeout;
 static bool mt6797_boot_monitor = true;
 module_param(mt6797_boot_monitor, bool, 0444);
 MODULE_PARM_DESC(mt6797_boot_monitor, "Start MT6797 countdown with online-CPU health gate");
-#ifdef CONFIG_FAULT_INJECTION
+#ifdef CONFIG_MT6797_WDT_FAULT_INJECTION
 /* Explicit one-shot failures for the board's independent-RAM tests only.
  * Defaults are zero and reboot clears them.  No request is changed by a
  * failed hold; failed restore attempts exercise the real bounded retry.
@@ -180,13 +180,13 @@ static int mt6797_health_should_run(unsigned int cpu)
 
 static void mt6797_health_report(unsigned int cpu)
 {
-#ifdef CONFIG_FAULT_INJECTION
+#ifdef CONFIG_MT6797_WDT_FAULT_INJECTION
 	if (READ_ONCE(health_skip_cpu) == cpu)
 		goto sleep;
 #endif
 	WRITE_ONCE(per_cpu(mt6797_health_seen, cpu), jiffies);
 	per_cpu(mt6797_health_reports, cpu)++;
-#ifdef CONFIG_FAULT_INJECTION
+#ifdef CONFIG_MT6797_WDT_FAULT_INJECTION
 sleep:
 #endif
 	/* Own local wakeup: one IRQ-masked CPU must not silence every reporter.
@@ -384,7 +384,7 @@ int mt6797_wdt_thermal_request(struct device *dev, bool enable)
 		return -ENODEV;
 
 	spin_lock_irqsave(&wdt->lock, flags);
-#ifdef CONFIG_FAULT_INJECTION
+#ifdef CONFIG_MT6797_WDT_FAULT_INJECTION
 	if (enable && READ_ONCE(tc_fail_restore)) {
 		WRITE_ONCE(tc_fail_restore, tc_fail_restore - 1);
 		spin_unlock_irqrestore(&wdt->lock, flags);
@@ -465,7 +465,7 @@ int mt6797_wdt_thermal_hold(struct device *dev, bool *was_armed)
 	if (!wdt || !wdt->vendor_reset)
 		return -ENODEV;
 	spin_lock_irqsave(&wdt->lock, flags);
-#ifdef CONFIG_FAULT_INJECTION
+#ifdef CONFIG_MT6797_WDT_FAULT_INJECTION
 	if (READ_ONCE(tc_fail_hold)) {
 		WRITE_ONCE(tc_fail_hold, tc_fail_hold - 1);
 		spin_unlock_irqrestore(&wdt->lock, flags);
