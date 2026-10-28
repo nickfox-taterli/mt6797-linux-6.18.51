@@ -9,6 +9,7 @@
  * changed through the ATF IDVFS SMC, as required by the vendor firmware.
  */
 
+#include <linux/soc/mediatek/mt6797-sip.h>
 #include <linux/arm-smccc.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
@@ -34,10 +35,6 @@
 #include <linux/soc/mediatek/mt6797-cpufreq.h>
 #include <linux/suspend.h>
 
-#define MT6797_SIP_IDVFS_PLL_SET_FREQ	0xC20003B8
-#define MT6797_SIP_IDVFS_SRAM_LDO_SET	0xC20003BF
-#define MT6797_SIP_OCP_READ		0xC200035F
-#define MT6797_SIP_OCP_WRITE		0xC200035E
 
 #define MT6797_PLL_LL_CON1		0x204
 #define MT6797_PLL_L_CON1		0x214

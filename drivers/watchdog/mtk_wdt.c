@@ -9,6 +9,7 @@
  * Based on sunxi_wdt.c
  */
 
+#include <linux/soc/mediatek/mt6797-sip.h>
 #include <dt-bindings/reset/mt2712-resets.h>
 #include <dt-bindings/reset/mediatek,mt6735-wdt.h>
 #include <dt-bindings/reset/mediatek,mt6795-resets.h>
@@ -301,7 +302,7 @@ static int mt6797_enable_secure_capture(struct mtk_wdt_dev *wdt)
 	 */
 	if (wdd->timeout & 1)
 		return -EINVAL;
-	arm_smccc_smc(0xc200067a, 0, 0, 0, 0, 0, 0, 0, &res);
+	arm_smccc_smc(MT6797_SIP_WDT_CAPTURE, 0, 0, 0, 0, 0, 0, 0, &res);
 	if (res.a0 != 0x57444331)
 		return -EOPNOTSUPP;
 	for_each_possible_cpu(cpu) {
@@ -309,7 +310,7 @@ static int mt6797_enable_secure_capture(struct mtk_wdt_dev *wdt)
 			return -EINVAL;
 		mask |= BIT(cpu);
 	}
-	arm_smccc_smc(0xc200067a, 1, mask, 0, 0, 0, 0, 0, &res);
+	arm_smccc_smc(MT6797_SIP_WDT_CAPTURE, 1, mask, 0, 0, 0, 0, 0, &res);
 	if (res.a0)
 		return -EIO;
 	wdd->pretimeout = wdd->timeout / 2;

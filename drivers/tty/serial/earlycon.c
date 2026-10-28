@@ -26,10 +26,6 @@
 
 #include <asm/serial.h>
 
-#ifdef CONFIG_ARCH_MEDIATEK
-extern void __iomem *x20_early_uart_base;
-#endif
-
 static struct console early_con = {
 	.name =		"uart",		/* fixed up at earlycon registration */
 	.flags =	CON_PRINTBUFFER | CON_BOOT,
@@ -151,15 +147,8 @@ static int __init register_earlycon(char *buf, const struct earlycon_id *match)
 	spin_lock_init(&port->lock);
 	if (!port->uartclk)
 		port->uartclk = BASE_BAUD * 16;
-	if (port->mapbase) {
-#ifdef CONFIG_ARCH_MEDIATEK
-		/* setup_arch() installs the MT6797 UART mapping before earlycon. */
-		if (x20_early_uart_base)
-			port->membase = x20_early_uart_base;
-		else
-#endif
+	if (port->mapbase)
 		port->membase = earlycon_map(port->mapbase, 64);
-	}
 
 	earlycon_init(&early_console_dev, match->name);
 	err = match->setup(&early_console_dev, buf);

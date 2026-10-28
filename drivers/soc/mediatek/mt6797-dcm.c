@@ -6,6 +6,7 @@
  * follow the BSP mt_dcm.c. Linux owns only these always-on registers;
  * CPU sync DCM remains with cpufreq; DRAM PLLs and DDR PHY are not touched.
  */
+#include <linux/soc/mediatek/mt6797-sip.h>
 #include <linux/arm-smccc.h>
 #include <linux/clk.h>
 #include <linux/cpu.h>
@@ -45,8 +46,6 @@
 #define PERI_PRESET_MASK		GENMASK(14, 5)
 #define PERI_PRESET		((0x10 << 5) | (1 << 10))
 
-#define MT6797_SIP_OCP_WRITE	0xc200035e
-#define MT6797_SIP_OCP_READ	0xc200035f
 
 #define MEM_CTRL_MASK		(GENMASK(26, 6) | BIT(29) | BIT(31))
 #define MEM_ON			(BIT(7) | BIT(8) | (0x10 << 9) | (0x1f << 21))

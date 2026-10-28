@@ -61,11 +61,6 @@ static struct resource *standard_resources;
 phys_addr_t __fdt_pointer __initdata;
 u64 mmu_enabled_at_boot __initdata;
 
-#ifdef CONFIG_ARCH_MEDIATEK
-/* MT6797 earlycon uses the UART mapping installed before the FDT is parsed. */
-void __iomem *x20_early_uart_base;
-#endif
-
 /*
  * Standard memory resources
  */
@@ -293,11 +288,6 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 
 	early_fixmap_init();
 	early_ioremap_init();
-
-#ifdef CONFIG_ARCH_MEDIATEK
-	set_fixmap_io(FIX_EARLYCON_MEM_BASE, 0x11002000);
-	x20_early_uart_base = (void __iomem *)__fix_to_virt(FIX_EARLYCON_MEM_BASE);
-#endif
 
 	setup_machine_fdt(__fdt_pointer);
 

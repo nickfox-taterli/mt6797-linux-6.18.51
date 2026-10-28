@@ -5,6 +5,15 @@
 menu "MediaTek SoC drivers"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
 
+config MTK_MT6797_FIRMWARE
+	bool "MT6797 BL31 boot ABI check"
+	depends on ARM64 && ARCH_MEDIATEK && OF
+	default y
+	help
+	  Check the fixed X20 firmware contract before secondary CPU startup.
+	  Incompatible firmware leaves CPU0 and the recovery console available.
+	  Hardware boot sequencing is owned by BL31, not the PSCI CPU driver.
+
 config MTK_CMDQ
 	tristate "MediaTek CMDQ Support"
 	depends on ARCH_MEDIATEK || COMPILE_TEST

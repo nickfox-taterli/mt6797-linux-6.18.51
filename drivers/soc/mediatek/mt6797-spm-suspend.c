@@ -2,6 +2,7 @@
 /* MT6797 BSP spm_v2 suspend, with manual CPU rails retained.
  * VCORE relinquishes its common PCM before this driver borrows SPM.
  */
+#include <linux/soc/mediatek/mt6797-sip.h>
 #include <linux/arm-smccc.h>
 #include <linux/clk.h>
 #include <linux/cpu.h>
@@ -30,8 +31,6 @@
 #define KEY 0x0b160000
 #define RESET_STATE 0x48490
 #define WAIT_US 10000
-#define SLEEP_STATE 0x01010001
-#define SLEEP_CAPS 0xc2000679
 /* CPU/DDRPHY/INFRA powerdown requested. Keep manual VCORE/VPROC policy,
  * SYSRAM and DPD disabled; bus clocks may stop as in the BSP suspend path.
  */
@@ -391,7 +390,7 @@ static int cirq_prepare(void)
 		phys_addr_t address = i < 8 ? s.polarity[0] + i * 4 :
 					     s.polarity[1] + (i - 8) * 4;
 
-		arm_smccc_smc(0xc200035f, address, 0, 0, 0, 0, 0, 0, &result);
+		arm_smccc_smc(MT6797_SIP_OCP_READ, address, 0, 0, 0, 0, 0, 0, &result);
 		if ((long)result.a0 < 0)
 			return -EIO;
 		polarity[i] = result.a0;
@@ -505,7 +504,7 @@ static int sleep_enter(suspend_state_t state)
 		wr(PCM_CON0, KEY | BIT(2) | BIT(3));
 		ret = cpu_pm_enter();
 		if (!ret) {
-			ret = psci_cpu_suspend_enter(SLEEP_STATE);
+			ret = psci_cpu_suspend_enter(MT6797_SLEEP_STATE);
 			cpu_pm_exit();
 		}
 	}
@@ -717,8 +716,8 @@ static int sleep_probe(struct platform_device *pdev)
 
 	if (s.dev)
 		return -EBUSY;
-	arm_smccc_smc(SLEEP_CAPS, 0, 0, 0, 0, 0, 0, 0, &result);
-	if (result.a0 != SLEEP_STATE || result.a1 != 1)
+	arm_smccc_smc(MT6797_SIP_SLEEP_CAPS, 0, 0, 0, 0, 0, 0, 0, &result);
+	if (result.a0 != MT6797_SLEEP_STATE || result.a1 != 1)
 		return dev_err_probe(dev, -EOPNOTSUPP, "TF-A sleep ABI v1 required\n");
 	np = of_parse_phandle(dev->of_node, "mediatek,vcorefs", 0);
 	provider = np ? of_find_device_by_node(np) : NULL;

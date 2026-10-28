@@ -13,6 +13,7 @@
 //       radio_power - 1 to run the full power-on sequence, 0 to power off
 //       chipid - read of CONN_MCU_CFG + 0x08 (0x0279 when the MCU is alive)
 
+#include <linux/soc/mediatek/mt6797-sip.h>
 #include <linux/bitops.h>
 #include <linux/arm-smccc.h>
 #include <linux/delay.h>
@@ -83,7 +84,6 @@
 #define CONSYS_STAGE_POWERED		(CONSYS_STAGE_CHIP_ID | \
 						 CONSYS_STAGE_RGU_RELEASED)
 
-#define MT6797_SIP_KERNEL_EMIMPU_SET	0xc2000209ULL
 #define MT6797_EMI_REGION_SHIFT		27U
 #define MT6797_EMI_REGION18		18U
 #define MT6797_EMI_REGION19		19U
@@ -661,7 +661,7 @@ static int consys_emi_smc_set_locked(struct mt6797_consys *cs,
 	if (!cs->emi_size || !cs->emi_io)
 		return -ENODEV;
 	packed = (region << MT6797_EMI_REGION_SHIFT) | permission;
-	arm_smccc_smc(MT6797_SIP_KERNEL_EMIMPU_SET,
+	arm_smccc_smc(MT6797_SIP_EMIMPU_SET,
 			      (u64)start, (u64)end, packed, 0, 0, 0, 0, &res);
 	result = (s64)res.a0;
 	if (!result)
