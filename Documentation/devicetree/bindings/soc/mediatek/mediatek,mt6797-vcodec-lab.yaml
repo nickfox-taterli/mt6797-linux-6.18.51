@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-vcodec-lab.yaml#
+$title: MediaTek MT6797 codec lab diagnostic blocks
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Register-level access points for the deployed mt6797-codec-lab
+  diagnostic module: direct VENC and VDEC engine windows sharing the
+  SMI/M4U media path. Production userspace goes through the standard
+  V4L2 devices; these nodes are the diagnostic ABI.
+
+properties:
+  compatible:
+    enum:
+      - mediatek,mt6797-venc-lab
+      - mediatek,mt6797-vdec-lab
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    minItems: 2
+    maxItems: 3
+
+  power-domains:
+    maxItems: 1
+
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: Associated SMI larb for the engine's DMA ports.
+
+  iommus:
+    minItems: 2
+    maxItems: 11
+    description: M4U port IDs owned by the engine.
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - power-domains
+  - mediatek,larb
+  - iommus
+
+additionalProperties: false
+
+examples:
+  - |
+    video-encoder@17002000 {
+        compatible = "mediatek,mt6797-venc-lab";
+        reg = <0 0x17002000 0 0x1000>;
+        interrupts = <0 235 8>;
+        clocks = <&mmsys 0>, <&vencsys 1>, <&vencsys 2>;
+        power-domains = <&scpsys 6>;
+        mediatek,larb = <&smi_larb3>;
+        iommus = <&m4u 96>, <&m4u 97>;
+    };
+...

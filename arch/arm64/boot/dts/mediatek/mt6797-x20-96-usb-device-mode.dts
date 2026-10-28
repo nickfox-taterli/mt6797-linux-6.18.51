@@ -1,36 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* X20-96 full-board USB device-mode variant (NCM management link).
+// SPDX-License: GPL-2.0-only
+/*
+ * X20-96 production DT, USB device-mode variant (NCM management link).
  *
- * This is the device-mode counterpart of the default host build
- * (mt6797-x20-96-codec.dts, which pulls usb-host.dts over the same base):
- * only the USB section differs. GPIO86 (USB_SW_SEL) is hogged low so the
- * TC7USB40 mux routes the SoC data pair to the Micro-USB receptacle,
- * mtu3 registers as a fixed high-speed peripheral, and the xHCI host child
- * plus its VBUS regulator are removed. The SoC has a single USB controller
- * and the mux is exclusive: host and device cannot be active at the same
- * time (verified on the board). Host boots by default; switch by deploying
- * the bundle built from this file (out/usb-ncm-current, boot.bundle
- * c7a4730d...) and back with the host bundle (08f59bd3...).
- *
- * mt6797-x20-96-usb-device.dts is the shared USB base layer lower in the
- * include chain; do not point the full variant at it (circular include).
+ * Same common base as the default host entry (mt6797-x20-96-codec.dts):
+ * mt6797-x20-96.dtsi already carries the USB device base (GPIO86 hogged
+ * low so the TC7USB40 mux routes the SoC data pair to the Micro-USB
+ * receptacle, mtu3 registered as a fixed high-speed peripheral, no xHCI
+ * child and no host VBUS regulator), so this entry intentionally adds
+ * nothing. The SoC has a single USB controller and the mux is exclusive:
+ * host and device cannot be active at the same time (verified on the
+ * board). Host boots by default; switch by deploying the bundle built
+ * from this file and back with the host bundle.
  */
 /dts-v1/;
 
-#include "mt6797-x20-96-codec.dts"
-
-&pio {
-	/delete-node/ usb-host-route-hog;
-	usb-device-route-hog {
-		gpio-hog;
-		gpios = <86 GPIO_ACTIVE_HIGH>;
-		output-low;
-		line-name = "usb-device-route";
-	};
-};
-
-&usb_device {
-	/delete-property/ vbus-supply;
-	dr_mode = "peripheral";
-	/delete-node/ usb@11270000;
-};
+#include "mt6797-x20-96.dtsi"

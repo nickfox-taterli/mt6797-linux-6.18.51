@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-stp-diag.yaml#
+$title: MediaTek MT6797 STP diagnostics transport
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Bounded STP protocol diagnostics endpoint sharing the ConSys/BTIF
+  transport with production WiFi/BT. Registration can be deferred so the
+  diagnostic device never races the radio bring-up.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-stp-diag
+
+  consys:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  mediatek,antenna-mode:
+    $ref: /schemas/types.yaml#/definitions/uint8
+
+  mediatek,fm-transport:
+    $ref: /schemas/types.yaml#/definitions/uint8
+
+  mediatek,defer-registration:
+    type: boolean
+    description: Register only after the production radio consumers are up.
+
+required:
+  - compatible
+  - consys
+
+additionalProperties: false
+
+examples:
+  - |
+    stp-diag {
+        compatible = "mediatek,mt6797-stp-diag";
+        consys = <&consys>;
+        mediatek,antenna-mode = /bits/ 8 <1>;
+        mediatek,fm-transport = /bits/ 8 <2>;
+        mediatek,defer-registration;
+    };
+...

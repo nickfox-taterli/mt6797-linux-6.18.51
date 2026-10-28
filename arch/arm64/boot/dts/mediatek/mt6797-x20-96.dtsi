@@ -1,0 +1,1410 @@
+// SPDX-License: GPL-2.0-only
+/*
+ * X20-96 (MT6797) common board description — the single production source.
+ *
+ * Fold of the former bring-up include chain (headless → wireless → storage →
+ * peripherals → USB device base → GPU/media → codec lab); statement order is
+ * preserved verbatim from that chain so every override resolves identically.
+ * The two production entries are mt6797-x20-96-codec.dts (USB host, default)
+ * and mt6797-x20-96-usb-device-mode.dts (USB device/NCM); they differ only
+ * in the USB section.
+ *
+ * The old per-step chain files remain in the tree as frozen diagnostic
+ * inputs for the experimental DTB variants; production entries never
+ * include them.
+ */
+
+#include <dt-bindings/pinctrl/mt65xx.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/regulator/dlg,da9211-regulator.h>
+#include <dt-bindings/thermal/thermal.h>
+#include "mt6797-x20-96-cooling.h"
+#include "mt6797.dtsi"
+#include <dt-bindings/phy/phy.h>
+#include <dt-bindings/power/mt6797-power.h>
+
+/* ========== headless base (memory, bootargs, thermal/OPP, regulators, eMMC) ========== */
+
+/*
+ * Device Tree for the bare X20-96 board.
+ *
+ * This is intentionally the first, headless bring-up description.  The board
+ * has no display or expansion board attached, so only the serial console is
+ * enabled until each onboard peripheral is verified separately.
+ */
+
+
+
+&dcm {
+	mediatek,cpufreq = <&mt6797_cpufreq>;
+	status = "okay";
+};
+
+/ {
+	model = "X20-96 bare headless";
+	compatible = "archermind,x20-96", "mediatek,mt6797";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0x80000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* Dedicated dummy reads for the board's single DRAM rank. */
+		dram_dummy: memory@43f00000 {
+			reg = <0 0x43f00000 0 0x1000>;
+			no-map;
+		};
+
+		/* The BSP Preloader locks this former BL31 DRAM window in EMI MPU. */
+		atf_dram_reserved: memory@44600000 {
+			reg = <0 0x44600000 0 0x10000>;
+			no-map;
+		};
+	};
+
+	vcorefs: vcorefs@10004000 {
+		compatible = "mediatek,mt6797-vcorefs";
+		reg = <0 0x10004000 0 0x1000>,
+		      <0 0x1000f000 0 0x1000>,
+		      <0 0x1000d10c 0 0x80>,
+		      <0 0x08000008 0 4>,
+		      <0 0x11015000 0 0x1000>,
+		      <0 0x11016000 0 0x1000>;
+		reg-names = "dramc", "ddrphy", "pwrap-dvfs", "chip-version",
+			    "cpu-spm", "big-spm";
+		mediatek,infracfg = <&infrasys>;
+		mediatek,spm = <&scpsys>;
+		mediatek,pmic-wrapper = <&pwrap>;
+		mediatek,dcm = <&dcm>;
+		clocks = <&topckgen CLK_TOP_MUX_SPM>,
+			 <&infrasys CLK_INFRA_DVFS_SPM1>,
+			 <&topckgen CLK_TOP_MUX_DDRPHYCFG>,
+			 <&infrasys CLK_INFRA_DRAMC_CONF>,
+			 <&infrasys CLK_INFRA_DRAMC_B_CONF>,
+			 <&topckgen CLK_TOP_MUX_AXI>,
+			 <&topckgen CLK_TOP_SYSPLL_D7>,
+			 <&topckgen CLK_TOP_MUX_ULPOSC_AXI_CK_MUX>;
+		clock-names = "spm", "dvfs", "ddrphy", "dramc", "dramc-b",
+			      "axi", "axi-high", "axi-low";
+		memory-region = <&dram_dummy>;
+	};
+
+	spm_suspend: spm-suspend@10204000 {
+		compatible = "mediatek,mt6797-spm-suspend";
+		reg = <0 0x10204000 0 0x1000>;
+		clocks = <&infrasys CLK_INFRA_SYS_CIRQ>;
+		clock-names = "cirq";
+		mediatek,vcorefs = <&vcorefs>;
+		mediatek,watchdog = <&watchdog>;
+		mediatek,gic = <&gic>;
+		mediatek,sysirq = <&sysirq>;
+		interrupt-parent = <&sysirq>;
+		interrupts = <GIC_SPI 180 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;
+	};
+
+	eem {
+		compatible = "mediatek,mt6797-eem";
+		mediatek,thermal = <&thermal>;
+		mediatek,cpufreq = <&mt6797_cpufreq>;
+		nvmem-cells = <&eem_calibration>;
+		nvmem-cell-names = "calibration-data";
+	};
+
+	otp {
+		compatible = "mediatek,mt6797-otp";
+		mediatek,thermal = <&thermal>;
+	};
+
+	chosen {
+		stdout-path = "serial0:921600n8";
+		/* Loader overrides this for initramfs rescue; fallback is eMMC. */
+		bootargs = "console=ttyS0,921600n8 root=PARTUUID=8273e1ab-846f-4468-b999-ee2ea8e50a16 rootwait printk.time=1";
+	};
+
+	thermal-zones {
+		cpu-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <100>;
+			thermal-sensors = <&thermal>;
+
+			trips {
+				big_warm: big-warm {
+					temperature = <120000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				soc_warm: soc-warm {
+					temperature = <135000>;
+					hysteresis = <10000>;
+					type = "passive";
+				};
+
+				soc_hot: soc-hot {
+					temperature = <140000>;
+					hysteresis = <10000>;
+					type = "passive";
+				};
+
+				soc_limit: soc-limit {
+					temperature = <143000>;
+					hysteresis = <13000>;
+					type = "passive";
+				};
+
+				soc_emergency: soc-emergency {
+					temperature = <145000>;
+					hysteresis = <15000>;
+					type = "passive";
+				};
+
+				soc_critical: soc-critical {
+					temperature = <150000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map-big-warm {
+					trip = <&big_warm>;
+					cooling-device = <&cpu8 X20_BIG_STATE_2314000
+							 X20_BIG_STATE_2314000>;
+				};
+
+				map-soc-warm {
+					trip = <&soc_warm>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1677000
+							 X20_BIG_STATE_1677000>,
+							 <&cpu0 X20_LL_STATE_1066000
+							 X20_LL_STATE_1066000>,
+							 <&cpu4 X20_L_STATE_1209000
+							 X20_L_STATE_1209000>;
+				};
+
+				map-soc-hot {
+					trip = <&soc_hot>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1495000
+							 X20_BIG_STATE_1495000>,
+							 <&cpu0 X20_LL_STATE_806000
+							 X20_LL_STATE_806000>,
+							 <&cpu4 X20_L_STATE_832000
+							 X20_L_STATE_832000>;
+				};
+
+				map-soc-limit {
+					trip = <&soc_limit>;
+					cooling-device = <&cpu8 X20_BIG_STATE_1001000
+							 X20_BIG_STATE_1001000>,
+							 <&cpu0 X20_LL_STATE_559000
+							 X20_LL_STATE_559000>,
+							 <&cpu4 X20_L_STATE_650000
+							 X20_L_STATE_650000>;
+				};
+
+				map-soc-emergency {
+					trip = <&soc_emergency>;
+					cooling-device = <&cpu8 X20_BIG_STATE_338000
+							 X20_BIG_STATE_338000>,
+							 <&cpu0 X20_LL_STATE_221000
+							 X20_LL_STATE_221000>,
+							 <&cpu4 X20_L_STATE_325000
+							 X20_L_STATE_325000>;
+				};
+			};
+		};
+	};
+
+	fastboot-reboot {
+		compatible = "mediatek,mt6797-fastboot";
+		mediatek,pwrap = <&pwrap>;
+	};
+
+	reg_vmmc: regulator-vmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "vmmc-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	reg_vqmmc: regulator-vqmmc {
+		compatible = "regulator-fixed";
+		regulator-name = "vqmmc-1v8";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	/* FY operating points copied from the vendor MT6797 tables. */
+	cluster0_opp: opp-table-cluster0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		clock-latency-ns = <30000>;
+
+		opp-1391000000 { opp-hz = /bits/ 64 <1391000000>; opp-microvolt = <1180000>; };
+		opp-1339000000 { opp-hz = /bits/ 64 <1339000000>; opp-microvolt = <1160000>; };
+		opp-1287000000 { opp-hz = /bits/ 64 <1287000000>; opp-microvolt = <1130000>; };
+		opp-1222000000 { opp-hz = /bits/ 64 <1222000000>; opp-microvolt = <1110000>; };
+		opp-1118000000 { opp-hz = /bits/ 64 <1118000000>; opp-microvolt = <1090000>; };
+		opp-1066000000 { opp-hz = /bits/ 64 <1066000000>; opp-microvolt = <1070000>; };
+		opp-949000000 { opp-hz = /bits/ 64 <949000000>; opp-microvolt = <1020000>; };
+		opp-897000000 { opp-hz = /bits/ 64 <897000000>; opp-microvolt = <1000000>; };
+		opp-806000000 { opp-hz = /bits/ 64 <806000000>; opp-microvolt = <970000>; };
+		opp-715000000 { opp-hz = /bits/ 64 <715000000>; opp-microvolt = <940000>; };
+		opp-624000000 { opp-hz = /bits/ 64 <624000000>; opp-microvolt = <900000>; };
+		opp-559000000 { opp-hz = /bits/ 64 <559000000>; opp-microvolt = <880000>; };
+		opp-481000000 { opp-hz = /bits/ 64 <481000000>; opp-microvolt = <850000>; };
+		opp-416000000 { opp-hz = /bits/ 64 <416000000>; opp-microvolt = <830000>; };
+		opp-338000000 { opp-hz = /bits/ 64 <338000000>; opp-microvolt = <800000>; };
+		opp-221000000 { opp-hz = /bits/ 64 <221000000>; opp-microvolt = <780000>; };
+	};
+
+	cluster1_opp: opp-table-cluster1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		clock-latency-ns = <30000>;
+
+		opp-1846000000 { opp-hz = /bits/ 64 <1846000000>; opp-microvolt = <1180000>; };
+		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1160000>; };
+		opp-1703000000 { opp-hz = /bits/ 64 <1703000000>; opp-microvolt = <1130000>; };
+		opp-1625000000 { opp-hz = /bits/ 64 <1625000000>; opp-microvolt = <1110000>; };
+		opp-1495000000 { opp-hz = /bits/ 64 <1495000000>; opp-microvolt = <1090000>; };
+		opp-1417000000 { opp-hz = /bits/ 64 <1417000000>; opp-microvolt = <1070000>; };
+		opp-1274000000 { opp-hz = /bits/ 64 <1274000000>; opp-microvolt = <1020000>; };
+		opp-1209000000 { opp-hz = /bits/ 64 <1209000000>; opp-microvolt = <1000000>; };
+		opp-1079000000 { opp-hz = /bits/ 64 <1079000000>; opp-microvolt = <970000>; };
+		opp-962000000 { opp-hz = /bits/ 64 <962000000>; opp-microvolt = <940000>; };
+		opp-832000000 { opp-hz = /bits/ 64 <832000000>; opp-microvolt = <900000>; };
+		opp-741000000 { opp-hz = /bits/ 64 <741000000>; opp-microvolt = <880000>; };
+		opp-650000000 { opp-hz = /bits/ 64 <650000000>; opp-microvolt = <850000>; };
+		opp-559000000 { opp-hz = /bits/ 64 <559000000>; opp-microvolt = <830000>; };
+		opp-468000000 { opp-hz = /bits/ 64 <468000000>; opp-microvolt = <800000>; };
+		opp-325000000 { opp-hz = /bits/ 64 <325000000>; opp-microvolt = <780000>; };
+	};
+
+	cluster2_opp: opp-table-cluster2 {
+		compatible = "operating-points-v2";
+		opp-shared;
+		clock-latency-ns = <30000>;
+
+		/* Board experiment curve; no requests above the verified 2.405 GHz. */
+		/* Highest tested execution point, using the user voltage curve. */
+		opp-2405000000 { opp-hz = /bits/ 64 <2405000000>; opp-microvolt = <1110000>; };
+		opp-2366000000 { opp-hz = /bits/ 64 <2366000000>; opp-microvolt = <1090000>; };
+		opp-2314000000 { opp-hz = /bits/ 64 <2314000000>; opp-microvolt = <1070000>; };
+		opp-2249000000 { opp-hz = /bits/ 64 <2249000000>; opp-microvolt = <1160000>; };
+		opp-2197000000 { opp-hz = /bits/ 64 <2197000000>; opp-microvolt = <1150000>; };
+		opp-2171000000 { opp-hz = /bits/ 64 <2171000000>; opp-microvolt = <1140000>; };
+		opp-2119000000 { opp-hz = /bits/ 64 <2119000000>; opp-microvolt = <1120000>; };
+		opp-2093000000 { opp-hz = /bits/ 64 <2093000000>; opp-microvolt = <1110000>; };
+		opp-1989000000 { opp-hz = /bits/ 64 <1989000000>; opp-microvolt = <1100000>; };
+		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1060000>; };
+		opp-1677000000 { opp-hz = /bits/ 64 <1677000000>; opp-microvolt = <1040000>; };
+		opp-1495000000 { opp-hz = /bits/ 64 <1495000000>; opp-microvolt = <990000>; };
+		opp-1378000000 { opp-hz = /bits/ 64 <1378000000>; opp-microvolt = <970000>; };
+		opp-1248000000 { opp-hz = /bits/ 64 <1248000000>; opp-microvolt = <940000>; };
+		opp-1131000000 { opp-hz = /bits/ 64 <1131000000>; opp-microvolt = <920000>; };
+		opp-1001000000 { opp-hz = /bits/ 64 <1001000000>; opp-microvolt = <890000>; };
+		opp-845000000 { opp-hz = /bits/ 64 <845000000>; opp-microvolt = <870000>; };
+		opp-676000000 { opp-hz = /bits/ 64 <676000000>; opp-microvolt = <840000>; };
+		opp-338000000 { opp-hz = /bits/ 64 <338000000>; opp-microvolt = <800000>; };
+	};
+
+	mt6797_cpufreq: cpufreq@1001a000 {
+		compatible = "mediatek,mt6797-cpufreq";
+		reg = <0 0x1001a000 0 0x1000>,
+		      <0 0x10000000 0 0x1000>,
+		      <0 0x11015000 0 0x1000>,
+		      <0 0x10001000 0 0x1000>;
+		reg-names = "mcumixed", "topckgen", "semaphore", "infracfg";
+		status = "okay";
+	};
+};
+
+/* Short on-board Dhrystone gives A53:A72 DMIPS/MHz approximately 2:3.
+ * Linux combines these per-MHz weights with each policy maximum.
+ */
+&cpu0 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu1 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu2 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu3 { operating-points-v2 = <&cluster0_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu4 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu5 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu6 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu7 { operating-points-v2 = <&cluster1_opp>; capacity-dmips-mhz = <667>; cpu-supply = <&vproc1_reg>; };
+&cpu8 { operating-points-v2 = <&cluster2_opp>; capacity-dmips-mhz = <1000>; cpu-supply = <&vproc2_reg>; };
+&cpu9 { operating-points-v2 = <&cluster2_opp>; capacity-dmips-mhz = <1000>; cpu-supply = <&vproc2_reg>; };
+
+&auxadc {
+	status = "okay";
+};
+
+&thermal {
+	mediatek,watchdog = <&watchdog>;
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pins_a>;
+};
+
+/* TOPRGU is the board's hardware reset path, including reboot-to-Fastboot. */
+&watchdog {
+	status = "okay";
+};
+
+/* The board carries the vendor-designated DA9214 VPROC buck at I2C6/0x68. */
+&i2c6 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c6_pins_a>;
+	clock-frequency = <3400000>;
+	mediatek,use-push-pull;
+	status = "okay";
+
+	da9214: da9214@68 {
+		compatible = "dlg,da9214";
+		reg = <0x68>;
+
+		regulators {
+			vproc1_reg: BUCKA {
+				regulator-name = "vproc1";
+				regulator-min-microvolt = <780000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+				regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+						   DA9211_BUCK_MODE_AUTO>;
+				regulator-always-on;
+			};
+
+			vproc2_reg: BUCKB {
+				regulator-name = "vproc2";
+				regulator-min-microvolt = <800000>;
+				regulator-max-microvolt = <1200000>;
+				regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+				regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+						   DA9211_BUCK_MODE_AUTO>;
+				regulator-always-on;
+			};
+		};
+	};
+};
+
+&mmc0 {
+	/* Validated high-throughput descriptor DMA path for HS400. */
+	bus-width = <8>;
+	max-frequency = <200000000>;
+	cap-mmc-highspeed;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+	mmc-hs400-1_8v;
+	mediatek,latch-ck = <1>;
+	mediatek,tuning-step = <64>;
+	non-removable;
+	no-sd;
+	no-sdio;
+	mediatek,disable-async-dma;
+	mediatek,descriptor-dma;
+	mediatek,descriptor-max-req-size = <4194304>;
+	vmmc-supply = <&reg_vmmc>;
+	vqmmc-supply = <&reg_vqmmc>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	status = "okay";
+};
+
+&mmc1 {
+	/* Validated UHS-I path; the Loader still boots eMMC/MSDC0 only. */
+	bus-width = <4>;
+	max-frequency = <104000000>;
+	cap-sd-highspeed;
+	sd-uhs-sdr104;
+	/* This X20-96 board reports card insertion high on GPIO67. */
+	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
+	vmmc-supply = <&mt6351_vmch>;
+	vqmmc-supply = <&mt6351_vmc>;
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc1_pins_default>;
+	pinctrl-1 = <&mmc1_pins_uhs>;
+	status = "okay";
+};
+
+&pmic {
+	regulators {
+		compatible = "mediatek,mt6351-regulator";
+
+		mt6351_vmch: ldo_vmch {
+			regulator-name = "vmch";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		mt6351_vmc: ldo_vmc {
+			regulator-name = "vmc";
+			regulator-min-microvolt = <1800000>;
+			/* SD legacy/high-speed signalling starts at 3.3 V. */
+			regulator-max-microvolt = <3300000>;
+			regulator-boot-on;
+		};
+
+		/*
+		 * Connectivity rails for the MT6797 ConSys and the MT6631
+		 * radio: AVDD18_WBT, TCXO/FM 2.8 V and the separate VCN33
+		 * BT/WiFi outputs.  Each rail has a hardware-fixed voltage.
+		 */
+		mt6351_vcn18: ldo_vcn18 {
+			regulator-name = "vcn18";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+
+		mt6351_vcn28: ldo_vcn28 {
+			regulator-name = "vcn28";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+
+		mt6351_vcn33_bt: ldo_vcn33_bt {
+			regulator-name = "vcn33_bt";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		mt6351_vcn33_wifi: ldo_vcn33_wifi {
+			regulator-name = "vcn33_wifi";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+	};
+};
+
+/* Wi-Fi/BT/GPS connectivity subsystem; driver is an opt-in module. */
+&consys {
+	status = "okay";
+};
+
+&pio {
+	mmc0_pins_default: mmc0-default-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
+				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-ds {
+			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-uhs-pins {
+		pins-cmd-dat {
+			pinmux = <MT6797_GPIO114__FUNC_MSDC0_DAT0>,
+				 <MT6797_GPIO115__FUNC_MSDC0_DAT1>,
+				 <MT6797_GPIO116__FUNC_MSDC0_DAT2>,
+				 <MT6797_GPIO117__FUNC_MSDC0_DAT3>,
+				 <MT6797_GPIO118__FUNC_MSDC0_DAT4>,
+				 <MT6797_GPIO119__FUNC_MSDC0_DAT5>,
+				 <MT6797_GPIO120__FUNC_MSDC0_DAT6>,
+				 <MT6797_GPIO121__FUNC_MSDC0_DAT7>,
+				 <MT6797_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO123__FUNC_MSDC0_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-ds {
+			pinmux = <MT6797_GPIO124__FUNC_MSDC0_DSL>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-rst {
+			pinmux = <MT6797_GPIO125__FUNC_MSDC0_RSTB>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+			drive-strength = <4>;
+			mediatek,tdsel = <0>;
+			mediatek,rdsel = <0>;
+		};
+	};
+
+	mmc1_pins_default: mmc1-default-pins {
+		pins-cmd {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <3>;
+		};
+
+		pins-dat {
+			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <3>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-cd {
+			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	mmc1_pins_uhs: mmc1-uhs-pins {
+		pins-cmd {
+			pinmux = <MT6797_GPIO129__FUNC_MSDC1_CMD>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-dat {
+			pinmux = <MT6797_GPIO130__FUNC_MSDC1_DAT0>,
+				 <MT6797_GPIO131__FUNC_MSDC1_DAT1>,
+				 <MT6797_GPIO132__FUNC_MSDC1_DAT2>,
+				 <MT6797_GPIO133__FUNC_MSDC1_DAT3>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-clk {
+			pinmux = <MT6797_GPIO134__FUNC_MSDC1_CLK>;
+			input-enable;
+			input-schmitt-enable;
+			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
+			drive-strength = <4>;
+			mediatek,tdsel = <10>;
+			mediatek,rdsel = <0>;
+		};
+
+		pins-cd {
+			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+};
+
+/* ========== wireless (ConSys EMI reserve, WMT/STP, BT, WLAN) ========== */
+
+/* Opt-in X20-96 DTB for the bounded MT6797 BTIF/STP/WMT experiment. */
+
+
+/ {
+	/*
+	 * Vendor MT6797 reserves 2 MiB aligned to 2 MiB for ConSys.  The Wi-Fi
+	 * divided firmware uses the first 512 KiB; the remaining offsets are
+	 * shared with ConSys diagnostics/GPS. The ConSys power owner programs its
+	 * remap/MPU before MCU reset release, using the matching BL31 service.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		consys_emi: consys-emi-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			no-map;
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+		};
+	};
+
+	wmt: wmt {
+		compatible = "mediatek,mt6797-wmt";
+		interrupts = <GIC_SPI 284 IRQ_TYPE_LEVEL_LOW>;
+		consys = <&consys>;
+		btif = <&btif>;
+		mediatek,antenna-mode = /bits/ 8 <1>;
+		mediatek,fm-transport = /bits/ 8 <2>;
+		status = "okay";
+	};
+
+	wlan {
+		compatible = "mediatek,mt6797-wlan";
+		mediatek,wmt = <&wmt>;
+		mediatek,nvram-firmware = "mediatek/mt6797-x20-wifi-nvram.bin";
+		status = "okay";
+	};
+
+	bluetooth {
+		compatible = "mediatek,mt6797-bluetooth";
+		mediatek,wmt = <&wmt>;
+		status = "okay";
+	};
+
+	stp_diag: stp-diag {
+		compatible = "mediatek,mt6797-stp-diag";
+		consys = <&consys>;
+		/* X20 BSP WMT_SOC.cfg: antenna mode 1, external 26 MHz TCXO. */
+		mediatek,antenna-mode = /bits/ 8 <1>;
+		mediatek,fm-transport = /bits/ 8 <2>;
+		status = "okay";
+	};
+};
+
+&btif {
+	status = "okay";
+};
+
+&consys {
+	memory-region = <&consys_emi>;
+};
+
+/* ========== WLAN AHB HIF opt-in resource ========== */
+
+/* Opt-in W2 image: map the dormant WLAN AHB sdioLike HIF resource. */
+
+
+&wifi_hif {
+	status = "okay";
+};
+
+/* ========== storage alignment (async descriptor DMA, TF card) ========== */
+
+/* BSP storage alignment with the established shared wireless hardware. */
+
+
+&stp_diag {
+	mediatek,defer-registration;
+};
+
+/* Accepted together with normal data, shared recovery and PSM clock gating. */
+&btif {
+	mediatek,use-dma;
+};
+
+&wifi_hif {
+	mediatek,use-dma;
+};
+
+&pmic {
+	regulators {
+		mt6351_vemc: ldo_vemc {
+			regulator-name = "vemc";
+			/* BSP msdc_emmc_power(): VCC=3.0 V; VCCQ is shared VIO18. */
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-boot-on;
+		};
+	};
+};
+
+&mmc0 {
+	vmmc-supply = <&mt6351_vemc>;
+	cap-mmc-hw-reset;
+	/* Map queued SG buffers in pre_req; descriptors remain request-local. */
+	/delete-property/ mediatek,disable-async-dma;
+};
+
+&mmc1 {
+	/* GPIO67 follows its bias with and without a card on this board.
+	 * Poll the removable SD card until a working detection signal is known.
+	 */
+	/delete-property/ cd-gpios;
+	broken-cd;
+	no-sdio;
+	no-mmc;
+	disable-wp;
+
+	/* BSP SDR104 target; the 384 MHz parent yields 192 MHz actual. */
+	max-frequency = <200000000>;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
+};
+
+&mt6351_vmch {
+	/delete-property/ regulator-always-on;
+};
+
+/* Board BSP drive encodings 6/3/4 correspond to 14/8/10 mA. */
+&mmc1_pins_default {
+	/delete-node/ pins-cd;
+	pins-cmd {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+	pins-dat {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+	pins-clk {
+		drive-strength = <14>;
+		mediatek,tdsel = <12>;
+	};
+};
+
+&mmc1_pins_uhs {
+	/delete-node/ pins-cd;
+	pins-cmd {
+		drive-strength = <8>;
+		mediatek,tdsel = <12>;
+	};
+	pins-dat {
+		drive-strength = <8>;
+		mediatek,tdsel = <12>;
+	};
+	pins-clk {
+		drive-strength = <10>;
+		mediatek,tdsel = <12>;
+	};
+};
+
+/* ========== legacy STM32 GPIO/EINT candidate pins ========== */
+
+/* STM32 GPIO/EINT candidate; not the installed canonical storage input. */
+
+
+&pio {
+	pinctrl-names = "default";
+	pinctrl-0 = <&stm32_gpio_eint_pins>;
+
+	stm32_gpio_eint_pins: stm32-gpio-eint-0 {
+		io-pins {
+			pinmux = <MT6797_GPIO65__FUNC_GPIO65>,
+				 <MT6797_GPIO66__FUNC_GPIO66>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};
+
+/* ========== I2C4 bus ========== */
+
+/* Established storage/wireless baseline plus the STM32 GPIO/EINT and I2C4. */
+
+
+&i2c4_pins_a {
+	pins-bus {
+		input-enable;
+		input-schmitt-enable;
+		bias-disable;
+	};
+};
+
+&i2c4 {
+	compatible = "mediatek,mt6797-i2c";
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&i2c4_pins_a>;
+	pinctrl-1 = <&i2c4_gpio_pins>;
+	scl-gpios = <&pio 239 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&pio 238 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&pio {
+	i2c4_gpio_pins: i2c4-gpio-recovery-pins {
+		pins-bus {
+			pinmux = <MT6797_GPIO238__FUNC_GPIO238>,
+				 <MT6797_GPIO239__FUNC_GPIO239>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};
+
+/* ========== SPI0 controller ========== */
+
+/* MT6797 SPI controller and pin configuration for X20-96. */
+
+
+/ {
+	spi0: spi@1100a000 {
+		compatible = "mediatek,mt6797-spi";
+		reg = <0 0x1100a000 0 0x1000>;
+		interrupts = <GIC_SPI 122 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&topckgen CLK_TOP_SYSPLL3_D2>,
+			 <&topckgen CLK_TOP_MUX_SPI>, <&infrasys CLK_INFRA_SPI>;
+		clock-names = "parent-clk", "sel-clk", "spi-clk";
+		mediatek,pad-select = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&spi0_pins>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+	};
+};
+
+&pio {
+	spi0_pins: spi0-pins {
+		pins-bus {
+			pinmux = <MT6797_GPIO57__FUNC_SPI0_CLK>,
+				 <MT6797_GPIO58__FUNC_SPI0_MI>,
+				 <MT6797_GPIO59__FUNC_SPI0_MO>,
+				 <MT6797_GPIO60__FUNC_SPI0_CS>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};
+
+/* ========== TF card-detect EINT ========== */
+
+/* Use the validated physical card-detect EINT with standard MMC debounce. */
+
+
+&mmc1_pins_default {
+	pins-cd {
+		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&mmc1_pins_uhs {
+	pins-cd {
+		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
+		input-enable;
+		input-schmitt-enable;
+		bias-pull-up;
+	};
+};
+
+&mmc1 {
+	/delete-property/ broken-cd;
+	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
+	/* EINT hardware filtering is level-only; keep MMC's 200 ms software filter. */
+	cd-debounce-delay-ms = <0>;
+};
+
+/* ========== I2C5 bus ========== */
+
+/* Keep the validated SPI and TF card-detect setup; enable the second external I2C bus. */
+
+
+&i2c5_pins_a {
+	pins-bus {
+		input-enable;
+		input-schmitt-enable;
+		bias-disable;
+	};
+};
+
+&i2c5 {
+	compatible = "mediatek,mt6797-i2c";
+	pinctrl-names = "default", "gpio";
+	pinctrl-0 = <&i2c5_pins_a>;
+	pinctrl-1 = <&i2c5_gpio_pins>;
+	scl-gpios = <&pio 241 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	sda-gpios = <&pio 240 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+&pio {
+	i2c5_gpio_pins: i2c5-gpio-recovery-pins {
+		pins-bus {
+			pinmux = <MT6797_GPIO240__FUNC_GPIO240>,
+				 <MT6797_GPIO241__FUNC_GPIO241>;
+			input-enable;
+			input-schmitt-enable;
+			bias-disable;
+		};
+	};
+};
+
+/* ========== UART1 + APDMA ========== */
+
+/* UART1 on CON7001 with the MT6797 UART APDMA TX/RX channels. */
+
+
+&uart1 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart1_pins_a>;
+	dmas = <&uart_apdma 2>, <&uart_apdma 3>;
+	dma-names = "tx", "rx";
+};
+
+/ {
+	uart_apdma: dma-controller@11000600 {
+		compatible = "mediatek,mt6795-uart-dma",
+			     "mediatek,mt6577-uart-dma";
+		reg = <0 0x11000600 0 0x80>, /* UART0 TX */
+		      <0 0x11000680 0 0x80>, /* UART0 RX */
+		      <0 0x11000700 0 0x80>, /* UART1 TX */
+		      <0 0x11000780 0 0x80>, /* UART1 RX */
+		      <0 0x11000800 0 0x80>, /* UART2 TX */
+		      <0 0x11000880 0 0x80>, /* UART2 RX */
+		      <0 0x11000900 0 0x80>, /* UART3 TX */
+		      <0 0x11000980 0 0x80>; /* UART3 RX */
+		interrupts = <GIC_SPI 108 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 109 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 110 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 111 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 112 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 113 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 114 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 115 IRQ_TYPE_LEVEL_LOW>;
+		dma-requests = <8>;
+		clocks = <&infrasys CLK_INFRA_AP_DMA>;
+		clock-names = "apdma";
+		#dma-cells = <1>;
+	};
+};
+
+/* ========== USB device base (tphy, mtu3 peripheral, GPIO86 device hog) ========== */
+
+/* Fixed USB2 peripheral path for the X20-96 board. */
+
+
+&pio {
+	usb-device-route-hog {
+		gpio-hog;
+		gpios = <86 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "usb-device-route";
+	};
+};
+
+&pmic {
+	regulators {
+		mt6351_vusb33: ldo_vusb33 {
+			regulator-name = "vusb33";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+
+		mt6351_va10: ldo_va10 {
+			regulator-name = "va10";
+			regulator-min-microvolt = <950000>;
+			regulator-max-microvolt = <950000>;
+		};
+	};
+};
+
+/ {
+	usb2_phy: t-phy@11290000 {
+		compatible = "mediatek,mt6797-tphy",
+			     "mediatek,generic-tphy-v1";
+		/* Shared SIF ends before the separately managed U2 port window. */
+		reg = <0 0x11290000 0 0x800>,
+		      <0 0x11290b00 0 0x104>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+		va10-supply = <&mt6351_va10>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_REF>,
+			 <&infrasys CLK_INFRA_SSUSB_BUS>,
+			 <&infrasys CLK_INFRA_SSUSB_SYS>;
+		clock-names = "ref", "bus", "sys";
+		mediatek,src-ref-clk-mhz = <26>;
+		mediatek,src-coef = <28>;
+		status = "okay";
+
+		usb2_phy0: usb-phy@11290800 {
+			reg = <0 0x11290800 0 0x100>;
+			clocks = <&clk26m>;
+			clock-names = "ref";
+			#phy-cells = <1>;
+			status = "okay";
+		};
+	};
+
+	usb_device: usb@11271000 {
+		compatible = "mediatek,mt6797-mtu3", "mediatek,mtu3";
+		reg = <0 0x11271000 0 0x3000>,
+		      <0 0x11280700 0 0x100>;
+		reg-names = "mac", "ippc";
+		interrupts = <GIC_SPI 127 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "device";
+		phys = <&usb2_phy0 PHY_TYPE_USB2>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>,
+			 <&infrasys CLK_INFRA_SSUSB_REF>,
+			 <&infrasys CLK_INFRA_SSUSB_BUS>;
+		clock-names = "sys_ck", "ref_ck", "mcu_ck";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_SSUSB_TOP_SYS>;
+		assigned-clock-parents = <&topckgen CLK_TOP_UNIVPLL3_D2>;
+		vusb33-supply = <&mt6351_vusb33>;
+		dr_mode = "peripheral";
+		maximum-speed = "high-speed";
+		mediatek,u3p-dis-msk = <1>;
+		status = "okay";
+	};
+};
+
+/* ========== GPU / SMI / M4U / JPEG / display pipeline / MT8193 ========== */
+
+&pmic {
+	regulators {
+		mt6351_vmipi: ldo_vmipi {
+			regulator-name = "vmipi";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+		};
+		mt6351_vrf12: ldo_vrf12 {
+			regulator-name = "vrf12";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+		};
+		mt6351_vibr: ldo_vibr {
+			regulator-name = "vibr";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+		};
+		mt6351_vldo28: ldo_vldo28 {
+			regulator-name = "vldo28";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+	};
+};
+
+&i2c1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c1_pins_a>;
+	clock-frequency = <100000>;
+	status = "okay";
+
+	mt8193: hdmi@1d {
+		compatible = "mediatek,mt8193";
+		reg = <0x1d>;
+		reset-gpios = <&pio 193 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&pio 195 GPIO_ACTIVE_HIGH>;
+		vmipi-supply = <&mt6351_vmipi>;
+		vrf12-supply = <&mt6351_vrf12>;
+		vibr-supply = <&mt6351_vibr>;
+		vldo28-supply = <&mt6351_vldo28>;
+	};
+};
+
+/* The GPU rail is the external FAN53200 on I2C7, not MT6351 VGPU (DRAM). */
+&i2c7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c7_pins_a>;
+	clock-frequency = <100000>;
+	status = "okay";
+
+	vgpu: regulator@60 {
+		compatible = "fcs,fan53200";
+		reg = <0x60>;
+		regulator-name = "vgpu";
+		/* First render stage: fixed BSP low frequency and a matching selector. */
+		regulator-min-microvolt = <900000>;
+		regulator-max-microvolt = <900000>;
+		regulator-ramp-delay = <32000>;
+		fcs,suspend-voltage-selector = <1>;
+	};
+};
+
+&scpsys {
+	mfg_async-supply = <&vgpu>;
+	clocks = <&topckgen CLK_TOP_MUX_MFG>, <&topckgen CLK_TOP_MUX_MM>,
+		 <&topckgen CLK_TOP_MUX_VDEC>, <&infrasys CLK_INFRA_MFG_VCG>;
+	clock-names = "mfg", "mm", "vdec", "mfg52m";
+};
+
+/ {
+	mfgsys: clock-controller@13000000 {
+		compatible = "mediatek,mt6797-mfgcfg";
+		reg = <0 0x13000000 0 0x1000>;
+		#clock-cells = <1>;
+	};
+
+	gpu: gpu@13040000 {
+		compatible = "mediatek,mt6797-mali", "arm,mali-t880";
+		reg = <0 0x13040000 0 0x4000>;
+		interrupts = <GIC_SPI 264 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 263 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 262 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&mfgsys 0>;
+		clock-names = "core";
+		assigned-clocks = <&apmixedsys CLK_APMIXED_MFGPLL>,
+				  <&topckgen CLK_TOP_MUX_MFG>,
+				  <&topckgen CLK_TOP_MUX_MFG_52M>;
+		assigned-clock-parents = <0>, <&topckgen CLK_TOP_MFGPLL_CK>,
+					<&topckgen CLK_TOP_UNIVPLL2_D8>;
+		assigned-clock-rates = <365000000>, <0>, <0>;
+		mali-supply = <&vgpu>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MFG_CORE0>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE1>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE2>,
+			       <&scpsys MT6797_POWER_DOMAIN_MFG_CORE3>;
+		power-domain-names = "core0", "core1", "core2", "core3";
+		resets = <&watchdog MT6797_TOPRGU_MFG_SW_RST>;
+	};
+};
+
+/* BSP external-display memory path: SMI larb5 port2, one shared MM M4U. */
+/ {
+	aliases {
+		rdma1 = &disp_rdma1;
+		dsc0 = &disp_dsc;
+		dpi0 = &dpi0;
+	};
+	m4u: iommu@10205000 {
+		compatible = "mediatek,mt6797-m4u";
+		reg = <0 0x10205000 0 0x1000>;
+		interrupts = <GIC_SPI 156 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>;
+		clock-names = "bclk";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		mediatek,larbs = <&smi_larb1>, <&smi_larb3>, <&smi_larb5>;
+		#iommu-cells = <1>;
+	};
+	smi_common: smi@14022000 {
+		compatible = "mediatek,mt6797-smi-common";
+		reg = <0 0x14022000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&mmsys CLK_MM_SMI_COMMON>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	smi_larb1: larb@16010000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x16010000 0 0x10000>;
+		interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vdecsys CLK_VDEC_CKEN>,
+			 <&vdecsys CLK_VDEC_LARB1_CKEN>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <1>;
+	};
+	smi_larb3: larb@17001000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x17001000 0 0x1000>;
+		interrupts = <GIC_SPI 236 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_1>, <&vencsys CLK_VENC_1>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <3>;
+	};
+	smi_larb5: larb@14021000 {
+		compatible = "mediatek,mt6797-smi-larb";
+		reg = <0 0x14021000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_SMI_LARB5>, <&mmsys CLK_MM_SMI_LARB5>;
+		clock-names = "apb", "smi";
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		mediatek,smi = <&smi_common>;
+		mediatek,larb-id = <5>;
+	};
+	jpgenc: jpeg-encoder@17003000 {
+		compatible = "mediatek,mt6797-jpgenc", "mediatek,mtk-jpgenc";
+		reg = <0 0x17003000 0 0x1000>;
+		interrupts = <GIC_SPI 237 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>,
+			 <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_2>;
+		clock-names = "jpgenc-smi", "jpgenc-larb", "jpgenc";
+		/* MT6797 routes JPEG memory through both MM SMI and VENC domains. */
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>,
+				<&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u 101>, <&m4u 102>; /* LARB3 JPEG encoder ports 5/6 */
+	};
+	jpgdec: jpeg-decoder@17004000 {
+		compatible = "mediatek,mt6797-jpgdec";
+		reg = <0 0x17004000 0 0x1000>;
+		interrupts = <GIC_SPI 239 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&vencsys CLK_VENC_0>,
+			 <&mmsys CLK_MM_SMI_COMMON>,
+			 <&vencsys CLK_VENC_3>;
+		clock-names = "jpgdec-larb", "jpgdec-smi", "jpgdec";
+		/* MT6797 routes JPEG memory through both MM SMI and VENC domains. */
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>,
+				<&scpsys MT6797_POWER_DOMAIN_VENC>;
+		iommus = <&m4u 103>, <&m4u 104>; /* LARB3 JPEG decoder ports 7/8 */
+	};
+	disp_rdma1: rdma@14010000 {
+		compatible = "mediatek,mt6797-disp-rdma";
+		reg = <0 0x14010000 0 0x1000>;
+		interrupts = <GIC_SPI 218 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_DISP_RDMA1>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		iommus = <&m4u 162>; /* MTK_M4U_ID(5, 2) */
+	};
+	disp_dsc: dsc@1401a000 {
+		compatible = "mediatek,mt6797-disp-dsc";
+		reg = <0 0x1401a000 0 0x1000>;
+		clocks = <&mmsys CLK_MM_DISP_DSC>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	disp_mutex: mutex@1401f000 {
+		compatible = "mediatek,mt6797-disp-mutex";
+		reg = <0 0x1401f000 0 0x1000>;
+		interrupts = <GIC_SPI 202 IRQ_TYPE_LEVEL_LOW>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+	};
+	dpi0: dpi@1401e000 {
+		compatible = "mediatek,mt6797-dpi";
+		reg = <0 0x1401e000 0 0x1000>;
+		interrupts = <GIC_SPI 231 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_DPI_INTERFACE_CLOCK>,
+			 <&mmsys CLK_MM_DPI_MM_CLOCK>, <&apmixedsys CLK_APMIXED_TVDPLL>;
+		clock-names = "pixel", "engine", "pll";
+		assigned-clocks = <&topckgen CLK_TOP_MUX_DPI0>;
+		assigned-clock-parents = <&topckgen CLK_TOP_TVDPLL_D4>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&dpi_ccir_pins>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+		port {
+			dpi_out: endpoint { remote-endpoint = <&mt8193_in>; };
+		};
+	};
+};
+
+&mt8193 {
+	port {
+		mt8193_in: endpoint { remote-endpoint = <&dpi_out>; };
+	};
+};
+
+&pio {
+	dpi_ccir_pins: dpi-ccir-pins {
+		pins-dpi {
+			pinmux = <MT6797_GPIO43__FUNC_DPI_D4>, <MT6797_GPIO44__FUNC_DPI_D5>,
+				 <MT6797_GPIO45__FUNC_DPI_D6>, <MT6797_GPIO46__FUNC_DPI_D7>,
+				 <MT6797_GPIO47__FUNC_DPI_D8>, <MT6797_GPIO48__FUNC_DPI_D9>,
+				 <MT6797_GPIO49__FUNC_DPI_D10>, <MT6797_GPIO50__FUNC_DPI_D11>,
+				 <MT6797_GPIO52__FUNC_DPI_CK>;
+			bias-disable;
+		};
+	};
+};
+
+&mmsys {
+	power-domains = <&scpsys MT6797_POWER_DOMAIN_MM>;
+};
+
+/* ========== board watchdog contract (dual 30/15 + BL31 capture ABI) ========== */
+
+&watchdog {
+	/* Explicitly opt into the board's diagnostic BL31 capture ABI. */
+	mediatek,secure-capture;
+	timeout-sec = <30>;
+};
+
+/* ========== codec-lab diagnostic nodes (deployed module ABI) ========== */
+
+/ {
+	venc_lab: video-encoder@17002000 {
+		compatible = "mediatek,mt6797-venc-lab";
+		reg = <0 0x17002000 0 0x1000>;
+		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vencsys CLK_VENC_0>,
+			 <&vencsys CLK_VENC_1>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
+		mediatek,larb = <&smi_larb3>;
+		iommus = <&m4u 96>, <&m4u 97>, <&m4u 98>, <&m4u 99>, <&m4u 100>,
+			 <&m4u 105>, <&m4u 106>, <&m4u 107>, <&m4u 108>,
+			 <&m4u 109>, <&m4u 110>;
+	};
+	vdec_lab: video-decoder@16020000 {
+		compatible = "mediatek,mt6797-vdec-lab";
+		reg = <0 0x16020000 0 0x10000>;
+		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vdecsys CLK_VDEC_CKEN>,
+			 <&vdecsys CLK_VDEC_LARB1_CKEN>;
+		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
+		mediatek,larb = <&smi_larb1>;
+		iommus = <&m4u 32>, <&m4u 33>, <&m4u 34>, <&m4u 35>, <&m4u 36>,
+			 <&m4u 37>, <&m4u 38>, <&m4u 39>, <&m4u 40>, <&m4u 41>;
+	};
+};

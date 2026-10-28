@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-consys.yaml#
+$title: MediaTek MT6797 connectivity subsystem (ConSys) power owner
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Owner of the MT6797 connectivity subsystem power sequence: CONN_MCU
+  configuration window plus the AP-side RGU, TOPCKGEN and SPM views used
+  for reset and clock/release control. Supplies are the MT6631 radio
+  rails. Firmware DMA memory comes from a reserved ConSys EMI region
+  referenced through memory-region (see
+  mediatek,consys-reserve-memory.yaml).
+
+properties:
+  compatible:
+    const: mediatek,mt6797-consys
+
+  reg:
+    minItems: 4
+    maxItems: 4
+
+  vcn18-supply: true
+  vcn28-supply: true
+  vcn33-bt-supply: true
+  vcn33-wifi-supply: true
+
+  memory-region:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+
+additionalProperties: false
+
+examples:
+  - |
+    consys@18070000 {
+        compatible = "mediatek,mt6797-consys";
+        reg = <0 0x18070000 0 0x200>,
+              <0 0x10007000 0 0x100>,
+              <0 0x10000000 0 0x2000>,
+              <0 0x10006000 0 0x1000>;
+    };
+...

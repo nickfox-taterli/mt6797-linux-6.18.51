@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-wlan.yaml#
+$title: MediaTek MT6797 WLAN device (W2 firmware over WMT)
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  WLAN function device driven through the WMT firmware transport.
+  The nvram firmware name identifies the per-board calibration blob
+  loaded from the rootfs/lib-firmware set.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-wlan
+
+  mediatek,wmt:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  mediatek,nvram-firmware:
+    $ref: /schemas/types.yaml#/definitions/string
+
+required:
+  - compatible
+  - mediatek,wmt
+
+additionalProperties: false
+
+examples:
+  - |
+    wlan {
+        compatible = "mediatek,mt6797-wlan";
+        mediatek,wmt = <&wmt>;
+        mediatek,nvram-firmware = "mediatek/mt6797-x20-wifi-nvram.bin";
+    };
+...

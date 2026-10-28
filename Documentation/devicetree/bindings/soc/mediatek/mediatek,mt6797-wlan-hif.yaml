@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-wlan-hif.yaml#
+$title: MediaTek MT6797 WLAN AHB host interface (HIF)
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  AHB sdioLike host interface window of the MT6797 WLAN subsystem with a
+  shared AP_DMA view. Optional on boards that reach the WLAN firmware
+  exclusively through the WMT/STP path.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-wlan-hif
+
+  reg:
+    minItems: 2
+    maxItems: 2
+
+  reg-names:
+    items:
+      - const: hif
+      - const: dma
+
+  interrupts:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  clock-names:
+    const: wifi-dma
+
+  mediatek,use-dma:
+    type: boolean
+    description: Use the shared DMA view for HIF transfers.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+
+additionalProperties: false
+
+examples:
+  - |
+    wifi@180f0000 {
+        compatible = "mediatek,mt6797-wlan-hif";
+        reg = <0 0x180f0000 0 0x1100>,
+              <0 0x11000080 0 0x80>;
+        reg-names = "hif", "dma";
+        interrupts = <0 283 4>;
+        clocks = <&infracfg 0>;
+        clock-names = "wifi-dma";
+    };
+...

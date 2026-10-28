@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-btif.yaml#
+$title: MediaTek MT6797 Bluetooth serial interface (BTIF)
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Dedicated MediaTek Bluetooth host interface with its TX/RX DMA
+  channels. Consumers (STP diagnostics, HCI bridges) reference this node
+  through the mediatek stack bindings; the optional mediatek,use-dma
+  property is described in mtk-sd-style per-consumer bindings.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-btif
+
+  reg:
+    minItems: 3
+    maxItems: 3
+
+  reg-names:
+    items:
+      - const: btif
+      - const: tx-dma
+      - const: rx-dma
+
+  interrupts:
+    minItems: 3
+    maxItems: 3
+
+  clocks:
+    minItems: 2
+    maxItems: 2
+
+  clock-names:
+    items:
+      - const: btif
+      - const: dma
+
+  mediatek,use-dma:
+    type: boolean
+    description: Use the BTIF DMA channels for large transfers.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - interrupts
+  - clocks
+  - clock-names
+
+additionalProperties: false
+
+examples:
+  - |
+    btif@1100c000 {
+        compatible = "mediatek,mt6797-btif";
+        reg = <0 0x1100c000 0 0x1000>,
+              <0 0x11000a00 0 0x80>,
+              <0 0x11000a80 0 0x80>;
+        reg-names = "btif", "tx-dma", "rx-dma";
+        interrupts = <0 130 4>, <0 116 4>, <0 117 4>;
+        clocks = <&infracfg 0>, <&infracfg 1>;
+        clock-names = "btif", "dma";
+    };
+...

@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+$id: http://devicetree.org/schemas/reserved-memory/mediatek,consys-reserve-memory.yaml#
+
+title: MediaTek ConSys reserved EMI memory
+
+description: |
+  Dynamically allocated, 2 MiB-aligned no-map EMI window reserved for the
+  MT6797 connectivity subsystem firmware and the shared ConSys
+  diagnostics. Consumed through memory-region by the ConSys power owner.
+
+maintainers:
+  - X20-96 board port
+
+allOf:
+  - $ref: reserved-memory.yaml
+
+properties:
+  compatible:
+    const: mediatek,consys-reserve-memory
+
+required:
+  - compatible
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        consys-emi-memory {
+            compatible = "mediatek,consys-reserve-memory";
+            no-map;
+            size = <0 0x200000>;
+            alignment = <0 0x200000>;
+            alloc-ranges = <0 0x40000000 0 0x80000000>;
+        };
+    };
+...

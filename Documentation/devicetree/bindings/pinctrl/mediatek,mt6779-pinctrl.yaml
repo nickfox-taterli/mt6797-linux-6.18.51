@@ -113,6 +113,21 @@ allOf:
         - "#interrupt-cells"
 
 patternProperties:
+  '^.+-hog$':
+    type: object
+    description: GPIO hog driving a fixed board-level strap.
+    properties:
+      gpio-hog: true
+      gpios: true
+      line-name: true
+      output-high: true
+      output-low: true
+      input: true
+    required:
+      - gpio-hog
+      - gpios
+    additionalProperties: false
+
   '^(?!pinctrl-).*(-[0-9]+|-pins)$':
     type: object
     additionalProperties: false

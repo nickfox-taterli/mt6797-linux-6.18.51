@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+$id: http://devicetree.org/schemas/power/reset/mediatek,mt6797-fastboot.yaml#
+
+title: MediaTek MT6797 Fastboot reboot marker
+
+description: |
+  This board bring-up device writes MT6351 RTC_PDN1[13] before the system
+  restart handler resets the SoC. It does not perform the reset itself.
+  It must be a separate device node: the MT6351 PMIC node is owned by the
+  regulator driver and two platform drivers cannot bind one node.
+
+maintainers:
+  - X20-96 board port
+
+properties:
+  compatible:
+    const: mediatek,mt6797-fastboot
+
+  mediatek,pwrap:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: MT6797 PMIC wrapper providing the MT6351 register map.
+
+required:
+  - compatible
+  - mediatek,pwrap
+
+additionalProperties: false
+
+examples:
+  - |
+    fastboot-reboot {
+        compatible = "mediatek,mt6797-fastboot";
+        mediatek,pwrap = <&pwrap>;
+    };
+...

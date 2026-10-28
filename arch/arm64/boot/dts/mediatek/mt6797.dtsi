@@ -422,7 +422,7 @@
 			 <&infrasys CLK_INFRA_PMIC_AP>;
 		clock-names = "spi", "wrap";
 
-		pmic: mt6351 {
+		pmic: pmic {
 			compatible = "mediatek,mt6351";
 		};
 	};

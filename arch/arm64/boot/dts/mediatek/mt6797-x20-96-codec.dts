@@ -1,29 +1,59 @@
-// SPDX-License-Identifier: GPL-2.0-only
+// SPDX-License: GPL-2.0-only
+/*
+ * X20-96 production DT, default USB host entry.
+ *
+ * SoC + board common content lives in mt6797-x20-96.dtsi. This entry only
+ * adds the USB host role; the device-mode counterpart
+ * (mt6797-x20-96-usb-device-mode.dts) uses the same base and differs only
+ * in this USB section.
+ *
+ * USB2 host path: SoC SSUSB -> USB2513 hub -> HOST1/HOST2 ports.
+ * USB_SW_SEL (GPIO86, diode-OR'ed with the SW3205-3 "USB HOST SET" strap
+ * into USB_MODE_SEL) is driven high so the TC7USB40 mux routes the SoC data
+ * pair to the hub upstream port instead of the Micro-USB receptacle.
+ */
 /dts-v1/;
-#include "mt6797-x20-96-usb-host.dts"
+
+#include "mt6797-x20-96.dtsi"
 
 / {
-	venc_lab: video-encoder@17002000 {
-		compatible = "mediatek,mt6797-venc-lab";
-		reg = <0 0x17002000 0 0x1000>;
-		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
-		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vencsys CLK_VENC_0>,
-			 <&vencsys CLK_VENC_1>;
-		power-domains = <&scpsys MT6797_POWER_DOMAIN_VENC>;
-		mediatek,larb = <&smi_larb3>;
-		iommus = <&m4u 96>, <&m4u 97>, <&m4u 98>, <&m4u 99>, <&m4u 100>,
-			 <&m4u 105>, <&m4u 106>, <&m4u 107>, <&m4u 108>,
-			 <&m4u 109>, <&m4u 110>;
+	/* VBUS_HOST1/2 are switched by the hub's PRTPWR pins, not by the SoC;
+	 * the mtu3 host path requires a vbus regulator, so model it always-on.
+	 */
+	usb_host_vbus: regulator-usb-host-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb-host-vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+		regulator-boot-on;
 	};
-	vdec_lab: video-decoder@16020000 {
-		compatible = "mediatek,mt6797-vdec-lab";
-		reg = <0 0x16020000 0 0x10000>;
-		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
-		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vdecsys CLK_VDEC_CKEN>,
-			 <&vdecsys CLK_VDEC_LARB1_CKEN>;
-		power-domains = <&scpsys MT6797_POWER_DOMAIN_VDEC>;
-		mediatek,larb = <&smi_larb1>;
-		iommus = <&m4u 32>, <&m4u 33>, <&m4u 34>, <&m4u 35>, <&m4u 36>,
-			 <&m4u 37>, <&m4u 38>, <&m4u 39>, <&m4u 40>, <&m4u 41>;
+};
+
+&pio {
+	/delete-node/ usb-device-route-hog;
+	usb-host-route-hog {
+		gpio-hog;
+		gpios = <86 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "usb-host-route";
+	};
+};
+
+&usb_device {
+	dr_mode = "host";
+	vbus-supply = <&usb_host_vbus>;
+	#address-cells = <2>;
+	#size-cells = <2>;
+	ranges;
+
+	/* MT6797 xHCI MAC (BSP: 0x11270000, GIC SPI 126, level low). */
+	xhci0: usb@11270000 {
+		compatible = "mediatek,mt6797-xhci", "mediatek,mtk-xhci";
+		reg = <0 0x11270000 0 0x1000>;
+		reg-names = "mac";
+		interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>, <&clk26m>;
+		clock-names = "sys_ck", "ref_ck";
 	};
 };

@@ -71,6 +71,9 @@ properties:
     description: the hardware id of this larb. It's only required when this
       hardware id is not consecutive from its M4U point of view.
 
+  interrupts:
+    maxItems: 1
+
 required:
   - compatible
   - reg

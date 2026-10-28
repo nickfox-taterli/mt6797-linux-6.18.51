@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-wmt.yaml#
+$title: MediaTek MT6797 WMT firmware transport coordinator
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Firmware-side WMT protocol endpoint coordinating the MT6797 radio
+  (WiFi/BT/GPS) over ConSys and BTIF. The node carries no register
+  window; it references the ConSys power owner and the BTIF transport,
+  and the radio configuration from the board WMT_SOC.cfg.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-wmt
+
+  interrupts:
+    maxItems: 1
+
+  consys:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  btif:
+    $ref: /schemas/types.yaml#/definitions/phandle
+
+  mediatek,antenna-mode:
+    $ref: /schemas/types.yaml#/definitions/uint8
+
+  mediatek,fm-transport:
+    $ref: /schemas/types.yaml#/definitions/uint8
+
+required:
+  - compatible
+  - interrupts
+  - consys
+  - btif
+
+additionalProperties: false
+
+examples:
+  - |
+    wmt {
+        compatible = "mediatek,mt6797-wmt";
+        interrupts = <0 284 4>;
+        consys = <&consys>;
+        btif = <&btif>;
+        mediatek,antenna-mode = /bits/ 8 <1>;
+        mediatek,fm-transport = /bits/ 8 <2>;
+    };
+...
