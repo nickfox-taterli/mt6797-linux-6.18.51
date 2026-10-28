@@ -1268,16 +1268,25 @@ static void mtk_jpeg_job_timeout_work(struct work_struct *work)
 	struct mtk_jpeg_ctx *ctx;
 	struct vb2_v4l2_buffer *src_buf, *dst_buf;
 
+	/* The IRQ completion may have raced this work after its non-sync
+	 * cancel; only abort a job that is still queued on this device.
+	 */
 	ctx = v4l2_m2m_get_curr_priv(jpeg->m2m_dev);
+	if (!ctx)
+		return;
 	src_buf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
 	dst_buf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
+	if (!src_buf && !dst_buf)
+		return;
 
 	jpeg->variant->hw_reset(jpeg->reg_base);
 
 	pm_runtime_put(jpeg->dev);
 
-	v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
-	v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
+	if (src_buf)
+		v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_ERROR);
+	if (dst_buf)
+		v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_ERROR);
 	v4l2_m2m_job_finish(jpeg->m2m_dev, ctx->fh.m2m_ctx);
 }
 

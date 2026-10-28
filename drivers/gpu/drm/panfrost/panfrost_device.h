@@ -103,6 +103,10 @@ struct panfrost_compatible {
 
 	bool reset_on_init;
 	bool reset_only_init;
+	/* Install GEM CPU PTEs at mmap time instead of the generic shmem
+	 * first-access fault path (mt6797-mali SoC property).
+	 */
+	bool eager_mmap;
 
 	/* Vendor implementation quirks callback */
 	void (*vendor_quirk)(struct panfrost_device *pfdev);

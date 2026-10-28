@@ -879,6 +879,7 @@ static const struct panfrost_compatible mt6797_data = {
 	.pm_domain_names = mt6797_pm_domains,
 	.reset_on_init = true,
 	.reset_only_init = true,
+	.eager_mmap = true,
 	.pm_features = BIT(GPU_PM_RT),
 };
 
