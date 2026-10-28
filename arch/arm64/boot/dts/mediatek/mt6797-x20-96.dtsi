@@ -330,6 +330,7 @@
 		      <0 0x11015000 0 0x1000>,
 		      <0 0x10001000 0 0x1000>;
 		reg-names = "mcumixed", "topckgen", "semaphore", "infracfg";
+		#clock-cells = <1>;
 		status = "okay";
 	};
 };

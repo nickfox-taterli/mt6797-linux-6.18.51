@@ -130,9 +130,9 @@ config ARM_MEDIATEK_CPUFREQ
 	  This adds the CPUFreq driver support for MediaTek SoCs.
 
 config ARM_MT6797_CPUFREQ
-	tristate "MT6797 vendor PLL CPUFreq support"
+	tristate "MT6797 CPUFreq support"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
-	depends on OF && REGULATOR
+	depends on OF && REGULATOR && COMMON_CLK
 	select PM_OPP
 	help
 	  This adds the MT6797 CPU frequency and voltage scaling driver.
