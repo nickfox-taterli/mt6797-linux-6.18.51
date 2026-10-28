@@ -99,6 +99,7 @@ struct mt6797_cpufreq {
 	unsigned long hops, hop_failures, dcm_updates;
 	struct notifier_block pm_notifier;
 	bool pm_rails_held;
+	bool pm_prepare_failed;
 	u32 pm_active;
 	unsigned int pm_khz[3], pm_cluster_uv[3], pm_cci_khz;
 	unsigned int pm_uv[2], pm_sram[2];
@@ -965,6 +966,8 @@ static unsigned int mt6797_cpufreq_get(unsigned int cpu)
 	return rate;
 }
 
+static int mt6797_pm_restore_locked(struct mt6797_cpufreq *data);
+
 static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 					       unsigned int index)
 {
@@ -991,8 +994,9 @@ static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
 	target = mt6797_method_for_rate(cluster, target_hz / 1000);
 	mutex_lock(&data->lock);
 	if (data->pm_rails_held) {
-		ret = -EBUSY;
-		goto out_unlock;
+		ret = data->pm_prepare_failed ? mt6797_pm_restore_locked(data) : -EBUSY;
+		if (ret)
+			goto out_unlock;
 	}
 	if (!cluster->active) {
 		ret = -ENODEV;
@@ -1285,8 +1289,14 @@ static int mt6797_pm_prepare_locked(struct mt6797_cpufreq *data)
 	unsigned int maximum[2] = { 0, 0 };
 	int ret, restore;
 
-	if (data->pm_rails_held)
-		return 0;
+	if (data->pm_rails_held) {
+		if (!data->pm_prepare_failed)
+			return -EBUSY;
+		ret = mt6797_pm_restore_locked(data);
+		if (ret)
+			return ret;
+	}
+	data->pm_prepare_failed = false;
 	data->pm_active = 0;
 	data->pm_cci_khz = data->cci.current_khz;
 	for (unsigned int i = 0; i < ARRAY_SIZE(data->cluster); i++) {
@@ -1308,7 +1318,7 @@ static int mt6797_pm_prepare_locked(struct mt6797_cpufreq *data)
 		struct mt6797_cluster *c = &data->cluster[i ? 2 : 0];
 		int uv;
 
-		if (!(data->pm_active & BIT(c->id)))
+		if (!(data->pm_active & (i ? BIT(2) : BIT(0) | BIT(1))))
 			continue;
 		uv = regulator_get_voltage(c->vproc);
 		if (uv < 0)
@@ -1322,7 +1332,7 @@ static int mt6797_pm_prepare_locked(struct mt6797_cpufreq *data)
 	for (unsigned int i = 0; i < 2; i++) {
 		struct mt6797_cluster *c = &data->cluster[i ? 2 : 0];
 
-		if (!(data->pm_active & BIT(c->id)))
+		if (!(data->pm_active & (i ? BIT(2) : BIT(0) | BIT(1))))
 			continue;
 		ret = mt6797_set_voltages(data, c, maximum[i]);
 		if (ret)
@@ -1334,13 +1344,17 @@ rollback:
 	for (unsigned int i = 0; i < 2; i++) {
 		struct mt6797_cluster *c = &data->cluster[i ? 2 : 0];
 
-		if (!(data->pm_active & BIT(c->id)))
+		if (!(data->pm_active & (i ? BIT(2) : BIT(0) | BIT(1))))
 			continue;
 		restore = mt6797_set_voltages(data, c, data->pm_uv[i]);
 		if (!restore)
 			restore = mt6797_vsram_write(data, c, data->pm_sram[i]);
-		if (restore)
+		if (restore) {
 			dev_err(data->dev, "PM rail%u rollback failed: %d\n", i, restore);
+			/* Keep DVFS and a later sleep blocked until restoration succeeds. */
+			data->pm_rails_held = true;
+			data->pm_prepare_failed = true;
+		}
 	}
 	return ret;
 }
@@ -1353,6 +1367,9 @@ static int mt6797_pm_restore_locked(struct mt6797_cpufreq *data)
 
 	if (!data->pm_rails_held)
 		return 0;
+	/* A failed prepare never changed the clocks, only the rails. */
+	if (data->pm_prepare_failed)
+		goto restore_rails;
 	for (unsigned int i = 0; i < ARRAY_SIZE(data->cluster); i++) {
 		struct mt6797_cluster *c = &data->cluster[i];
 
@@ -1374,10 +1391,11 @@ static int mt6797_pm_restore_locked(struct mt6797_cpufreq *data)
 	if (ret)
 		return ret;
 	data->cci.current_khz = target->khz;
+restore_rails:
 	for (unsigned int i = 0; i < 2; i++) {
 		struct mt6797_cluster *c = &data->cluster[i ? 2 : 0];
 
-		if (!(data->pm_active & BIT(c->id)))
+		if (!(data->pm_active & (i ? BIT(2) : BIT(0) | BIT(1))))
 			continue;
 		ret = mt6797_set_voltages(data, c, data->pm_uv[i]);
 		if (!ret)
@@ -1386,7 +1404,9 @@ static int mt6797_pm_restore_locked(struct mt6797_cpufreq *data)
 			return ret;
 	}
 	data->pm_rails_held = false;
-	data->pm_cycles++;
+	if (!data->pm_prepare_failed)
+		data->pm_cycles++;
+	data->pm_prepare_failed = false;
 	return 0;
 }
 
@@ -1440,6 +1460,11 @@ static int mt6797_cpu_prepare(unsigned int cpu)
 	if (!cluster)
 		return 0;
 	mutex_lock(&data->lock);
+	if (data->pm_prepare_failed) {
+		ret = mt6797_pm_restore_locked(data);
+		if (ret)
+			goto out;
+	}
 	if (cluster->active)
 		goto mark_prepared;
 	if (data->pm_rails_held) {
