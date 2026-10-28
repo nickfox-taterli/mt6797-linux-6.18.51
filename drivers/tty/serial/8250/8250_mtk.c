@@ -435,10 +435,16 @@ static int __maybe_unused mtk8250_runtime_suspend(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
 	struct uart_8250_port *up = serial8250_get_port(data->line);
+	u32 value;
+	int ret;
 
 	/* wait until UART in idle status */
-	while
-		(serial_in(up, MTK_UART_DEBUG0));
+	ret = read_poll_timeout(serial_in, value, !value, 10, 1000000, false,
+				up, MTK_UART_DEBUG0);
+	if (ret) {
+		dev_err_ratelimited(dev, "UART busy during runtime suspend: %#x\n", value);
+		return ret;
+	}
 
 	clk_disable_unprepare(data->uart_clk);
 	clk_disable_unprepare(data->bus_clk);
@@ -449,9 +455,16 @@ static int __maybe_unused mtk8250_runtime_suspend(struct device *dev)
 static int __maybe_unused mtk8250_runtime_resume(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
+	int ret;
 
-	clk_prepare_enable(data->bus_clk);
-	clk_prepare_enable(data->uart_clk);
+	ret = clk_prepare_enable(data->bus_clk);
+	if (ret)
+		return ret;
+	ret = clk_prepare_enable(data->uart_clk);
+	if (ret) {
+		clk_disable_unprepare(data->bus_clk);
+		return ret;
+	}
 
 	return 0;
 }
@@ -642,14 +655,33 @@ static int mtk8250_sleep_request(struct device *dev, bool asleep)
 static int __maybe_unused mtk8250_suspend(struct device *dev)
 {
 	struct mtk8250_data *data = dev_get_drvdata(dev);
+	struct uart_8250_port *up = serial8250_get_port(data->line);
 	int irq = data->rx_wakeup_irq;
-	int err;
+	int active = 0, err;
+
+	/* The BSP only requests sleep for powered UARTs. Pin the runtime-PM
+	 * state before serial core drains and suspends the port, so a closed
+	 * UART is never temporarily powered up just to request sleep.
+	 */
+	if (of_device_is_compatible(dev->of_node, "mediatek,mt6797-uart") &&
+	    !(uart_console(&up->port) && !console_suspend_enabled)) {
+		active = pm_runtime_get_if_active(dev);
+		if (active < 0)
+			return active;
+	}
 
 	serial8250_suspend_port(data->line);
-	err = mtk8250_sleep_request(dev, true);
+	err = active ? mtk8250_sleep_request(dev, true) : 0;
+	if (active) {
+		int put_err = pm_runtime_put_sync_suspend(dev);
+
+		if (!err && put_err < 0)
+			err = put_err;
+	}
 	if (err) {
+		mtk8250_sleep_request(dev, false);
 		serial8250_resume_port(data->line);
-		return dev_err_probe(dev, err, "UART sleep ACK missing\n");
+		return dev_err_probe(dev, err, "UART sleep or runtime suspend failed\n");
 	}
 
 	pinctrl_pm_select_sleep_state(dev);
