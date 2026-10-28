@@ -27,6 +27,8 @@ obj-$(CONFIG_MMC_WBSD)		+= wbsd.o
 obj-$(CONFIG_MMC_AU1X)		+= au1xmmc.o
 obj-$(CONFIG_MMC_ALCOR)	+= alcor.o
 obj-$(CONFIG_MMC_MTK)		+= mtk-sd.o mtk-sd-mt6797-autok.o
+mtk-sd-mt6797-autok-y		:= mtk-sd-mt6797-autok-core.o \
+				   mt6797-bsp-autok/autok.o mt6797-bsp-autok/analysis.o
 obj-$(CONFIG_MMC_OMAP)		+= omap.o
 obj-$(CONFIG_MMC_OMAP_HS)	+= omap_hsmmc.o
 obj-$(CONFIG_MMC_ATMELMCI)	+= atmel-mci.o

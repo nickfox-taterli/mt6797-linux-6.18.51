@@ -164,56 +164,6 @@ properties:
       Disable the MTK host software queue.  This is intended for board-level
       diagnostics when the queue does not improve throughput.
 
-  mediatek,disable-async-dma:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Disable speculative/asynchronous DMA mappings and map only the active
-      request.
-
-  mediatek,force-pio:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Force PIO data transfers for controller diagnostics.
-
-  mediatek,force-basic-dma:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Keep data transfers on the controller's single-segment Basic-DMA path.
-      Without mediatek,basic-dma-bounce, this also preserves max_segs=1.
-
-  mediatek,descriptor-dma:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Opt in to the MT6797 chained descriptor DMA path for board-level
-      performance diagnostics.  This overrides mediatek,force-basic-dma and
-      requires mediatek,disable-async-dma; it is ignored for PIO or CQE.
-
-  mediatek,descriptor-max-req-size:
-    $ref: /schemas/types.yaml#/definitions/uint32
-    description:
-      Optional MT6797 descriptor-DMA request size in bytes.  It is clamped to
-      512 KiB through 4 MiB and ignored unless mediatek,descriptor-dma is set.
-    minimum: 524288
-    maximum: 4194304
-
-  mediatek,basic-dma-bounce:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Opt in to the MT6797 cacheable Basic-DMA bounce buffer.  This aggregates
-      multi-SG requests in software while retaining the single-segment DMA
-      controller path.  It is intentionally opt-in because it changes the
-      default max_segs limit and is board-specific.
-
-  mediatek,basic-dma-double-bounce:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      Opt in to two 512 KiB cacheable Basic-DMA buffers.  The driver may copy
-      a multi-SG request during pre_req() and transfers ownership only when
-      DMA starts.  This requires mediatek,force-basic-dma and
-      mediatek,disable-async-dma; it is ignored for PIO or CQE and falls back
-      to preparation at request start when no slot is available during
-      pre_req().
-
   mediatek,axi-rd-outstanding:
     $ref: /schemas/types.yaml#/definitions/uint32
     description:

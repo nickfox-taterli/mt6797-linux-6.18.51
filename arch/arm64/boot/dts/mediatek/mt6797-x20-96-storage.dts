@@ -32,8 +32,6 @@
 &mmc0 {
 	vmmc-supply = <&mt6351_vemc>;
 	cap-mmc-hw-reset;
-	/* Map queued SG buffers in pre_req; descriptors remain request-local. */
-	/delete-property/ mediatek,disable-async-dma;
 };
 
 &mmc1 {

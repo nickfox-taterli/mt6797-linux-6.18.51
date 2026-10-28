@@ -5,11 +5,7 @@
 #include "mt6797-x20-96-wireless-stp.dts"
 
 &mmc0 {
-	/delete-property/ mediatek,descriptor-dma;
-	/delete-property/ mediatek,descriptor-max-req-size;
 	mediatek,disable-hsq;
-	mediatek,disable-async-dma;
-	mediatek,force-basic-dma;
 };
 
 &wifi_hif {

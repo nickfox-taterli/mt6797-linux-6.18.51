@@ -15,7 +15,6 @@
 #define	_MSDC_REG_H_
 
 #include <linux/bitops.h>
-#include "sync_write.h"
 #if !defined(CONFIG_MTK_LEGACY)
 #include <linux/clk.h>
 #endif /* !defined(CONFIG_MTK_LEGACY) */
@@ -23,7 +22,7 @@
 /*--------------------------------------------------------------------------*/
 /* Common Macro								    */
 /*--------------------------------------------------------------------------*/
-#define	REG_ADDR(x)			((volatile u32 *)(base + OFFSET_##x))
+#define	REG_ADDR(x)			(base + OFFSET_##x)
 
 /*--------------------------------------------------------------------------*/
 /* Register Offset							    */

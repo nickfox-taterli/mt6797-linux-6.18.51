@@ -24,7 +24,7 @@
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
 #include <linux/mmc/sdio.h>
-#include "mt_sd.h"
+#include "autok-hw.h"
 
 #define E_RESULT_PASS     (0)
 #define E_RESULT_CMD_TMO  (1<<0)
@@ -63,14 +63,11 @@ extern unsigned int autok_debug_level;
 #define AUTOK_DBGPRINT(_level, _fmt ...)   \
 ({                                         \
 	if (autok_debug_level >= _level) { \
-		pr_err(_fmt);              \
+		pr_debug(_fmt);            \
 	}                                  \
 })
 
-#define AUTOK_RAWPRINT(_fmt ...)           \
-({                                         \
-	pr_err(_fmt);                      \
-})
+#define AUTOK_RAWPRINT(_fmt ...) pr_debug(_fmt)
 
 enum ERROR_TYPE {
 	CMD_ERROR = 0,
@@ -201,22 +198,18 @@ enum AUTOK_PARAM {
 
 
 
+int autok_execute_tuning_latch_ck(struct mt6797_autok_ctx *host, unsigned int opcode,
+                                 unsigned int initial_value);
+int execute_online_tuning(struct mt6797_autok_ctx *host, u8 *res);
+
 /**********************************************************
 * Function Declaration                                    *
 **********************************************************/
-extern int autok_path_sel(struct msdc_host *host);
-extern int autok_init_sdr104(struct msdc_host *host);
-extern int autok_init_hs200(struct msdc_host *host);
-extern int autok_init_hs400(struct msdc_host *host);
-extern int autok_offline_tuning_TX(struct msdc_host *host);
-extern void autok_msdc_tx_setting(struct msdc_host *host, struct mmc_ios *ios);
-extern void autok_low_speed_switch_edge(struct msdc_host *host, struct mmc_ios *ios, enum ERROR_TYPE error_type);
-extern void autok_tuning_parameter_init(struct msdc_host *host, u8 *res);
-extern int autok_execute_tuning(struct msdc_host *host, u8 *res);
-extern int hs200_execute_tuning(struct msdc_host *host, u8 *res);
-extern int hs200_execute_tuning_cmd(struct msdc_host *host, u8 *res);
-extern int hs400_execute_tuning(struct msdc_host *host, u8 *res);
-extern int hs400_execute_tuning_cmd(struct msdc_host *host, u8 *res);
+extern int autok_path_sel(struct mt6797_autok_ctx *host);
+extern int autok_init_sdr104(struct mt6797_autok_ctx *host);
+extern void autok_msdc_tx_setting(struct mt6797_autok_ctx *host, struct mmc_ios *ios);
+extern void autok_tuning_parameter_init(struct mt6797_autok_ctx *host, u8 *res);
+extern int autok_execute_tuning(struct mt6797_autok_ctx *host, u8 *res);
 
 #endif  /* _AUTOK_H_ */
 
