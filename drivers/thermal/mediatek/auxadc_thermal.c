@@ -1227,7 +1227,7 @@ static int mt6797_hw_protect(struct mtk_thermal *mt, int temperature)
 	u32 interrupt, thresholds[MAX_NUM_ZONES];
 	u32 old_threshold[MAX_NUM_ZONES], old_control[MAX_NUM_ZONES];
 	u32 old_interrupt[MAX_NUM_ZONES], selector;
-	bool ready, first_setup;
+	bool ready, first_setup, rollback_failed = false;
 
 	if (!mt->hw_watchdog)
 		return -EOPNOTSUPP;
@@ -1305,12 +1305,23 @@ static int mt6797_hw_protect(struct mtk_thermal *mt, int temperature)
 			writel(old_control[i], mt->thermal_base + 0x0c0);
 			writel(old_threshold[i], mt->thermal_base + 0x0cc);
 			writel(old_interrupt[i], mt->thermal_base + 0x00c);
+			if (readl(mt->thermal_base + 0x0c0) != old_control[i] ||
+			    readl(mt->thermal_base + 0x0cc) != old_threshold[i] ||
+			    readl(mt->thermal_base + 0x00c) != old_interrupt[i])
+				rollback_failed = true;
 		}
 	} else {
 		mt->hw_critical_temp = temperature;
 	}
 	restore_ret = mt6797_bank_end(mt, &cookie);
 	ret = restore_ret ?: ret;
+	if (rollback_failed) {
+		/* The old hardware protection can no longer be trusted. */
+		mutex_unlock(&mt->hw_protect_lock);
+		dev_emerg(mt->dev, "TC protection rollback failed; restarting\n");
+		emergency_restart();
+		return -EIO;
+	}
 	if (!ret && first_setup) {
 		/* Set MODE/routing once, rather than clearing STATUS on reads. */
 		ret = mt6797_wdt_thermal_direct(mt->hw_watchdog, true);
@@ -1364,7 +1375,7 @@ static ssize_t tc_hw_status_show(struct device *dev,
 		readl(mt->thermal_base + TEMP_AHBPOLL));
 	for (i = 0; i < mt->conf->num_banks; i++) {
 		struct mtk_thermal_bank *bank = &mt->banks[i];
-		u32 raw[4], monintc, intsts, protctl, prottc;
+		u32 raw[4], monintc, protctl, prottc;
 
 		ret = mtk_thermal_get_bank(bank, &cookie);
 		if (ret)
@@ -1374,16 +1385,15 @@ static ssize_t tc_hw_status_show(struct device *dev,
 		raw[2] = readl(mt->thermal_base + TEMP_MSR2);
 		raw[3] = readl(mt->thermal_base + TEMP_MSR3);
 		monintc = readl(mt->thermal_base + 0x00c);
-		intsts = readl(mt->thermal_base + 0x010);
 		protctl = readl(mt->thermal_base + 0x0c0);
 		prottc = readl(mt->thermal_base + 0x0cc);
 		ret = mtk_thermal_put_bank(bank, &cookie);
 		if (ret)
 			return ret;
 		len += sysfs_emit_at(buf, len,
-			"bank%d raw_msr0=0x%03x raw_msr1=0x%03x raw_msr2=0x%03x raw_msr3=0x%03x monintc=0x%08x intsts=0x%08x protctl=0x%05x prottc=0x%03x\n",
+			"bank%d raw_msr0=0x%03x raw_msr1=0x%03x raw_msr2=0x%03x raw_msr3=0x%03x monintc=0x%08x intsts=unread protctl=0x%05x prottc=0x%03x\n",
 			i, raw[0] & 0xfff, raw[1] & 0xfff, raw[2] & 0xfff, raw[3] & 0xfff,
-			monintc, intsts, protctl & 0xfffff, prottc & 0xfff);
+			monintc, protctl & 0xfffff, prottc & 0xfff);
 	}
 	return len;
 }
