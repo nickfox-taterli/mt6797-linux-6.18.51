@@ -529,7 +529,7 @@ static int sleep_enter(suspend_state_t state)
 	if (!ret)
 		ret = stopped;
 	s.last_error = ret;
-	dev_info(s.dev, "resume=%d wake=%08x raw=%08x debug=%08x ticks=%u flags=%08x\n",
+	dev_dbg(s.dev, "resume=%d wake=%08x raw=%08x debug=%08x ticks=%u flags=%08x\n",
 		 ret, s.r12, s.raw, s.debug, s.timer, s.flags);
 	return ret;
 }

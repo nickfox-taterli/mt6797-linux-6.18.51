@@ -421,7 +421,7 @@ static int consys_power_on_locked(struct mt6797_consys *cs)
 	msleep(20);
 
 	cs->powered = (cs->stages & CONSYS_STAGE_POWERED) == CONSYS_STAGE_POWERED;
-	dev_info(cs->dev, "ConSys powered on\n");
+	dev_dbg(cs->dev, "ConSys powered on\n");
 	return 0;
 
 err_cleanup:
@@ -446,7 +446,7 @@ static int consys_power_off_locked(struct mt6797_consys *cs)
 	if (ret)
 		dev_err(cs->dev, "ConSys power-off cleanup failed: %d\n", ret);
 	else
-		dev_info(cs->dev, "ConSys powered off\n");
+		dev_dbg(cs->dev, "ConSys powered off\n");
 	return ret;
 }
 
@@ -604,7 +604,7 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 		dev_err(cs->dev, "VCN33 function %u %s failed: %d\n",
 			function, enabled ? "on" : "off", ret);
 	else
-		dev_info(cs->dev, "VCN33 function %u %s\n",
+		dev_dbg(cs->dev, "VCN33 function %u %s\n",
 			 function, enabled ? "on" : "off");
 	return ret;
 }
@@ -736,7 +736,7 @@ static int consys_emi_prepare_locked(struct mt6797_consys *cs)
 	if (ret)
 		goto err_region;
 	cs->emi_patch_active = false;
-	dev_info(cs->dev, "ConSys EMI owner active: remap=0x%08x base=%pa\n",
+	dev_dbg(cs->dev, "ConSys EMI owner active: remap=0x%08x base=%pa\n",
 		 readback, &base);
 	return 0;
 
