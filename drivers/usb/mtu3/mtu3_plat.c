@@ -66,7 +66,11 @@ static int wait_for_ip_sleep(struct ssusb_mtk *ssusb)
 	ret = readl_poll_timeout(ssusb->ippc_base + U3D_SSUSB_IP_PW_STS1, value,
 				 (value & SSUSB_IP_SLEEP_STS), 100, 100000);
 	if (ret) {
-		dev_err(ssusb->dev, "ip sleep failed!!!\n");
+		dev_err_ratelimited(ssusb->dev,
+				    "ip sleep failed: sts1=%#x ctrl1=%#x ctrl2=%#x\n",
+				    value,
+				    mtu3_readl(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL1),
+				    mtu3_readl(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL2));
 		ret = -EBUSY;
 	} else {
 		/* workaround: avoid wrong wakeup signal latch for some soc */
@@ -192,13 +196,8 @@ static void ssusb_rscs_exit(struct ssusb_mtk *ssusb)
 	regulator_disable(ssusb->vusb33);
 }
 
-static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
+static void ssusb_ip_dev_power_down(struct ssusb_mtk *ssusb)
 {
-	/* reset whole ip (xhci & u3d) */
-	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
-	udelay(1);
-	mtu3_clrbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
-
 	/*
 	 * device ip may be powered on in firmware/BROM stage before entering
 	 * kernel stage;
@@ -206,6 +205,16 @@ static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
 	 * host only mode
 	 */
 	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL2, SSUSB_IP_DEV_PDN);
+}
+
+static void ssusb_ip_sw_reset(struct ssusb_mtk *ssusb)
+{
+	/* reset whole ip (xhci & u3d) */
+	mtu3_setbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
+	udelay(1);
+	mtu3_clrbits(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0, SSUSB_IP_SW_RST);
+
+	ssusb_ip_dev_power_down(ssusb);
 }
 
 static void ssusb_u3_drd_check(struct ssusb_mtk *ssusb)
@@ -399,8 +408,12 @@ static int mtu3_probe(struct platform_device *pdev)
 	}
 
 	/* MT6797 releases IP reset during device enable, without a global pulse. */
-	if (!ssusb->is_mt6797)
+	if (ssusb->is_mt6797) {
+		if (ssusb->dr_mode == USB_DR_MODE_HOST)
+			ssusb_ip_dev_power_down(ssusb);
+	} else {
 		ssusb_ip_sw_reset(ssusb);
+	}
 	ssusb_u3_drd_check(ssusb);
 
 	if (IS_ENABLED(CONFIG_USB_MTU3_HOST))
