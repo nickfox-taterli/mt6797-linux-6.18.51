@@ -237,7 +237,19 @@ static int mtk_smi_larb_config_port_mt8173(struct device *dev)
 	return 0;
 }
 
-/* MT6797 BSP SMI_EV profile and M4U non-secure domain setup. */
+/*
+ * MT6797 larb register layout (gen1, MT8173-style port controls) and the BSP
+ * SMI_EV profile for the three larbs on this board (1 = VDEC, 3 = VENC,
+ * 5 = MM/display). The tables carry fixed BSP constants: 0x14/0x24 hold the
+ * larb watermark settings, the 0x200+ block sets per-port outstanding-request
+ * limits. They are re-applied on every runtime resume (config_port) so a
+ * VDEC/VENC/MM domain power cycle cannot leave a larb unconfigured; the
+ * values are idempotent and never depend on which consumer attached.
+ */
+#define MT6797_SMI_LARB_MMU_EN			0xfc0
+#define MT6797_SMI_LARB_SEC_CON			0xfc4
+#define MT6797_SMI_LARB_LATENCY(i)		(0xfd0 + (i) * 4)
+
 static int mtk_smi_larb_config_port_mt6797(struct device *dev)
 {
 	struct mtk_smi_larb *larb = dev_get_drvdata(dev);
@@ -275,11 +287,11 @@ static int mtk_smi_larb_config_port_mt6797(struct device *dev)
 				       larb->base + larb5_init[i].offset);
 	}
 	for (i = 0; i < 4; i++)
-		writel_relaxed(0x44444444, larb->base + 0xfd0 + i * 4);
+		writel_relaxed(0x44444444, larb->base + MT6797_SMI_LARB_LATENCY(i));
 	/* All consumers attached by this driver use non-secure translations. */
-	writel_relaxed(readl_relaxed(larb->base + 0xfc4) & ~*larb->mmu,
-		       larb->base + 0xfc4);
-	writel(*larb->mmu, larb->base + 0xfc0);
+	writel_relaxed(readl_relaxed(larb->base + MT6797_SMI_LARB_SEC_CON) & ~*larb->mmu,
+		       larb->base + MT6797_SMI_LARB_SEC_CON);
+	writel(*larb->mmu, larb->base + MT6797_SMI_LARB_MMU_EN);
 	return 0;
 }
 

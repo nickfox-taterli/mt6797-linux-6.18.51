@@ -26,9 +26,15 @@
 
 #define MTK_SCPD_ACTIVE_WAKEUP		BIT(0)
 #define MTK_SCPD_FWAIT_SRAM		BIT(1)
-#define MTK_SCPD_MT6797_GPU_SRAM BIT(2)
-#define MTK_SCPD_MT6797_GPU_CORE BIT(3)
-#define MTK_SCPD_MT6797_GPU_MAIN BIT(4)
+/*
+ * GPU domain sequencing variants. MTK_SCPD_GPU_CORE_SEQ releases reset,
+ * isolation, then clock; MTK_SCPD_GPU_MAIN_SEQ gates the clock before
+ * dropping reset on power off. MTK_SCPD_GPU_SRAM_RAIL marks a domain that
+ * also switches the external GPU SRAM rails through the SoC ops below.
+ */
+#define MTK_SCPD_GPU_SRAM_RAIL		BIT(2)
+#define MTK_SCPD_GPU_CORE_SEQ		BIT(3)
+#define MTK_SCPD_GPU_MAIN_SEQ		BIT(4)
 #define MTK_SCPD_CAPS(_scpd, _x)	((_scpd)->data->caps & (_x))
 
 #define SPM_VDE_PWR_CON			0x0210
@@ -125,7 +131,7 @@ static const char * const clk_names[] = {
  * @sram_ack_offs: Separate SRAM status offset, zero for the power register.
  * @bus_prot_mask: The mask for single step bus protection.
  * @clk_id: The basic clocks required by this power domain.
- * @caps: The flag for active wake-up action.
+ * @caps: Active wake-up plus the GPU sequencing variants above.
  */
 struct scp_domain_data {
 	const char *name;
@@ -164,11 +170,30 @@ struct scp {
 	struct scp_ctrl_reg ctrl_reg;
 	bool bus_prot_reg_update;
 	bool preserve_boot_off;
+	const struct scp_soc_ops *ops;
 };
 
 struct scp_subdomain {
 	int origin;
 	int subdomain;
+};
+
+/**
+ * struct scp_soc_ops - hooks for SoC-shared register blocks
+ *
+ * Some rails live outside the SPM power registers; on MT6797 the GPU SRAM
+ * LDO rails sit in the INFRA AO block. This driver is the sole owner of
+ * those bits: all accesses go through the one "infracfg" syscon regmap
+ * (whose internal lock also serializes the bus-protection updates), and
+ * consumers can only move them by cycling the owning power domain.
+ */
+struct scp_soc_ops {
+	/** One-time rail defaults at probe; a no-op without a GPU supply. */
+	int (*gpu_sram_rail_init)(struct scp *scp,
+				  const struct scp_domain_data *domains, int num);
+	/** Rail enable/disable around the domain owning GPU_SRAM_RAIL. */
+	int (*gpu_sram_rail_enable)(struct scp_domain *scpd);
+	int (*gpu_sram_rail_disable)(struct scp_domain *scpd);
 };
 
 struct scp_soc_data {
@@ -179,6 +204,7 @@ struct scp_soc_data {
 	const struct scp_ctrl_reg regs;
 	bool bus_prot_reg_update;
 	bool preserve_boot_off;
+	const struct scp_soc_ops *ops;
 };
 
 static int scpsys_domain_is_on(struct scp_domain *scpd)
@@ -330,8 +356,8 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	u32 val;
 	int ret, tmp;
 
-	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_MT6797_GPU_SRAM)) {
-		ret = regmap_update_bits(scp->infracfg, 0xfbc, 0x1ff, 0x1ff);
+	if (scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL)) {
+		ret = scp->ops->gpu_sram_rail_enable(scpd);
 		if (ret)
 			return ret;
 	}
@@ -356,7 +382,7 @@ static int scpsys_power_on(struct generic_pm_domain *genpd)
 	if (ret < 0)
 		goto err_pwr_ack;
 
-	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_MT6797_GPU_CORE)) {
+	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_CORE_SEQ)) {
 		/* BSP core domains release reset, isolation, then clock. */
 		val |= PWR_RST_B_BIT;
 		writel(val, ctl_addr);
@@ -411,14 +437,14 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 
 	/* subsys power off */
 	val = readl(ctl_addr);
-	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_MT6797_GPU_CORE)) {
+	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_CORE_SEQ)) {
 		val |= PWR_CLK_DIS_BIT;
 		writel(val, ctl_addr);
 	}
 	val |= PWR_ISO_BIT;
 	writel(val, ctl_addr);
 
-	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_MT6797_GPU_MAIN)) {
+	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_MAIN_SEQ)) {
 		val |= PWR_CLK_DIS_BIT;
 		writel(val, ctl_addr);
 	}
@@ -445,8 +471,8 @@ static int scpsys_power_off(struct generic_pm_domain *genpd)
 	if (ret < 0)
 		goto out;
 
-	if (MTK_SCPD_CAPS(scpd, MTK_SCPD_MT6797_GPU_SRAM))
-		return regmap_update_bits(scp->infracfg, 0xfbc, 0x1ff, 0);
+	if (scp->ops && MTK_SCPD_CAPS(scpd, MTK_SCPD_GPU_SRAM_RAIL))
+		return scp->ops->gpu_sram_rail_disable(scpd);
 	return 0;
 
 out:
@@ -464,11 +490,10 @@ static void init_clks(struct platform_device *pdev, struct clk **clk)
 }
 
 static struct scp *init_scp(struct platform_device *pdev,
-			const struct scp_domain_data *scp_domain_data, int num,
-			const struct scp_ctrl_reg *scp_ctrl_reg,
-			bool bus_prot_reg_update)
+			const struct scp_soc_data *soc)
 {
 	struct genpd_onecell_data *pd_data;
+	const struct scp_domain_data *scp_domain_data = soc->domains;
 	int i, j;
 	struct scp *scp;
 	struct clk *clk[CLK_MAX];
@@ -477,10 +502,11 @@ static struct scp *init_scp(struct platform_device *pdev,
 	if (!scp)
 		return ERR_PTR(-ENOMEM);
 
-	scp->ctrl_reg.pwr_sta_offs = scp_ctrl_reg->pwr_sta_offs;
-	scp->ctrl_reg.pwr_sta2nd_offs = scp_ctrl_reg->pwr_sta2nd_offs;
+	scp->ctrl_reg.pwr_sta_offs = soc->regs.pwr_sta_offs;
+	scp->ctrl_reg.pwr_sta2nd_offs = soc->regs.pwr_sta2nd_offs;
 
-	scp->bus_prot_reg_update = bus_prot_reg_update;
+	scp->bus_prot_reg_update = soc->bus_prot_reg_update;
+	scp->ops = soc->ops;
 
 	scp->dev = &pdev->dev;
 
@@ -489,14 +515,14 @@ static struct scp *init_scp(struct platform_device *pdev,
 		return ERR_CAST(scp->base);
 
 	scp->domains = devm_kcalloc(&pdev->dev,
-				num, sizeof(*scp->domains), GFP_KERNEL);
+				soc->num_domains, sizeof(*scp->domains), GFP_KERNEL);
 	if (!scp->domains)
 		return ERR_PTR(-ENOMEM);
 
 	pd_data = &scp->pd_data;
 
 	pd_data->domains = devm_kcalloc(&pdev->dev,
-			num, sizeof(*pd_data->domains), GFP_KERNEL);
+			soc->num_domains, sizeof(*pd_data->domains), GFP_KERNEL);
 	if (!pd_data->domains)
 		return ERR_PTR(-ENOMEM);
 
@@ -508,18 +534,7 @@ static struct scp *init_scp(struct platform_device *pdev,
 		return ERR_CAST(scp->infracfg);
 	}
 
-	if (of_property_present(pdev->dev.of_node, "mfg_async-supply")) {
-		const struct reg_sequence init[] = {
-			{ 0xfd8, 0x88888888 }, { 0xfe4, 0x8 },
-			{ 0xfc0, 0x0f0f0f0f }, { 0xfc4, 0x0f0f0f0f }, { 0xfc8, 0xf },
-		};
-		int ret = regmap_multi_reg_write(scp->infracfg, init, ARRAY_SIZE(init));
-
-		if (ret)
-			return ERR_PTR(ret);
-	}
-
-	for (i = 0; i < num; i++) {
+	for (i = 0; i < soc->num_domains; i++) {
 		struct scp_domain *scpd = &scp->domains[i];
 		const struct scp_domain_data *data = &scp_domain_data[i];
 
@@ -532,11 +547,24 @@ static struct scp *init_scp(struct platform_device *pdev,
 		}
 	}
 
-	pd_data->num_domains = num;
+	pd_data->num_domains = soc->num_domains;
+
+	/*
+	 * SoC-shared rails are set up once the resolved domain supplies say
+	 * the SoC actually carries them (MT6797 keys the GPU SRAM rail
+	 * defaults to the external GPU buck).
+	 */
+	if (soc->ops && soc->ops->gpu_sram_rail_init) {
+		int ret = soc->ops->gpu_sram_rail_init(scp, scp_domain_data,
+						       soc->num_domains);
+
+		if (ret)
+			return ERR_PTR(ret);
+	}
 
 	init_clks(pdev, clk);
 
-	for (i = 0; i < num; i++) {
+	for (i = 0; i < soc->num_domains; i++) {
 		struct scp_domain *scpd = &scp->domains[i];
 		struct generic_pm_domain *genpd = &scpd->genpd;
 		const struct scp_domain_data *data = &scp_domain_data[i];
@@ -584,6 +612,10 @@ static void mtk_register_power_domains(struct platform_device *pdev,
 		 * with !CONFIG_PM and to get the hardware in sync with the
 		 * software.  The unused domains will be switched off during
 		 * late_init time.
+		 *
+		 * preserve_boot_off keeps domains the bootloader left off in
+		 * that state instead of force-powering them here (MT6797:
+		 * unused GPU core rails keep their BSP off state).
 		 */
 		on = scpsys_domain_is_on(scpd) > 0;
 		if (!scp->preserve_boot_off || on)
@@ -809,6 +841,64 @@ static const struct scp_subdomain scp_subdomain_mt2712[] = {
  * MT6797 power domain support
  */
 
+/*
+ * MT6797 drives the GPU SRAM LDO rails from the INFRA AO block instead of the
+ * SPM power registers. This driver owns those bits exclusively: every access
+ * goes through the single "infracfg" syscon regmap whose internal lock also
+ * serializes the bus-protection updates, and consumers can only change them
+ * by cycling the MFG_ASYNC domain (MTK_SCPD_GPU_SRAM_RAIL).
+ */
+#define MT6797_INFRA_MFG_SRAM_EN	0x0fbc
+#define MT6797_INFRA_MFG_SRAM_EN_MASK	GENMASK(8, 0)
+
+/*
+ * BSP probe-time defaults for the GPU SRAM rail block, applied once when the
+ * MFG_ASYNC domain resolves an external supply (X20: FAN53200 vgpu); without
+ * a supply the hardware defaults stay. The vendored BSP sources do not carry
+ * names for these offsets, so they stay recorded as measured.
+ */
+static const struct reg_sequence mt6797_gpu_sram_rail_init_seq[] = {
+	{ 0x0fd8, 0x88888888 },
+	{ 0x0fe4, 0x00000008 },
+	{ 0x0fc0, 0x0f0f0f0f },
+	{ 0x0fc4, 0x0f0f0f0f },
+	{ 0x0fc8, 0x0000000f },
+};
+
+static int mt6797_gpu_sram_rail_init(struct scp *scp,
+				     const struct scp_domain_data *domains, int num)
+{
+	int i;
+
+	for (i = 0; i < num; i++) {
+		if ((domains[i].caps & MTK_SCPD_GPU_SRAM_RAIL) &&
+		    scp->domains[i].supply)
+			return regmap_multi_reg_write(scp->infracfg,
+					mt6797_gpu_sram_rail_init_seq,
+					ARRAY_SIZE(mt6797_gpu_sram_rail_init_seq));
+	}
+	return 0;
+}
+
+static int mt6797_gpu_sram_rail_enable(struct scp_domain *scpd)
+{
+	return regmap_update_bits(scpd->scp->infracfg, MT6797_INFRA_MFG_SRAM_EN,
+				  MT6797_INFRA_MFG_SRAM_EN_MASK,
+				  MT6797_INFRA_MFG_SRAM_EN_MASK);
+}
+
+static int mt6797_gpu_sram_rail_disable(struct scp_domain *scpd)
+{
+	return regmap_update_bits(scpd->scp->infracfg, MT6797_INFRA_MFG_SRAM_EN,
+				  MT6797_INFRA_MFG_SRAM_EN_MASK, 0);
+}
+
+static const struct scp_soc_ops mt6797_soc_ops = {
+	.gpu_sram_rail_init = mt6797_gpu_sram_rail_init,
+	.gpu_sram_rail_enable = mt6797_gpu_sram_rail_enable,
+	.gpu_sram_rail_disable = mt6797_gpu_sram_rail_disable,
+};
+
 static const struct scp_domain_data scp_domain_data_mt6797[] = {
 	[MT6797_POWER_DOMAIN_VDEC] = {
 		.name = "vdec",
@@ -858,34 +948,34 @@ static const struct scp_domain_data scp_domain_data_mt6797[] = {
 		.sram_pdn_bits = 0,
 		.sram_pdn_ack_bits = 0,
 		.clk_id = {CLK_MFG_52M, CLK_MFG},
-		.caps = MTK_SCPD_MT6797_GPU_SRAM,
+		.caps = MTK_SCPD_GPU_SRAM_RAIL,
 	},
 	[MT6797_POWER_DOMAIN_MFG] = {
 		.name = "mfg", .sta_mask = BIT(12), .ctl_offs = 0x338,
 		.sram_ctl_offs = 0x33c, .sram_ack_offs = 0x33c,
 		.sram_pdn_bits = GENMASK(1, 0),
 		.sram_pdn_ack_bits = GENMASK(17, 16),
-		.bus_prot_mask = BIT(21), .caps = MTK_SCPD_MT6797_GPU_MAIN,
+		.bus_prot_mask = BIT(21), .caps = MTK_SCPD_GPU_MAIN_SEQ,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE0] = {
 		.name = "mfg_core0", .sta_mask = BIT(11), .ctl_offs = 0x340,
 		.sram_ack_offs = 0x33c, .sram_pdn_bits = BIT(8),
-		.sram_pdn_ack_bits = BIT(20), .caps = MTK_SCPD_MT6797_GPU_CORE,
+		.sram_pdn_ack_bits = BIT(20), .caps = MTK_SCPD_GPU_CORE_SEQ,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE1] = {
 		.name = "mfg_core1", .sta_mask = BIT(10), .ctl_offs = 0x344,
 		.sram_ack_offs = 0x33c, .sram_pdn_bits = BIT(8),
-		.sram_pdn_ack_bits = BIT(21), .caps = MTK_SCPD_MT6797_GPU_CORE,
+		.sram_pdn_ack_bits = BIT(21), .caps = MTK_SCPD_GPU_CORE_SEQ,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE2] = {
 		.name = "mfg_core2", .sta_mask = BIT(9), .ctl_offs = 0x348,
 		.sram_ack_offs = 0x33c, .sram_pdn_bits = BIT(8),
-		.sram_pdn_ack_bits = BIT(22), .caps = MTK_SCPD_MT6797_GPU_CORE,
+		.sram_pdn_ack_bits = BIT(22), .caps = MTK_SCPD_GPU_CORE_SEQ,
 	},
 	[MT6797_POWER_DOMAIN_MFG_CORE3] = {
 		.name = "mfg_core3", .sta_mask = BIT(8), .ctl_offs = 0x34c,
 		.sram_ack_offs = 0x33c, .sram_pdn_bits = BIT(8),
-		.sram_pdn_ack_bits = BIT(23), .caps = MTK_SCPD_MT6797_GPU_CORE,
+		.sram_pdn_ack_bits = BIT(23), .caps = MTK_SCPD_GPU_CORE_SEQ,
 	},
 	[MT6797_POWER_DOMAIN_MJC] = {
 		.name = "mjc",
@@ -1132,6 +1222,7 @@ static const struct scp_soc_data mt6797_data = {
 	},
 	.bus_prot_reg_update = true,
 	.preserve_boot_off = true,
+	.ops = &mt6797_soc_ops,
 };
 
 static const struct scp_soc_data mt7622_data = {
@@ -1204,8 +1295,7 @@ static int scpsys_probe(struct platform_device *pdev)
 
 	soc = of_device_get_match_data(&pdev->dev);
 
-	scp = init_scp(pdev, soc->domains, soc->num_domains, &soc->regs,
-			soc->bus_prot_reg_update);
+	scp = init_scp(pdev, soc);
 	if (IS_ERR(scp))
 		return PTR_ERR(scp);
 
