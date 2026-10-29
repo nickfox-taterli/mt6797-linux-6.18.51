@@ -696,7 +696,10 @@ int mt6797_h264_reference_plan(const struct v4l2_ctrl_h264_sps *sps,
 		    ((sps->flags & V4L2_H264_SPS_FLAG_FRAME_MBS_ONLY) ? 1 : 2) ||
 		    ((entry->fields & V4L2_H264_TOP_FIELD_REF) && cache[slot].top_poc != entry->top_field_order_cnt) ||
 		    ((entry->fields & V4L2_H264_BOTTOM_FIELD_REF) && cache[slot].bottom_poc != entry->bottom_field_order_cnt) ||
-		    (decode->nal_ref_idc && timestamp == entry->reference_ts))
+		    (decode->nal_ref_idc && timestamp == entry->reference_ts &&
+		     (!(decode->flags & V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC) ||
+		      (entry->fields & ((decode->flags & V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD) ?
+		                       V4L2_H264_BOTTOM_FIELD_REF : V4L2_H264_TOP_FIELD_REF)))))
 			return -EINVAL;
 		mapping[dpb] = slot;
 		plan.protected_mask |= 1ULL << slot;

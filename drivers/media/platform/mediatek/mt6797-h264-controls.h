@@ -19,7 +19,7 @@ struct mt6797_h264_decode_params {
 };
 
 /* Common H.264 control words identified in the public MT8173 test interface.
- * No DMA, register access or video device is exposed by this prototype.
+ * This syntax-to-register helper exposes no DMA or video device.
  * The V4L2 backend handles private DMA, register access and slice submission.
  */
 struct mt6797_h264_header_words {

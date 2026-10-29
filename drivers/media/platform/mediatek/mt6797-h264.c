@@ -32,6 +32,11 @@ int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst)
 		unsigned type = nal[picture][0] & 31;
 		unsigned is_idr = type == 5;
 		unsigned is_b = p->slice.slice_type == V4L2_H264_SLICE_TYPE_B;
+		struct mt6797_h264_cached_picture old_output=cache[dst->vb2_buf.index];
+		if(p->field_picture && old_output.valid && old_output.timestamp==p->reference_ts &&
+		   !(old_output.field_mask&BIT(p->bottom_field)) && (old_output.field_mask&BIT(p->bottom_field^1))) {
+		 p->field_pair_ts=p->reference_ts;p->complementary_idr=is_idr;
+		}
 		if (is_idr && !p->complementary_idr) memset(cache, 0, sizeof(ctx->cache));
 
 		if (mt6797_h264_header_words(&p->sps, &p->pps, &header) ||
@@ -49,9 +54,8 @@ int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst)
          * an active reference just because private reconstruction storage is
          * still available elsewhere. Storage and MV history track its index. */
         if (dst->vb2_buf.index>=MAX_SLOTS ||
-            (plan.protected_mask & BIT_ULL(dst->vb2_buf.index))) return -EINVAL;
+            ((plan.protected_mask & BIT_ULL(dst->vb2_buf.index)) && !p->field_pair_ts)) return -EINVAL;
         plan.output=dst->vb2_buf.index;
-		cache[plan.output].valid=0;
 		if (p->field_pair_ts) {
 			unsigned slot;
 			for (slot=0;slot<MAX_SLOTS;slot++)
@@ -320,6 +324,21 @@ int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst)
   .timestamp=p->reference_ts,.top_poc=p->decode.top_field_order_cnt,.bottom_poc=p->decode.bottom_field_order_cnt,
   .frame_number=p->decode.frame_num,.width=p->width,.height=p->height,.allocated=1,.valid=1,.field_mask=3,
   .field_timestamp={p->reference_ts,p->reference_ts}};
+ if(p->field_picture) {
+  struct mt6797_h264_cached_picture *saved=&cache[plan.output];
+  saved->field_mask=BIT(p->bottom_field);
+  saved->field_timestamp[p->bottom_field^1]=0;
+  if(p->field_pair_ts) {
+   saved->field_mask=3;saved->field_timestamp[p->bottom_field^1]=p->field_pair_ts;
+   if(p->bottom_field)saved->top_poc=old_output.top_poc;
+   else saved->bottom_poc=old_output.bottom_poc;
+  }
+ }
+ if(p->memory_reset) {
+  for(unsigned i=0;i<MAX_SLOTS;i++)if(i!=plan.output)cache[i].valid=0;
+  cache[plan.output].frame_number=0;
+  cache[plan.output].top_poc-=min_poc;cache[plan.output].bottom_poc-=min_poc;
+ }
  vb2_set_plane_payload(&dst->vb2_buf,0,pixels);
  return 0;
 }
