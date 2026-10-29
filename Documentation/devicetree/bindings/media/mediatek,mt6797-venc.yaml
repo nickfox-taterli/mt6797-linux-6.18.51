@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6797-venc.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 AVC and HEVC encoder
+
+maintainers:
+  - X20-96 board port
+
+description: |
+  Firmware-free V4L2 memory-to-memory encoder. The kernel programs the
+  engine and its generated event controller, owns reconstructed pictures,
+  and uses the associated SMI larb and translated M4U ports for DMA.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-venc
+  reg:
+    maxItems: 1
+  interrupts:
+    maxItems: 1
+  clocks:
+    minItems: 3
+    maxItems: 3
+  power-domains:
+    maxItems: 1
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SMI larb serving the encoder.
+  iommus:
+    minItems: 11
+    maxItems: 11
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - power-domains
+  - mediatek,larb
+  - iommus
+
+additionalProperties: false
+...

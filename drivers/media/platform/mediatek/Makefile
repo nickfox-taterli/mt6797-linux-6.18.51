@@ -5,3 +5,4 @@ obj-y += vcodec/
 obj-y += vpu/
 obj-y += mdp3/
 obj-$(CONFIG_VIDEO_MT6797_CODEC_LAB) += mt6797-codec-lab.o
+obj-$(CONFIG_VIDEO_MT6797_VENC) += mt6797-venc.o

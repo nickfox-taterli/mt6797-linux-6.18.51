@@ -1387,11 +1387,11 @@
 	timeout-sec = <30>;
 };
 
-/* ========== codec-lab diagnostic nodes (deployed module ABI) ========== */
+/* ========== native encoder and retained full-coverage decoder ========== */
 
 / {
-	venc_lab: video-encoder@17002000 {
-		compatible = "mediatek,mt6797-venc-lab";
+	venc: video-encoder@17002000 {
+		compatible = "mediatek,mt6797-venc";
 		reg = <0 0x17002000 0 0x1000>;
 		interrupts = <GIC_SPI 235 IRQ_TYPE_LEVEL_LOW>;
 		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vencsys CLK_VENC_0>,
