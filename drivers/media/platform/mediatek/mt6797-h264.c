@@ -45,6 +45,13 @@ int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst)
 
 			return -EIO;
 		}
+        /* A reference timestamp names a real CAPTURE buffer. Never overwrite
+         * an active reference just because private reconstruction storage is
+         * still available elsewhere. Storage and MV history track its index. */
+        if (dst->vb2_buf.index>=MAX_SLOTS ||
+            (plan.protected_mask & BIT_ULL(dst->vb2_buf.index))) return -EINVAL;
+        plan.output=dst->vb2_buf.index;
+		cache[plan.output].valid=0;
 		if (p->field_pair_ts) {
 			unsigned slot;
 			for (slot=0;slot<MAX_SLOTS;slot++)
@@ -97,9 +104,8 @@ int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst)
         }
 
 		struct buffer *out = &b[4 + plan.output];
-		/* Map a DPB slot only when the reference planner first selects it.
-		 * Preallocating all 33 possible field slots wastes DMA memory and
-		 * turns guard validation into a scan of uncached, unused pictures. */
+		/* Allocate reconstruction/MV backing on this CAPTURE buffer's first
+		 * use; buf_cleanup releases it together with the vb2 allocation. */
 		if (!out->cpu) {
 			if (vdec_buffer(ctx, out, max_luma * 7 / 4 + GUARD_SIZE)) {
 				 return -EIO;

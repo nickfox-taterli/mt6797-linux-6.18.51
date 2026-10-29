@@ -191,7 +191,10 @@ static int vdec_get_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
 static int vdec_set_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
 {
  struct vdec_ctx *ctx=vdec_fh(file_to_v4l2_fh(f));
- if (vb2_is_busy(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx)) || vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx))) return -EBUSY;
+ /* OUTPUT storage has a fixed coded-data capacity, independent of geometry.
+  * Stateless resolution changes may retain those allocations. */
+ if (vb2_is_streaming(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx)) ||
+     vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx))) return -EBUSY;
  vdec_try_fmt(f,priv,fmt);
  ctx->width=fmt->fmt.pix_mp.width; ctx->height=fmt->fmt.pix_mp.height;
  return 0;
@@ -207,7 +210,25 @@ static int vdec_queue_setup(struct vb2_queue *q,unsigned *count,unsigned *planes
  struct vdec_ctx *ctx=vb2_get_drv_priv(q);
  unsigned size=V4L2_TYPE_IS_OUTPUT(q->type)?INPUT_SIZE:ctx->width*ALIGN(ctx->height,32)*3/2;
  if (*planes) return *planes==1 && sizes[0]>=size?0:-EINVAL;
+ if (!V4L2_TYPE_IS_OUTPUT(q->type)) *count=min(*count,(unsigned)MAX_SLOTS);
  *planes=1; sizes[0]=size; return 0;
+}
+static int vdec_buf_init(struct vb2_buffer *vb)
+{
+ if (!V4L2_TYPE_IS_OUTPUT(vb->type) && vb->index>=MAX_SLOTS) return -EINVAL;
+ return 0;
+}
+static void vdec_buf_cleanup(struct vb2_buffer *vb)
+{
+ struct vdec_ctx *ctx=vb2_get_drv_priv(vb->vb2_queue);
+ struct buffer *b;
+ if (V4L2_TYPE_IS_OUTPUT(vb->type) || vb->index>=MAX_SLOTS) return;
+ /* Reconstruction and colocated MV storage belong to this CAPTURE buffer.
+  * REQBUFS(0), not an unrelated later picture, ends that ownership. */
+ b=&ctx->buffers[4+vb->index];
+ if (b->cpu) dma_free_coherent(ctx->dev->dev,b->size,b->cpu,b->dma);
+ memset(b,0,sizeof(*b));
+ memset(&ctx->cache[vb->index],0,sizeof(ctx->cache[vb->index]));
 }
 static int vdec_buf_prepare(struct vb2_buffer *vb)
 {
@@ -257,6 +278,7 @@ static int vdec_buf_out_validate(struct vb2_buffer *vb)
  return 0;
 }
 static const struct vb2_ops vdec_vb2_ops={.queue_setup=vdec_queue_setup,.buf_prepare=vdec_buf_prepare,
+ .buf_init=vdec_buf_init,.buf_cleanup=vdec_buf_cleanup,
  .buf_queue=vdec_buf_queue,.start_streaming=vdec_start_streaming,.stop_streaming=vdec_stop_streaming,
  .buf_request_complete=vdec_buf_request_complete,.buf_out_validate=vdec_buf_out_validate,.wait_prepare=vb2_ops_wait_prepare,.wait_finish=vb2_ops_wait_finish};
 static int vdec_queue_init(void *priv,struct vb2_queue *src,struct vb2_queue *dst)
@@ -363,6 +385,44 @@ static int vdec_release(struct file *f)
  mutex_unlock(&ctx->dev->lock); kfree(ctx);
  return 0;
 }
+static int vdec_decoder_cmd(struct file *f,void *priv,struct v4l2_decoder_cmd *cmd)
+{
+ struct vdec_ctx *ctx=vdec_fh(file_to_v4l2_fh(f));
+ struct v4l2_m2m_ctx *m2m=ctx->fh.m2m_ctx;
+ struct vb2_v4l2_buffer *dst;
+ bool cpu=false;
+ int ret=v4l2_m2m_ioctl_stateless_try_decoder_cmd(f,priv,cmd);
+ if (ret) return ret;
+ /* Requests complete as their slices are staged. A final held picture must
+  * still be reconstructed on FLUSH. Quiesce the shared engine before doing
+  * so: other contexts may otherwise be executing on the work item. */
+ v4l2_m2m_suspend(ctx->dev->m2m);
+ flush_work(&ctx->dev->work);
+ dst=v4l2_m2m_next_dst_buf(m2m);
+ if (v4l2_m2m_last_src_buf(m2m) || !dst || !dst->is_held) {
+  ret=v4l2_m2m_ioctl_stateless_decoder_cmd(f,priv,cmd);
+  goto resume;
+ }
+ if (dst->vb2_buf.planes[0].dbuf) {
+  ret=dma_buf_begin_cpu_access(dst->vb2_buf.planes[0].dbuf,DMA_BIDIRECTIONAL);
+  cpu=!ret;
+ }
+ if (!ret) ret=ctx->bytes?vdec_power_on(ctx):-EINVAL;
+ if (!ret) ret=mt6797_h264_run(ctx,dst);
+ vdec_power_off(ctx);
+ if (cpu) dma_buf_end_cpu_access(dst->vb2_buf.planes[0].dbuf,DMA_BIDIRECTIONAL);
+ ctx->bytes=ctx->slices=0; ctx->sequence++;
+ if (ret) {
+  memset(ctx->cache,0,sizeof(ctx->cache)); vb2_set_plane_payload(&dst->vb2_buf,0,0);
+ }
+ dst->is_held=false;
+ v4l2_m2m_dst_buf_remove(m2m);
+ v4l2_m2m_buf_done(dst,ret?VB2_BUF_STATE_ERROR:VB2_BUF_STATE_DONE);
+ ret=0; /* Decode failures are reported on CAPTURE, like other Requests. */
+resume:
+ v4l2_m2m_resume(ctx->dev->m2m);
+ return ret;
+}
 static const struct v4l2_ioctl_ops vdec_ioctl_ops={
  .vidioc_querycap=vdec_querycap,.vidioc_enum_fmt_vid_cap=vdec_enum_fmt,.vidioc_enum_fmt_vid_out=vdec_enum_fmt,
  .vidioc_g_fmt_vid_cap_mplane=vdec_get_fmt,.vidioc_g_fmt_vid_out_mplane=vdec_get_fmt,
@@ -374,6 +434,7 @@ static const struct v4l2_ioctl_ops vdec_ioctl_ops={
  .vidioc_qbuf=v4l2_m2m_ioctl_qbuf,.vidioc_dqbuf=v4l2_m2m_ioctl_dqbuf,
  .vidioc_expbuf=v4l2_m2m_ioctl_expbuf,.vidioc_streamon=v4l2_m2m_ioctl_streamon,
  .vidioc_streamoff=v4l2_m2m_ioctl_streamoff,.vidioc_subscribe_event=v4l2_ctrl_subscribe_event,
+ .vidioc_try_decoder_cmd=v4l2_m2m_ioctl_stateless_try_decoder_cmd,.vidioc_decoder_cmd=vdec_decoder_cmd,
  .vidioc_unsubscribe_event=v4l2_event_unsubscribe};
 static const struct v4l2_file_operations vdec_fops={.owner=THIS_MODULE,.open=vdec_open,.release=vdec_release,
  .unlocked_ioctl=video_ioctl2,.poll=v4l2_m2m_fop_poll,.mmap=v4l2_m2m_fop_mmap};
