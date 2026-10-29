@@ -6,8 +6,8 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 
 title: MediaTek MT6797 AVC and HEVC encoder
 
-maintainers:
-  - X20-96 board port
+# This workspace has no public maintainer address assigned.
+maintainers: []
 
 description: |
   Firmware-free V4L2 memory-to-memory encoder. The kernel programs the
