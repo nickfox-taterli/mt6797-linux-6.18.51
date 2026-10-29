@@ -408,14 +408,15 @@ static int mtu3_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * MT6797 releases IP reset during device enable, without a global pulse.
-	 * Its USB2-only SSUSB IP also shares MAC power between the host and
-	 * device functions: setting SSUSB_IP_DEV_PDN here gates the shared
-	 * logic, XHCI_RST_B never releases and the xhci probe times out with
-	 * -110, so in host mode the IP must be left completely untouched.
+	 * MT6797's SSUSB IP can enter the kernel parked in software reset
+	 * (SSUSB_IP_SW_RST already set in CTRL0, observed 0x00011001). Only
+	 * the device path (mtu3_device_enable) released it, so host mode
+	 * died with 'clks of sts1 are not stable' followed by xhci -110.
+	 * The standard reset pulse releases the IP from either initial
+	 * state; clocks and PHY are already on here, and DEV_PDN afterwards
+	 * coexists fine with host mode on this USB2-only IP.
 	 */
-	if (!ssusb->is_mt6797)
-		ssusb_ip_sw_reset(ssusb);
+	ssusb_ip_sw_reset(ssusb);
 	ssusb_u3_drd_check(ssusb);
 
 	if (IS_ENABLED(CONFIG_USB_MTU3_HOST))
