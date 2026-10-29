@@ -46,6 +46,7 @@ struct venc_ctx {
  struct v4l2_fh fh;
  struct venc_dev *dev;
  struct v4l2_ctrl_handler controls;
+ struct mutex state_lock; /* STOP versus the worker completing its last source. */
  struct buffer buffers[10];
  unsigned width, height, codec, coded_width, coded_height;
  unsigned gop_length, frame_rate, avc_profile, frame_qp, qp_i, qp_p, target_bps;
@@ -653,7 +654,21 @@ static int venc_buf_prepare(struct vb2_buffer *vb)
 static void venc_buf_queue(struct vb2_buffer *vb)
 {
  struct venc_ctx *ctx=vb2_get_drv_priv(vb->vb2_queue);
+ struct vb2_v4l2_buffer *buf=to_vb2_v4l2_buffer(vb);
+ static const struct v4l2_event eos={.type=V4L2_EVENT_EOS};
+ mutex_lock(&ctx->state_lock);
+ if (!V4L2_TYPE_IS_OUTPUT(vb->type)) {
+  vb2_set_plane_payload(vb,0,0);
+  if (v4l2_m2m_dst_buf_is_last(ctx->fh.m2m_ctx)) {
+   buf->sequence=ctx->frame;
+   v4l2_m2m_last_buffer_done(ctx->fh.m2m_ctx,buf);
+   v4l2_event_queue_fh(&ctx->fh,&eos);
+   mutex_unlock(&ctx->state_lock);
+   return;
+  }
+ }
  v4l2_m2m_buf_queue(ctx->fh.m2m_ctx,to_vb2_v4l2_buffer(vb));
+ mutex_unlock(&ctx->state_lock);
 }
 static int venc_start_streaming(struct vb2_queue *q,unsigned count)
 {
@@ -670,6 +685,15 @@ static int venc_start_streaming(struct vb2_queue *q,unsigned count)
   while ((b=V4L2_TYPE_IS_OUTPUT(q->type)?v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx):v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx)))
    v4l2_m2m_buf_done(b,VB2_BUF_STATE_QUEUED);
  }
+ if (!ret) {
+  mutex_lock(&ctx->state_lock);
+  v4l2_m2m_update_start_streaming_state(ctx->fh.m2m_ctx,q);
+  if (V4L2_TYPE_IS_OUTPUT(q->type) && v4l2_m2m_has_stopped(ctx->fh.m2m_ctx)) {
+   v4l2_m2m_clear_state(ctx->fh.m2m_ctx);
+   vb2_clear_last_buffer_dequeued(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx));
+  }
+  mutex_unlock(&ctx->state_lock);
+ }
  return ret;
 }
 static void venc_stop_streaming(struct vb2_queue *q)
@@ -681,7 +705,20 @@ static void venc_stop_streaming(struct vb2_queue *q)
  flush_work(&ctx->dev->work);
  while ((b=V4L2_TYPE_IS_OUTPUT(q->type)?v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx):v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx)))
   v4l2_m2m_buf_done(b,VB2_BUF_STATE_ERROR);
- ctx->frame=ctx->gop_frame=0; ctx->headers=false;
+ /* CAPTURE STREAMOFF resets encoding. OUTPUT STREAMOFF only discards
+  * queued source pictures and must retain reconstruction/GOP state. */
+ if (!V4L2_TYPE_IS_OUTPUT(q->type)) {
+  ctx->frame=ctx->gop_frame=0; ctx->headers=false;
+  ctx->frame_qp=ctx->qp_i; ctx->bit_debt=ctx->ema_bits=0;
+ }
+ mutex_lock(&ctx->state_lock);
+ bool stopped=v4l2_m2m_has_stopped(ctx->fh.m2m_ctx);
+ v4l2_m2m_update_stop_streaming_state(ctx->fh.m2m_ctx,q);
+ if (!stopped && v4l2_m2m_has_stopped(ctx->fh.m2m_ctx)) {
+  static const struct v4l2_event eos={.type=V4L2_EVENT_EOS};
+  v4l2_event_queue_fh(&ctx->fh,&eos);
+ }
+ mutex_unlock(&ctx->state_lock);
  if (!vb2_is_streaming(other)) venc_free_buffers(ctx);
 }
 static const struct vb2_ops venc_vb2_ops={.queue_setup=venc_queue_setup,.buf_prepare=venc_buf_prepare,
@@ -720,6 +757,8 @@ static void venc_work(struct work_struct *work)
  if (dst_cpu) dma_buf_end_cpu_access(dst->vb2_buf.planes[0].dbuf,DMA_BIDIRECTIONAL);
  if (src_cpu) dma_buf_end_cpu_access(src->vb2_buf.planes[0].dbuf,DMA_BIDIRECTIONAL);
  if (READ_ONCE(ctx->aborting)) ret=-ECANCELED;
+ mutex_lock(&ctx->state_lock);
+ bool last=v4l2_m2m_is_last_draining_src_buf(ctx->fh.m2m_ctx,src);
  src=v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx); dst=v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
  v4l2_m2m_buf_copy_metadata(src,dst,true);
  dst->sequence=src->sequence=ctx->frame;
@@ -727,8 +766,15 @@ static void venc_work(struct work_struct *work)
  dst->flags &= ~(V4L2_BUF_FLAG_KEYFRAME|V4L2_BUF_FLAG_PFRAME|V4L2_BUF_FLAG_BFRAME);
  if (!ret) { dst->flags |= key?V4L2_BUF_FLAG_KEYFRAME:V4L2_BUF_FLAG_PFRAME; ctx->frame++; }
  else { ctx->frame=ctx->gop_frame=0; ctx->headers=false; }
+ if (last) {
+  static const struct v4l2_event eos={.type=V4L2_EVENT_EOS};
+  dst->flags |= V4L2_BUF_FLAG_LAST;
+  v4l2_m2m_mark_stopped(ctx->fh.m2m_ctx);
+  v4l2_event_queue_fh(&ctx->fh,&eos);
+ }
  v4l2_m2m_buf_done(src,ret?VB2_BUF_STATE_ERROR:VB2_BUF_STATE_DONE);
  v4l2_m2m_buf_done(dst,ret?VB2_BUF_STATE_ERROR:VB2_BUF_STATE_DONE);
+ mutex_unlock(&ctx->state_lock);
  v4l2_m2m_job_finish(d->m2m,ctx->fh.m2m_ctx);
 }
 static void venc_device_run(void *priv)
@@ -752,6 +798,7 @@ static int venc_open(struct file *f)
  if (!ctx) return -ENOMEM;
  ctx->dev=d; ctx->width=320; ctx->height=240; ctx->codec=V4L2_PIX_FMT_H264;
  ctx->frame_rate=30;
+ mutex_init(&ctx->state_lock);
  mutex_lock(&d->lock);
  v4l2_fh_init(&ctx->fh,&d->video); f->private_data=&ctx->fh;
  ret=venc_controls(ctx);
@@ -775,6 +822,33 @@ static int venc_release(struct file *f)
  mutex_unlock(&ctx->dev->lock); kfree(ctx);
  return 0;
 }
+static int venc_encoder_cmd(struct file *f,void *priv,struct v4l2_encoder_cmd *cmd)
+{
+ struct venc_ctx *ctx=venc_fh(file_to_v4l2_fh(f));
+ struct v4l2_m2m_ctx *m2m=ctx->fh.m2m_ctx;
+ static const struct v4l2_event eos={.type=V4L2_EVENT_EOS};
+ int ret=v4l2_m2m_ioctl_try_encoder_cmd(f,priv,cmd);
+ bool stopped;
+ if (ret) return ret;
+ if (!vb2_is_streaming(v4l2_m2m_get_src_vq(m2m)) ||
+     !vb2_is_streaming(v4l2_m2m_get_dst_vq(m2m))) return 0;
+ mutex_lock(&ctx->state_lock);
+ stopped=v4l2_m2m_has_stopped(m2m);
+ ret=v4l2_m2m_encoder_cmd(f,m2m,cmd);
+ if (!ret && cmd->cmd==V4L2_ENC_CMD_STOP && !stopped && v4l2_m2m_has_stopped(m2m))
+  v4l2_event_queue_fh(&ctx->fh,&eos);
+ if (!ret && cmd->cmd==V4L2_ENC_CMD_START && stopped) {
+  vb2_clear_last_buffer_dequeued(v4l2_m2m_get_dst_vq(m2m));
+ }
+ mutex_unlock(&ctx->state_lock);
+ if (!ret && cmd->cmd==V4L2_ENC_CMD_START) v4l2_m2m_try_schedule(m2m);
+ return ret;
+}
+static int venc_subscribe(struct v4l2_fh *fh,const struct v4l2_event_subscription *sub)
+{
+ if (sub->type==V4L2_EVENT_EOS) return v4l2_event_subscribe(fh,sub,0,NULL);
+ return v4l2_ctrl_subscribe_event(fh,sub);
+}
 static const struct v4l2_ioctl_ops venc_ioctl_ops={
  .vidioc_querycap=venc_querycap,.vidioc_enum_fmt_vid_cap=venc_enum_fmt,.vidioc_enum_fmt_vid_out=venc_enum_fmt,
  .vidioc_g_fmt_vid_cap_mplane=venc_get_fmt,.vidioc_g_fmt_vid_out_mplane=venc_get_fmt,
@@ -785,7 +859,8 @@ static const struct v4l2_ioctl_ops venc_ioctl_ops={
  .vidioc_querybuf=v4l2_m2m_ioctl_querybuf,.vidioc_prepare_buf=v4l2_m2m_ioctl_prepare_buf,
  .vidioc_qbuf=v4l2_m2m_ioctl_qbuf,.vidioc_dqbuf=v4l2_m2m_ioctl_dqbuf,
  .vidioc_expbuf=v4l2_m2m_ioctl_expbuf,.vidioc_streamon=v4l2_m2m_ioctl_streamon,
- .vidioc_streamoff=v4l2_m2m_ioctl_streamoff,.vidioc_subscribe_event=v4l2_ctrl_subscribe_event,
+ .vidioc_streamoff=v4l2_m2m_ioctl_streamoff,.vidioc_subscribe_event=venc_subscribe,
+ .vidioc_try_encoder_cmd=v4l2_m2m_ioctl_try_encoder_cmd,.vidioc_encoder_cmd=venc_encoder_cmd,
  .vidioc_unsubscribe_event=v4l2_event_unsubscribe};
 static const struct v4l2_file_operations venc_fops={.owner=THIS_MODULE,.open=venc_open,.release=venc_release,
  .unlocked_ioctl=video_ioctl2,.poll=v4l2_m2m_fop_poll,.mmap=v4l2_m2m_fop_mmap};
