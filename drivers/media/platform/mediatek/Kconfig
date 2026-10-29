@@ -2,6 +2,16 @@
 
 comment "Mediatek media platform drivers"
 
+config VIDEO_MT6797_VDEC
+	tristate "MT6797 stateless H264 slice Request decoder"
+	depends on ARCH_MEDIATEK && MTK_IOMMU && VIDEO_DEV && MEDIA_CONTROLLER
+	select V4L2_MEM2MEM_DEV
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  Native H.264 Request API prototype. Progressive I/P/B pictures with
+	  uniform per-slice headers; remaining codecs and fields stay on the
+	  existing decoder until separately qualified. Explicit DT opt-in.
+
 config VIDEO_MT6797_VENC
 	tristate "MT6797 native AVC/HEVC encoder"
 	depends on ARCH_MEDIATEK && MTK_IOMMU && VIDEO_DEV
