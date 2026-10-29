@@ -1616,7 +1616,8 @@ wlanAdapterStart(IN P_ADAPTER_T prAdapter,
 			/* Send INIT_CMD_ID_QUERY_PENDING_ERROR command and wait for response */
 			if (wlan_download_check || !CFG_ENABLE_FW_DOWNLOAD_ACK) {
 				u4Status = wlanImageQueryStatus(prAdapter);
-				pr_info("mt6797-wlan: pending download error query result=%08x\n", u4Status);
+				if (u4Status != WLAN_STATUS_SUCCESS)
+					pr_info("mt6797-wlan: pending download error query result=%08x\n", u4Status);
 				if (u4Status != WLAN_STATUS_SUCCESS) {
 					DBGLOG(INIT, ERROR, "Firmware download failed!\n");
 					u4Status = WLAN_STATUS_FAILURE;

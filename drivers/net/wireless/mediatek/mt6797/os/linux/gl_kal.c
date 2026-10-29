@@ -4975,7 +4975,7 @@ VOID kalMetTagPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACKET prPacket, I
 	switch (eTag) {
 	case TX_PROF_TAG_OS_TO_DRV:
 		if (kalMetCheckProfilingPacket(prGlueInfo, prPacket)) {
-#ifdef CONFIG_TRACING		/* #if CFG_MET_PACKET_TRACE_SUPPORT */
+#if CFG_MET_PACKET_TRACE_SUPPORT
 			trace_printk( "S|%d|%s|%d\n", current->tgid, "WIFI-CHIP",
 					   GLUE_GET_PKT_IP_ID(prPacket));
 #endif
@@ -4985,7 +4985,7 @@ VOID kalMetTagPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACKET prPacket, I
 
 	case TX_PROF_TAG_DRV_TX_DONE:
 		if (GLUE_GET_PKT_IS_PROF_MET(prPacket)) {
-#ifdef CONFIG_TRACING		/* #if CFG_MET_PACKET_TRACE_SUPPORT */
+#if CFG_MET_PACKET_TRACE_SUPPORT
 			trace_printk( "F|%d|%s|%d\n", current->tgid, "WIFI-CHIP",
 					   GLUE_GET_PKT_IP_ID(prPacket));
 #endif

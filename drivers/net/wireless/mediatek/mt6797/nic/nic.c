@@ -2143,7 +2143,9 @@ UINT_32 nicFreq2ChannelNum(UINT_32 u4FreqInKHz)
 	case 5865000:
 		return 173;
 	default:
-		DBGLOG(NIC, WARN, "Return Invalid Channelnum = %u\n", u4FreqInKHz);
+		/* freq 0 = unset start frequency during init; not a real conversion miss */
+		if (u4FreqInKHz)
+			DBGLOG(NIC, WARN, "Return Invalid Channelnum = %u\n", u4FreqInKHz);
 		return 0;
 	}
 }

@@ -5,7 +5,7 @@ ccflags-y += -DCFG_SUPPORT_AGPS_ASSIST=1 -DCFG_SUPPORT_TSF_USING_BOOTTIME=1
 ccflags-y += -DARP_MONITER_ENABLE=1 -DLINUX -DMT6797
 ccflags-y += -DCFG_SUPPORT_CHNL_CONFLICT_REVISE=1 -DCFG_SUPPORT_AEE=0
 ccflags-y += -DBUILD_QA_DBG=1 -DCFG_SUPPORT_PASSPOINT=0 -DCFG_HS20_DEBUG=0
-ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0 -DCFG_MET_PACKET_TRACE_SUPPORT=1
+ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0 -DCFG_MET_PACKET_TRACE_SUPPORT=0
 ccflags-y += -DDBG=0
 ccflags-y += -I$(src)/os -I$(src)/os/linux/include -I$(src)/os/linux/hif/ahb_sdioLike/include
 ccflags-y += -I$(src)/include -I$(src)/include/nic -I$(src)/include/mgmt
