@@ -19,7 +19,7 @@
 #define MAX_SLOTS MT6797_H264_PICTURE_SLOTS
 #define MAX_ACTIVE_REFS 32
 #define MAX_DPB_REFS MT6797_H264_DPB_ENTRIES
-struct buffer { void *cpu; dma_addr_t dma; unsigned size, used; };
+struct buffer { u8 *cpu; dma_addr_t dma; unsigned size, used; };
 struct control {
  struct v4l2_ctrl_h264_sps sps;
  struct v4l2_ctrl_h264_pps pps;
@@ -53,10 +53,14 @@ struct vdec_ctx {
  struct v4l2_fh fh;
  struct vdec_dev *dev;
  struct v4l2_ctrl_handler controls;
- struct v4l2_ctrl *control[8];
+ struct v4l2_ctrl *control[24];
+ void *hevc;
+ void *vp9;
+ unsigned codec;
  struct buffer buffers[4+MAX_SLOTS];
  struct mt6797_h264_cached_picture cache[MAX_SLOTS];
  struct control picture;
+ struct control incoming;
  struct v4l2_ctrl_h264_decode_params native_decode;
  unsigned width,height,bytes,first_bytes,slices,sequence,last_mb;
  u64 timestamp;
@@ -64,4 +68,6 @@ struct vdec_ctx {
 };
 int vdec_buffer(struct vdec_ctx *ctx,struct buffer *b,unsigned size);
 int mt6797_h264_run(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *dst);
+int mt6797_h264_parse(struct control *p,const u8 *nal,unsigned bytes);
+void *vdec_control(struct vdec_ctx *ctx,unsigned id,unsigned *elements);
 #endif

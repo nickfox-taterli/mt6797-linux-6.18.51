@@ -1402,8 +1402,8 @@
 			 <&m4u 105>, <&m4u 106>, <&m4u 107>, <&m4u 108>,
 			 <&m4u 109>, <&m4u 110>;
 	};
-	vdec_lab: video-decoder@16020000 {
-		compatible = "mediatek,mt6797-vdec-lab";
+	vdec: video-decoder@16020000 {
+		compatible = "mediatek,mt6797-vdec";
 		reg = <0 0x16020000 0 0x10000>;
 		interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_LOW>;
 		clocks = <&mmsys CLK_MM_SMI_COMMON>, <&vdecsys CLK_VDEC_CKEN>,

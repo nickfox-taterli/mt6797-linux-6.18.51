@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Stateless H.264 slice requests; hardware access stays inside this driver.
- * The first prototype admits progressive pictures and uniform slice headers.
- * PAFF/MBAFF and per-slice parameter changes remain on the existing decoder.
- */
+/* Native H.264/HEVC/VP9 stateless Requests; hardware ownership stays here. */
 #include <linux/interrupt.h>
 #include <linux/dma-buf.h>
 #include <linux/iommu.h>
@@ -15,6 +12,8 @@
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include "mt6797-vdec.h"
+#include "mt6797-hevc.h"
+#include "mt6797-vp9.h"
 static inline struct vdec_ctx *vdec_fh(void *fh) { return container_of(fh,struct vdec_ctx,fh); }
 static void vdec_free_buffers(struct vdec_ctx *ctx)
 {
@@ -24,6 +23,8 @@ static void vdec_free_buffers(struct vdec_ctx *ctx)
   memset(b,0,sizeof(*b));
  }
  memset(ctx->cache,0,sizeof(ctx->cache));
+ for(unsigned i=0;i<MAX_SLOTS;i++)mt6797_hevc_forget(ctx,i);
+ mt6797_vp9_release(ctx);
 }
 int vdec_buffer(struct vdec_ctx *ctx,struct buffer *b,unsigned size)
 {
@@ -72,91 +73,154 @@ static void vdec_power_off(struct vdec_ctx *ctx)
  clk_bulk_disable_unprepare(d->num_clks,d->clks);
  pm_runtime_put_sync(d->larb); pm_runtime_put_sync(d->dev); d->powered=false;
 }
+static int vdec_set_control(struct v4l2_ctrl *ctrl)
+{
+ struct vdec_ctx *ctx=container_of(ctrl->handler,struct vdec_ctx,controls);
+ if(!ctx->fh.m2m_ctx)return 0;
+ if(ctrl->id==V4L2_CID_STATELESS_H264_DECODE_MODE || ctrl->id==V4L2_CID_STATELESS_H264_START_CODE ||
+    ctrl->id==V4L2_CID_STATELESS_HEVC_DECODE_MODE || ctrl->id==V4L2_CID_STATELESS_HEVC_START_CODE)
+  return vb2_is_busy(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx)) || vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx))?-EBUSY:0;
+ return 0;
+}
+static const struct v4l2_ctrl_ops vdec_ctrl_ops={.s_ctrl=vdec_set_control};
 static const struct v4l2_ctrl_config vdec_control_config[]={
  {.id=V4L2_CID_STATELESS_H264_SPS},{.id=V4L2_CID_STATELESS_H264_PPS},
  {.id=V4L2_CID_STATELESS_H264_SCALING_MATRIX},{.id=V4L2_CID_STATELESS_H264_DECODE_PARAMS},
  {.id=V4L2_CID_STATELESS_H264_SLICE_PARAMS},{.id=V4L2_CID_STATELESS_H264_PRED_WEIGHTS},
  {.id=V4L2_CID_STATELESS_H264_DECODE_MODE,.min=V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED,
- .max=V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED,.def=V4L2_STATELESS_H264_DECODE_MODE_SLICE_BASED},
+ .max=V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED,.def=V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED},
  {.id=V4L2_CID_STATELESS_H264_START_CODE,.min=V4L2_STATELESS_H264_START_CODE_NONE,
  .max=V4L2_STATELESS_H264_START_CODE_NONE,.def=V4L2_STATELESS_H264_START_CODE_NONE},
+ {.id=V4L2_CID_STATELESS_HEVC_SPS},{.id=V4L2_CID_STATELESS_HEVC_PPS},
+ {.id=V4L2_CID_STATELESS_HEVC_SCALING_MATRIX},{.id=V4L2_CID_STATELESS_HEVC_DECODE_PARAMS},
+ {.id=V4L2_CID_STATELESS_HEVC_SLICE_PARAMS,.dims={64},.flags=V4L2_CTRL_FLAG_DYNAMIC_ARRAY},
+ {.id=V4L2_CID_STATELESS_HEVC_DECODE_MODE,.min=V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,
+ .max=V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED,.def=V4L2_STATELESS_HEVC_DECODE_MODE_FRAME_BASED},
+ {.id=V4L2_CID_STATELESS_HEVC_START_CODE,.min=V4L2_STATELESS_HEVC_START_CODE_NONE,
+ .max=V4L2_STATELESS_HEVC_START_CODE_NONE,.def=V4L2_STATELESS_HEVC_START_CODE_NONE},
+ {.id=V4L2_CID_STATELESS_VP9_FRAME},
 };
 static int vdec_controls(struct vdec_ctx *ctx)
 {
  v4l2_ctrl_handler_init(&ctx->controls,ARRAY_SIZE(vdec_control_config));
- for (unsigned i=0;i<ARRAY_SIZE(vdec_control_config);i++)
-  ctx->control[i]=v4l2_ctrl_new_custom(&ctx->controls,&vdec_control_config[i],NULL);
+ for (unsigned i=0;i<ARRAY_SIZE(vdec_control_config);i++) {
+  struct v4l2_ctrl_config config=vdec_control_config[i];config.ops=&vdec_ctrl_ops;
+  ctx->control[i]=v4l2_ctrl_new_custom(&ctx->controls,&config,NULL);
+ }
  ctx->fh.ctrl_handler=&ctx->controls;
  return ctx->controls.error;
 }
 static void vdec_read_control(struct vdec_ctx *ctx,unsigned id,void *dest,unsigned size)
 {
  for (unsigned i=0;i<ARRAY_SIZE(ctx->control);i++)
-  if (ctx->control[i]->id==id) { memcpy(dest,ctx->control[i]->p_cur.p,size); return; }
+  if (ctx->control[i] && ctx->control[i]->id==id) { memcpy(dest,ctx->control[i]->p_cur.p,size); return; }
  WARN_ON_ONCE(1);
 }
-static int vdec_stage_slice(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *src)
+void *vdec_control(struct vdec_ctx *ctx,unsigned id,unsigned *elements)
 {
- struct control *p=&ctx->picture;
- struct v4l2_ctrl_h264_slice_params sl;
- struct v4l2_ctrl_h264_decode_params dec;
- struct v4l2_ctrl_h264_sps sps;
- struct v4l2_ctrl_h264_pps pps;
- const u8 *data=vb2_plane_vaddr(&src->vb2_buf,0);
- unsigned len=vb2_get_plane_payload(&src->vb2_buf,0);
- int ret;
- vdec_read_control(ctx,V4L2_CID_STATELESS_H264_SLICE_PARAMS,&sl,sizeof(sl));
- vdec_read_control(ctx,V4L2_CID_STATELESS_H264_DECODE_PARAMS,&dec,sizeof(dec));
- vdec_read_control(ctx,V4L2_CID_STATELESS_H264_SPS,&sps,sizeof(sps));
- vdec_read_control(ctx,V4L2_CID_STATELESS_H264_PPS,&pps,sizeof(pps));
- if (!data || len<4 || len>INPUT_SIZE-512 || ctx->bytes+len+4>INPUT_SIZE-512 || ctx->slices>=64) return -EINVAL;
- if (!(sps.flags&V4L2_H264_SPS_FLAG_FRAME_MBS_ONLY) ||
-     (dec.flags&V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC)) return -EOPNOTSUPP;
- if (mt6797_h264_cabac_alignment(&pps,&sl,data,len)) return -EINVAL;
- if (!ctx->bytes) {
-  if (sl.first_mb_in_slice || sps.pic_width_in_mbs_minus1+1!=ctx->width/16 ||
-      sps.pic_height_in_map_units_minus1+1!=DIV_ROUND_UP(ctx->height,16)) return -EINVAL;
-  ctx->native_decode=dec;
-  memset(p,0,sizeof(*p)); p->sps=sps; p->pps=pps; p->slice=sl;
-  memcpy(p->decode.dpb,dec.dpb,sizeof(dec.dpb));
-  static_assert(sizeof(p->decode)-offsetof(struct mt6797_h264_decode_params,nal_ref_idc)==
-                sizeof(dec)-offsetof(struct v4l2_ctrl_h264_decode_params,nal_ref_idc));
-  memcpy(&p->decode.nal_ref_idc,&dec.nal_ref_idc,sizeof(dec)-offsetof(struct v4l2_ctrl_h264_decode_params,nal_ref_idc));
-  p->width=ctx->width; p->height=ctx->height; p->reference_ts=src->vb2_buf.timestamp;
-  ctx->timestamp=src->vb2_buf.timestamp; ctx->first_bytes=len;
-  vdec_read_control(ctx,V4L2_CID_STATELESS_H264_PRED_WEIGHTS,&p->weights,sizeof(p->weights));
-  vdec_read_control(ctx,V4L2_CID_STATELESS_H264_SCALING_MATRIX,&p->scaling,sizeof(p->scaling));
-  if ((data[0]&0x80) || ((data[0]>>5)&3)!=dec.nal_ref_idc ||
-      ((data[0]&31)!=1 && (data[0]&31)!=5) ||
-      (!!(dec.flags&V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC)!=((data[0]&31)==5))) return -EINVAL;
-  if (V4L2_H264_CTRL_PRED_WEIGHTS_REQUIRED(&pps,&sl)) {
-   ret=mt6797_h264_weight_range(&sps,&pps,&sl,&p->decode,&p->weights,data,len,&p->weight_range);
-   if (ret) return ret;
-  }
-  memset(ctx->buffers[0].cpu,0,INPUT_SIZE);
- } else {
-  if (ctx->timestamp!=src->vb2_buf.timestamp || memcmp(&ctx->native_decode,&dec,sizeof(dec)) || memcmp(&p->sps,&sps,sizeof(sps)) ||
-      memcmp(&p->pps,&pps,sizeof(pps)) || sl.first_mb_in_slice<=ctx->last_mb ||
-      sl.first_mb_in_slice>=ctx->width*DIV_ROUND_UP(ctx->height,16)/16) return -EINVAL;
-  ret=mt6797_h264_slice_headers_match(&p->slice,ctx->buffers[0].cpu,ctx->first_bytes,&sl,data,len);
-  if (ret) return ret;
-  memcpy(ctx->buffers[0].cpu+ctx->bytes,"\0\0\0\1",4); ctx->bytes+=4;
+ for(unsigned i=0;i<ARRAY_SIZE(ctx->control);i++)if(ctx->control[i] && ctx->control[i]->id==id){
+  if(elements)*elements=ctx->control[i]->elems;
+  return ctx->control[i]->p_cur.p;
  }
- memcpy(ctx->buffers[0].cpu+ctx->bytes,data,len); ctx->bytes+=len; ctx->slices++; ctx->last_mb=sl.first_mb_in_slice;
+ return NULL;
+}
+static int vdec_read_picture(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *src)
+{
+ struct control *p=&ctx->incoming;
+ struct v4l2_ctrl_h264_decode_params d;
+ struct mt6797_h264_header_words header;
+ const u8 *nal=vb2_plane_vaddr(&src->vb2_buf,0);
+ unsigned len=vb2_get_plane_payload(&src->vb2_buf,0);
+ if(!nal || len<4 || len>INPUT_SIZE-512)return -EINVAL;
+ memset(p,0,sizeof(*p));
+ vdec_read_control(ctx,V4L2_CID_STATELESS_H264_SPS,&p->sps,sizeof(p->sps));
+ vdec_read_control(ctx,V4L2_CID_STATELESS_H264_PPS,&p->pps,sizeof(p->pps));
+ vdec_read_control(ctx,V4L2_CID_STATELESS_H264_DECODE_PARAMS,&d,sizeof(d));
+ vdec_read_control(ctx,V4L2_CID_STATELESS_H264_SCALING_MATRIX,&p->scaling,sizeof(p->scaling));
+ if(mt6797_h264_header_words(&p->sps,&p->pps,&header) || header.width_mbs*16!=ctx->width || header.height_mbs*16!=ctx->height)return -EINVAL;
+ memcpy(&p->decode.nal_ref_idc,&d.nal_ref_idc,sizeof(d)-offsetof(struct v4l2_ctrl_h264_decode_params,nal_ref_idc));
+ bool fields=d.flags&V4L2_H264_DECODE_PARAM_FLAG_FIELD_PIC;
+ unsigned max_num=1U<<(p->sps.log2_max_frame_num_minus4+4),bottom=!!(d.flags&V4L2_H264_DECODE_PARAM_FLAG_BOTTOM_FIELD);
+ unsigned at=0;
+ for(unsigned i=0;i<16;i++) {
+  const struct v4l2_h264_dpb_entry *e=&d.dpb[i];
+  if(!(e->flags&V4L2_H264_DPB_ENTRY_FLAG_ACTIVE))continue;
+  if(!(e->flags&V4L2_H264_DPB_ENTRY_FLAG_VALID) || !e->fields || e->fields>3)return -EINVAL;
+  for(unsigned parity=0;parity<(fields?2:1);parity++) {
+   if(fields && !(e->fields&BIT(parity)))continue;
+   struct v4l2_h264_dpb_entry *out=&p->decode.dpb[at++];
+   *out=*e;out->flags&=~V4L2_H264_DPB_ENTRY_FLAG_FIELD;
+   if(fields) {
+    s32 relative=e->frame_num;
+    bool lt=e->flags&V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM;
+    if(!lt && e->frame_num>d.frame_num)relative-=max_num;
+    out->pic_num=relative*2+(parity==bottom);
+    out->fields=BIT(parity);
+   }
+  }
+ }
+ if(fields) {
+  s32 picture_poc=bottom?d.bottom_field_order_cnt:d.top_field_order_cnt;
+  p->decode.top_field_order_cnt=p->decode.bottom_field_order_cnt=picture_poc;
+ }
+ p->width=ctx->width;p->height=ctx->height;p->reference_ts=src->vb2_buf.timestamp;
+ int ret=mt6797_h264_parse(p,nal,len);
+ if(ret)return ret;
+ return 0;
+}
+static int vdec_stage_picture(struct vdec_ctx *ctx,struct vb2_v4l2_buffer *src)
+{
+ struct control *next=&ctx->incoming,*first=&ctx->picture;
+ unsigned len=vb2_get_plane_payload(&src->vb2_buf,0);
+ bool frame_mode=ctx->control[6]->val==V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED;
+ int ret;
+ mutex_lock(ctx->controls.lock);
+ ret=vdec_read_picture(ctx,src);
+ mutex_unlock(ctx->controls.lock);
+ if(ret)return ret;
+ if(frame_mode && next->field_picture)return -EOPNOTSUPP;
+ if(ctx->bytes && next->field_picture && first->field_picture &&
+    next->reference_ts==first->reference_ts && next->bottom_field!=first->bottom_field &&
+    next->decode.frame_num==first->decode.frame_num) {
+  /* The last slice of the first field also holds CAPTURE for its mate.
+   * Its picture boundary becomes known when the second field arrives. */
+  struct vb2_v4l2_buffer *dst=v4l2_m2m_next_dst_buf(ctx->fh.m2m_ctx);
+  ret=vdec_power_on(ctx);
+  if(!ret)ret=mt6797_h264_run(ctx,dst);
+  vdec_power_off(ctx);
+  if(ret)return ret;
+  ctx->bytes=ctx->slices=0;
+ }
+ if(!ctx->bytes) {
+  if(next->slice.first_mb_in_slice)return -EINVAL;
+  *first=*next;ctx->timestamp=src->vb2_buf.timestamp;ctx->last_mb=0;
+ } else {
+  struct mt6797_h264_decode_params *a=&first->decode,*b=&next->decode;
+  unsigned ignore=V4L2_H264_DECODE_PARAM_FLAG_PFRAME|V4L2_H264_DECODE_PARAM_FLAG_BFRAME;
+  if(ctx->timestamp!=src->vb2_buf.timestamp || memcmp(&first->sps,&next->sps,sizeof(first->sps)) ||
+     memcmp(&first->pps,&next->pps,sizeof(first->pps)) || a->frame_num!=b->frame_num ||
+     a->top_field_order_cnt!=b->top_field_order_cnt || a->bottom_field_order_cnt!=b->bottom_field_order_cnt ||
+     ((a->flags^b->flags)&~ignore) || next->slice.first_mb_in_slice<=ctx->last_mb ||
+     ctx->bytes+len+4>INPUT_SIZE-512 || ctx->slices>=64)return -EINVAL;
+  memcpy(ctx->buffers[0].cpu+ctx->bytes,"\0\0\0\1",4);ctx->bytes+=4;
+ }
+ memcpy(ctx->buffers[0].cpu+ctx->bytes,vb2_plane_vaddr(&src->vb2_buf,0),len);
+ ctx->bytes+=len;ctx->slices++;ctx->last_mb=next->slice.first_mb_in_slice;
  return 0;
 }
 static int vdec_querycap(struct file *f,void *priv,struct v4l2_capability *cap)
 {
  strscpy(cap->driver,"mt6797-vdec",sizeof(cap->driver));
- strscpy(cap->card,"MT6797 stateless H264 decoder",sizeof(cap->card));
+ strscpy(cap->card,"MT6797 stateless video decoder",sizeof(cap->card));
  strscpy(cap->bus_info,"platform:mt6797-vdec",sizeof(cap->bus_info));
  return 0;
 }
 static int vdec_enum_fmt(struct file *f,void *priv,struct v4l2_fmtdesc *fmt)
 {
  if (V4L2_TYPE_IS_OUTPUT(fmt->type)) {
-  if (fmt->index) return -EINVAL;
-  fmt->pixelformat=V4L2_PIX_FMT_H264_SLICE;
+  static const unsigned formats[]={V4L2_PIX_FMT_H264_SLICE,V4L2_PIX_FMT_HEVC_SLICE,V4L2_PIX_FMT_VP9_FRAME};
+  if (fmt->index>=ARRAY_SIZE(formats)) return -EINVAL;
+  fmt->pixelformat=formats[fmt->index];
  fmt->flags=V4L2_FMT_FLAG_COMPRESSED;
  } else {
   if (fmt->index) return -EINVAL;
@@ -172,20 +236,26 @@ static void vdec_buf_queue(struct vb2_buffer *vb)
 }
 static int vdec_try_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
 {
+ struct vdec_ctx *ctx=vdec_fh(file_to_v4l2_fh(f));
  struct v4l2_pix_format_mplane *p=&fmt->fmt.pix_mp;
- p->width=clamp(ALIGN(p->width,16),64U,1920U);
- p->height=clamp(ALIGN(p->height,16),64U,1088U);
+ unsigned codec=V4L2_TYPE_IS_OUTPUT(fmt->type)?p->pixelformat:ctx->codec;
+ if(codec!=V4L2_PIX_FMT_HEVC_SLICE && codec!=V4L2_PIX_FMT_VP9_FRAME)codec=V4L2_PIX_FMT_H264_SLICE;
+ bool h264=codec==V4L2_PIX_FMT_H264_SLICE;
+ unsigned minimum=h264?64:1;
+ p->width=clamp(h264?ALIGN(p->width,16):p->width,minimum,1920U);
+ p->height=clamp(h264?ALIGN(p->height,16):p->height,minimum,1088U);
  p->field=V4L2_FIELD_NONE; p->num_planes=1; p->colorspace=V4L2_COLORSPACE_REC709;
- p->pixelformat=V4L2_TYPE_IS_OUTPUT(fmt->type)?V4L2_PIX_FMT_H264_SLICE:V4L2_PIX_FMT_MM21;
+ p->pixelformat=V4L2_TYPE_IS_OUTPUT(fmt->type)?codec:V4L2_PIX_FMT_MM21;
  memset(p->plane_fmt,0,sizeof(p->plane_fmt));
- p->plane_fmt[0].sizeimage=V4L2_TYPE_IS_OUTPUT(fmt->type)?INPUT_SIZE:p->width*ALIGN(p->height,32)*3/2;
- p->plane_fmt[0].bytesperline=V4L2_TYPE_IS_OUTPUT(fmt->type)?0:p->width;
+ p->plane_fmt[0].sizeimage=V4L2_TYPE_IS_OUTPUT(fmt->type)?INPUT_SIZE:(h264?p->width*ALIGN(p->height,32):ALIGN(p->width,64)*ALIGN(p->height,64))*3/2;
+ p->plane_fmt[0].bytesperline=V4L2_TYPE_IS_OUTPUT(fmt->type)?0:h264?p->width:ALIGN(p->width,64);
  return 0;
 }
 static int vdec_get_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
 {
  struct vdec_ctx *ctx=vdec_fh(file_to_v4l2_fh(f));
  fmt->fmt.pix_mp.width=ctx->width; fmt->fmt.pix_mp.height=ctx->height;
+ fmt->fmt.pix_mp.pixelformat=ctx->codec;
  return vdec_try_fmt(f,priv,fmt);
 }
 static int vdec_set_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
@@ -196,19 +266,24 @@ static int vdec_set_fmt(struct file *f,void *priv,struct v4l2_format *fmt)
  if (vb2_is_streaming(v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx)) ||
      vb2_is_busy(v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx))) return -EBUSY;
  vdec_try_fmt(f,priv,fmt);
+ if(V4L2_TYPE_IS_OUTPUT(fmt->type))ctx->codec=fmt->fmt.pix_mp.pixelformat;
  ctx->width=fmt->fmt.pix_mp.width; ctx->height=fmt->fmt.pix_mp.height;
  return 0;
 }
 static int vdec_framesizes(struct file *f,void *priv,struct v4l2_frmsizeenum *fs)
 {
- if (fs->index || (fs->pixel_format!=V4L2_PIX_FMT_H264_SLICE && fs->pixel_format!=V4L2_PIX_FMT_MM21)) return -EINVAL;
+ struct vdec_ctx *ctx=vdec_fh(file_to_v4l2_fh(f));
+ if (fs->index || (fs->pixel_format!=V4L2_PIX_FMT_H264_SLICE && fs->pixel_format!=V4L2_PIX_FMT_HEVC_SLICE && fs->pixel_format!=V4L2_PIX_FMT_VP9_FRAME && fs->pixel_format!=V4L2_PIX_FMT_MM21)) return -EINVAL;
+ unsigned codec=fs->pixel_format==V4L2_PIX_FMT_MM21?ctx->codec:fs->pixel_format;
+ unsigned minimum=codec==V4L2_PIX_FMT_H264_SLICE?64:1;
+ unsigned step=codec==V4L2_PIX_FMT_H264_SLICE?16:1;
  fs->type=V4L2_FRMSIZE_TYPE_STEPWISE;
- fs->stepwise=(struct v4l2_frmsize_stepwise){64,1920,16,64,1088,16}; return 0;
+ fs->stepwise=(struct v4l2_frmsize_stepwise){minimum,1920,step,minimum,1088,step}; return 0;
 }
 static int vdec_queue_setup(struct vb2_queue *q,unsigned *count,unsigned *planes,unsigned sizes[],struct device *devs[])
 {
  struct vdec_ctx *ctx=vb2_get_drv_priv(q);
- unsigned size=V4L2_TYPE_IS_OUTPUT(q->type)?INPUT_SIZE:ctx->width*ALIGN(ctx->height,32)*3/2;
+ unsigned size=V4L2_TYPE_IS_OUTPUT(q->type)?INPUT_SIZE:(ctx->codec==V4L2_PIX_FMT_H264_SLICE?ctx->width*ALIGN(ctx->height,32):ALIGN(ctx->width,64)*ALIGN(ctx->height,64))*3/2;
  if (*planes) return *planes==1 && sizes[0]>=size?0:-EINVAL;
  if (!V4L2_TYPE_IS_OUTPUT(q->type)) *count=min(*count,(unsigned)MAX_SLOTS);
  *planes=1; sizes[0]=size; return 0;
@@ -223,6 +298,8 @@ static void vdec_buf_cleanup(struct vb2_buffer *vb)
  struct vdec_ctx *ctx=vb2_get_drv_priv(vb->vb2_queue);
  struct buffer *b;
  if (V4L2_TYPE_IS_OUTPUT(vb->type) || vb->index>=MAX_SLOTS) return;
+ mt6797_hevc_forget(ctx,vb->index);
+ mt6797_vp9_forget(ctx,vb->index);
  /* Reconstruction and colocated MV storage belong to this CAPTURE buffer.
   * REQBUFS(0), not an unrelated later picture, ends that ownership. */
  b=&ctx->buffers[4+vb->index];
@@ -233,7 +310,7 @@ static void vdec_buf_cleanup(struct vb2_buffer *vb)
 static int vdec_buf_prepare(struct vb2_buffer *vb)
 {
  struct vdec_ctx *ctx=vb2_get_drv_priv(vb->vb2_queue);
- unsigned size=V4L2_TYPE_IS_OUTPUT(vb->type)?INPUT_SIZE:ctx->width*ALIGN(ctx->height,32)*3/2;
+ unsigned size=V4L2_TYPE_IS_OUTPUT(vb->type)?INPUT_SIZE:(ctx->codec==V4L2_PIX_FMT_H264_SLICE?ctx->width*ALIGN(ctx->height,32):ALIGN(ctx->width,64)*ALIGN(ctx->height,64))*3/2;
  if (vb2_plane_size(vb,0)<size || vb->planes[0].data_offset) return -EINVAL;
  if (V4L2_TYPE_IS_OUTPUT(vb->type) && (vb2_get_plane_payload(vb,0)<4 || vb2_get_plane_payload(vb,0)>INPUT_SIZE-512)) return -EINVAL;
  return 0;
@@ -312,16 +389,21 @@ static void vdec_work(struct work_struct *work)
  if (!ret && dst->vb2_buf.planes[0].dbuf) {
   ret=dma_buf_begin_cpu_access(dst->vb2_buf.planes[0].dbuf,DMA_BIDIRECTIONAL); dst_cpu=!ret;
  }
- if (!ret) {
-  mutex_lock(ctx->controls.lock);
-  ret=vdec_stage_slice(ctx,src);
-  mutex_unlock(ctx->controls.lock);
+ if(!ret && ctx->codec==V4L2_PIX_FMT_H264_SLICE)ret=vdec_stage_picture(ctx,src);
+ else if(!ret) {
+  const void *data=vb2_plane_vaddr(&src->vb2_buf,0);
+  ctx->bytes=vb2_get_plane_payload(&src->vb2_buf,0);ctx->timestamp=src->vb2_buf.timestamp;
+  if(!data)ret=-EFAULT;
+  else {
+   memcpy(ctx->buffers[0].cpu,data,ctx->bytes);
+   mutex_lock(ctx->controls.lock);ret=ctx->codec==V4L2_PIX_FMT_HEVC_SLICE?mt6797_hevc_stage(ctx):mt6797_vp9_stage(ctx);mutex_unlock(ctx->controls.lock);
+  }
  }
  v4l2_m2m_buf_copy_metadata(src,dst,true);
  dst->sequence=ctx->sequence;
- if (!ret && !(src->flags&V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF)) {
+ if (!ret && (ctx->codec!=V4L2_PIX_FMT_H264_SLICE || ctx->control[6]->val==V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED || !(src->flags&V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF))) {
   ret=vdec_power_on(ctx);
-  if (!ret) ret=mt6797_h264_run(ctx,dst);
+  if (!ret) ret=ctx->codec==V4L2_PIX_FMT_H264_SLICE?mt6797_h264_run(ctx,dst):ctx->codec==V4L2_PIX_FMT_HEVC_SLICE?mt6797_hevc_run(ctx,dst):mt6797_vp9_run(ctx,dst);
   vdec_power_off(ctx);
   ctx->bytes=ctx->slices=0; ctx->sequence++;
  }
@@ -332,6 +414,8 @@ static void vdec_work(struct work_struct *work)
   src->flags &= ~V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF;
   ctx->bytes=ctx->slices=0;
   memset(ctx->cache,0,sizeof(ctx->cache)); vb2_set_plane_payload(&dst->vb2_buf,0,0);
+  if(ctx->hevc)memset(((struct mt6797_hevc_state *)ctx->hevc)->timestamps,0,sizeof(((struct mt6797_hevc_state *)ctx->hevc)->timestamps));
+  mt6797_vp9_release(ctx);
  }
  v4l2_ctrl_request_complete(request,&ctx->controls);
  v4l2_m2m_buf_done_and_job_finish(d->m2m,ctx->fh.m2m_ctx,ret?VB2_BUF_STATE_ERROR:VB2_BUF_STATE_DONE);
@@ -360,7 +444,7 @@ static int vdec_open(struct file *f)
  struct vdec_ctx *ctx=kzalloc(sizeof(*ctx),GFP_KERNEL);
  int ret;
  if (!ctx) return -ENOMEM;
- ctx->dev=d; ctx->width=320; ctx->height=240;
+ ctx->dev=d; ctx->width=320; ctx->height=240;ctx->codec=V4L2_PIX_FMT_H264_SLICE;
 
  mutex_lock(&d->lock);
  v4l2_fh_init(&ctx->fh,&d->video); f->private_data=&ctx->fh;
@@ -381,6 +465,7 @@ static int vdec_release(struct file *f)
  mutex_lock(&ctx->dev->lock);
  v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
  vdec_free_buffers(ctx);
+ kfree(ctx->hevc);
  v4l2_ctrl_handler_free(&ctx->controls); v4l2_fh_del(&ctx->fh,f); v4l2_fh_exit(&ctx->fh);
  mutex_unlock(&ctx->dev->lock); kfree(ctx);
  return 0;
@@ -511,7 +596,7 @@ static void vdec_remove(struct platform_device *pdev)
 static int vdec_suspend(struct device *dev)
 {
  struct vdec_dev *d=dev_get_drvdata(dev);
- /* Pause admission before waiting for the current bounded hardware job. */
+ /* Pause admission before waiting for the bounded hardware job. */
  v4l2_m2m_suspend(d->m2m);
  flush_work(&d->work);
  return 0;
@@ -523,13 +608,12 @@ static int vdec_resume(struct device *dev)
  return 0;
 }
 static DEFINE_SIMPLE_DEV_PM_OPS(vdec_pm,vdec_suspend,vdec_resume);
-/* Explicit opt-in: production's legacy decoder keeps HEVC/VP9 and field coverage. */
 static const struct of_device_id vdec_match[]={{.compatible="mediatek,mt6797-vdec"},{}};
 MODULE_DEVICE_TABLE(of,vdec_match);
 static struct platform_driver vdec_driver={.probe=vdec_probe,.remove=vdec_remove,
  .driver={.name="mt6797-vdec",.of_match_table=vdec_match,.suppress_bind_attrs=true,.pm=pm_sleep_ptr(&vdec_pm)}};
 module_platform_driver(vdec_driver);
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("MT6797 stateless H264 slice Request prototype");
+MODULE_DESCRIPTION("MT6797 H264, HEVC and VP9 stateless Request decoder");
 
 MODULE_IMPORT_NS("DMA_BUF");

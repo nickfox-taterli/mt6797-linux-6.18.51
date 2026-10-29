@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/mediatek,mt6797-vdec.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: MediaTek MT6797 H.264, HEVC and VP9 stateless decoder
+
+# This workspace has no public maintainer address assigned.
+maintainers: []
+
+description: |
+  V4L2 stateless memory-to-memory decoder with Media Requests. The kernel
+  programs the engine, owns reconstructed pictures and codec contexts,
+  and uses the associated SMI larb and translated M4U ports for DMA.
+
+properties:
+  compatible:
+    const: mediatek,mt6797-vdec
+  reg:
+    maxItems: 1
+  interrupts:
+    maxItems: 1
+  clocks:
+    minItems: 3
+    maxItems: 3
+  power-domains:
+    maxItems: 1
+  mediatek,larb:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: SMI larb serving the decoder.
+  iommus:
+    minItems: 10
+    maxItems: 10
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - clocks
+  - power-domains
+  - mediatek,larb
+  - iommus
+
+additionalProperties: false
+...
