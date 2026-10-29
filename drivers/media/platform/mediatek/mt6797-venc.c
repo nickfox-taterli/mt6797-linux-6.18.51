@@ -851,10 +851,18 @@ static void venc_remove(struct platform_device *pdev)
 static int venc_suspend(struct device *dev)
 {
  struct venc_dev *d=dev_get_drvdata(dev);
- /* Queued CPU work may still be programming DMA: reject rather than gate it. */
- return work_busy(&d->work)||READ_ONCE(d->powered)?-EBUSY:0;
+ /* Pause admission before waiting for the current bounded hardware job. */
+ v4l2_m2m_suspend(d->m2m);
+ flush_work(&d->work);
+ return 0;
 }
-static DEFINE_SIMPLE_DEV_PM_OPS(venc_pm,venc_suspend,NULL);
+static int venc_resume(struct device *dev)
+{
+ struct venc_dev *d=dev_get_drvdata(dev);
+ v4l2_m2m_resume(d->m2m);
+ return 0;
+}
+static DEFINE_SIMPLE_DEV_PM_OPS(venc_pm,venc_suspend,venc_resume);
 static const struct of_device_id venc_match[]={
  {.compatible="mediatek,mt6797-venc"},{}};
 MODULE_DEVICE_TABLE(of,venc_match);

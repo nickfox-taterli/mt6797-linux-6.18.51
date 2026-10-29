@@ -450,9 +450,18 @@ static void vdec_remove(struct platform_device *pdev)
 static int vdec_suspend(struct device *dev)
 {
  struct vdec_dev *d=dev_get_drvdata(dev);
- return work_busy(&d->work)||READ_ONCE(d->powered)?-EBUSY:0;
+ /* Pause admission before waiting for the current bounded hardware job. */
+ v4l2_m2m_suspend(d->m2m);
+ flush_work(&d->work);
+ return 0;
 }
-static DEFINE_SIMPLE_DEV_PM_OPS(vdec_pm,vdec_suspend,NULL);
+static int vdec_resume(struct device *dev)
+{
+ struct vdec_dev *d=dev_get_drvdata(dev);
+ v4l2_m2m_resume(d->m2m);
+ return 0;
+}
+static DEFINE_SIMPLE_DEV_PM_OPS(vdec_pm,vdec_suspend,vdec_resume);
 /* Explicit opt-in: production's legacy decoder keeps HEVC/VP9 and field coverage. */
 static const struct of_device_id vdec_match[]={{.compatible="mediatek,mt6797-vdec"},{}};
 MODULE_DEVICE_TABLE(of,vdec_match);
