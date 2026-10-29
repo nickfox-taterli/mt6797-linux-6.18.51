@@ -3086,13 +3086,13 @@ int hif_thread(void *data)
 #endif
 	}
 
-	complete(&prGlueInfo->rHifHaltComp);
 
 	if (KAL_WAKE_LOCK_ACTIVE(prGlueInfo->prAdapter, &rHifThreadWakeLock))
 		KAL_WAKE_UNLOCK(prGlueInfo->prAdapter, &rHifThreadWakeLock);
 	KAL_WAKE_LOCK_DESTROY(prGlueInfo->prAdapter, &rHifThreadWakeLock);
 
-	return 0;
+	/* Signal only after the thread has stopped touching the glue/adapter. */
+	kthread_complete_and_exit(&prGlueInfo->rHifHaltComp, 0);
 }
 
 int rx_thread(void *data)
@@ -3165,13 +3165,13 @@ int rx_thread(void *data)
 		}
 	}
 
-	complete(&prGlueInfo->rRxHaltComp);
 
 	if (KAL_WAKE_LOCK_ACTIVE(prGlueInfo->prAdapter, &rRxThreadWakeLock))
 		KAL_WAKE_UNLOCK(prGlueInfo->prAdapter, &rRxThreadWakeLock);
 	KAL_WAKE_LOCK_DESTROY(prGlueInfo->prAdapter, &rRxThreadWakeLock);
 
-	return 0;
+	/* Signal only after the thread has stopped touching the glue/adapter. */
+	kthread_complete_and_exit(&prGlueInfo->rRxHaltComp, 0);
 }
 #endif
 
@@ -3430,12 +3430,12 @@ int tx_thread(void *data)
 	/* In linux, we don't need to free sk_buff by ourself */
 
 	DBGLOG(INIT, INFO, "mtk_sdiod stops\n");
-	complete(&prGlueInfo->rHaltComp);
 	if (KAL_WAKE_LOCK_ACTIVE(prGlueInfo->prAdapter, &rTxThreadWakeLock))
 		KAL_WAKE_UNLOCK(prGlueInfo->prAdapter, &rTxThreadWakeLock);
 	KAL_WAKE_LOCK_DESTROY(prGlueInfo->prAdapter, &rTxThreadWakeLock);
 
-	return 0;
+	/* Signal only after the thread has stopped touching the glue/adapter. */
+	kthread_complete_and_exit(&prGlueInfo->rHaltComp, 0);
 
 }
 

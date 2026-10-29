@@ -2594,13 +2594,70 @@ void set_dbg_level_handler(unsigned char dbg_lvl[DBG_MODULE_NUM])
 }
 
 
+/* A timeout diagnoses a stuck worker; it must not release live storage. */
+static void wlanWaitForHalt(struct completion *done, const char *name)
+{
+	if (wait_for_completion_timeout(done, msecs_to_jiffies(3000)))
+		return;
+	pr_err("mt6797-wlan: %s thread did not stop within 3 seconds\n", name);
+	wait_for_completion(done);
+}
+
+static int wlanStartWorkers(P_GLUE_INFO_T glue)
+{
+	int ret;
+
+	glue->main_thread = kthread_run(tx_thread, glue->prDevHandler, "tx_thread");
+	if (IS_ERR(glue->main_thread)) {
+		ret = PTR_ERR(glue->main_thread);
+		glue->main_thread = NULL;
+		return ret;
+	}
+#if CFG_SUPPORT_MULTITHREAD
+	glue->hif_thread = kthread_run(hif_thread, glue->prDevHandler, "hif_thread");
+	if (IS_ERR(glue->hif_thread)) {
+		ret = PTR_ERR(glue->hif_thread);
+		glue->hif_thread = NULL;
+		return ret;
+	}
+	glue->rx_thread = kthread_run(rx_thread, glue->prDevHandler, "rx_thread");
+	if (IS_ERR(glue->rx_thread)) {
+		ret = PTR_ERR(glue->rx_thread);
+		glue->rx_thread = NULL;
+		return ret;
+	}
+#endif
+	return 0;
+}
+
+static void wlanStopWorkers(P_GLUE_INFO_T glue)
+{
+	set_bit(GLUE_FLAG_HALT_BIT, &glue->ulFlag);
+	/* Wake every started worker before waiting; workers may depend on each other. */
+#if CFG_SUPPORT_MULTITHREAD
+	if (glue->hif_thread)
+		wake_up_interruptible(&glue->waitq_hif);
+	if (glue->rx_thread)
+		wake_up_interruptible(&glue->waitq_rx);
+#endif
+	if (glue->main_thread)
+		wake_up_interruptible(&glue->waitq);
+#if CFG_SUPPORT_MULTITHREAD
+	if (glue->hif_thread)
+		wlanWaitForHalt(&glue->rHifHaltComp, "hif");
+	if (glue->rx_thread)
+		wlanWaitForHalt(&glue->rRxHaltComp, "rx");
+#endif
+	if (glue->main_thread)
+		wlanWaitForHalt(&glue->rHaltComp, "tx");
+}
+
 /*----------------------------------------------------------------------------*/
 /*!
 * \brief Wlan probe function. This function probes and initializes the device.
 *
 * \param[in] pvData     data passed by bus driver init function
-*                           _HIF_EHPI: NULL
-*                           _HIF_SDIO: sdio bus driver handle
+*                           MT6797 AHB platform device
 *
 * \retval 0 Success
 * \retval negative value Failed
@@ -2629,11 +2686,6 @@ static INT_32 wlanProbe(PVOID pvData)
 	eFailReason = FAIL_REASON_NUM;
 	do {
 		/* 4 <1> Initialize the IO port of the interface */
-		/*  GeorgeKuo: pData has different meaning for _HIF_XXX:
-		 * _HIF_EHPI: pointer to memory base variable, which will be
-		 *      initialized by glBusInit().
-		 * _HIF_SDIO: bus driver handle
-		 */
 		bRet = glBusInit(pvData);
 #if (CFG_SUPPORT_TRACE_TC4 == 1)
 		wlanDebugTC4Init();
@@ -2767,11 +2819,11 @@ bailout:
 		}
 #endif
 
-		prGlueInfo->main_thread = kthread_run(tx_thread, prGlueInfo->prDevHandler, "tx_thread");
-#if CFG_SUPPORT_MULTITHREAD
-		prGlueInfo->hif_thread = kthread_run(hif_thread, prGlueInfo->prDevHandler, "hif_thread");
-		prGlueInfo->rx_thread = kthread_run(rx_thread, prGlueInfo->prDevHandler, "rx_thread");
-#endif
+		i4Status = wlanStartWorkers(prGlueInfo);
+		if (i4Status) {
+			eFailReason = NET_REGISTER_FAIL;
+			break;
+		}
 
 		/* TODO the change schedule API shall be provided by OS glue layer */
 		/* Switch the Wi-Fi task priority to higher priority and change the scheduling method */
@@ -2929,11 +2981,7 @@ bailout:
 		case PROC_INIT_FAIL:
 			wlanNetUnregister(prWdev);
 		case NET_REGISTER_FAIL:
-			set_bit(GLUE_FLAG_HALT_BIT, &prGlueInfo->ulFlag);
-			/* wake up main thread */
-			wake_up_interruptible(&prGlueInfo->waitq);
-			/* wait main thread stops */
-			wait_for_completion_interruptible(&prGlueInfo->rHaltComp);
+			wlanStopWorkers(prGlueInfo);
 			wlanAdapterStop(prAdapter);
 		case ADAPTER_START_FAIL:
 			glBusFreeIrq(prWdev->netdev, *((P_GLUE_INFO_T *) netdev_priv(prWdev->netdev)));
@@ -3014,32 +3062,11 @@ static VOID wlanRemove(VOID)
 
 	flush_delayed_work(&sched_workq);
 
-	kalHaltLock(KAL_WLAN_REMOVE_TIMEOUT_MSEC);
+	if (kalHaltLock(KAL_WLAN_REMOVE_TIMEOUT_MSEC))
+		kalHaltLock(0);
 	kalSetHalted(TRUE);
 
-	/* 4 <2> Mark HALT, notify main thread to stop, and clean up queued requests */
-	set_bit(GLUE_FLAG_HALT_BIT, &prGlueInfo->ulFlag);
-
-#if CFG_SUPPORT_MULTITHREAD
-	wake_up_interruptible(&prGlueInfo->waitq_hif);
-	if (!wait_for_completion_timeout(&prGlueInfo->rHifHaltComp, MSEC_TO_JIFFIES(KAL_WLAN_REMOVE_TIMEOUT_MSEC))) {
-		DBGLOG(INIT, ERROR, "wait hif_thread exit timeout, longer than 3s, show backtrace of hif_thread\n");
-		sched_show_task(prGlueInfo->hif_thread);
-	}
-	wake_up_interruptible(&prGlueInfo->waitq_rx);
-	if (!wait_for_completion_timeout(&prGlueInfo->rRxHaltComp, MSEC_TO_JIFFIES(KAL_WLAN_REMOVE_TIMEOUT_MSEC))) {
-		DBGLOG(INIT, ERROR, "wait rx_thread exit timeout, longer than 3s, show backtrace of rx_thread\n");
-		sched_show_task(prGlueInfo->rx_thread);
-	}
-#endif
-
-	/* wake up main thread */
-	wake_up_interruptible(&prGlueInfo->waitq);
-	/* wait main thread stops */
-	if (!wait_for_completion_timeout(&prGlueInfo->rHaltComp, MSEC_TO_JIFFIES(KAL_WLAN_REMOVE_TIMEOUT_MSEC))) {
-		DBGLOG(INIT, ERROR, "wait tx_thread exit timeout, longer than 3s, show backtrace of tx_thread\n");
-		sched_show_task(prGlueInfo->main_thread);
-	}
+	wlanStopWorkers(prGlueInfo);
 
 	DBGLOG(INIT, TRACE, "mtk_sdiod stopped\n");
 
