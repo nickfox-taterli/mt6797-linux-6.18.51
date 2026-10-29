@@ -7,6 +7,7 @@
  * Author: Baolin Wang <baolin.wang@linaro.org>
  */
 
+#include <linux/leds.h>
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 #include <linux/module.h>
@@ -18,6 +19,7 @@ static void mmc_hsq_retry_handler(struct work_struct *work)
 	struct mmc_hsq *hsq = container_of(work, struct mmc_hsq, retry_work);
 	struct mmc_host *mmc = hsq->mmc;
 
+	led_trigger_event(mmc->led, LED_FULL);
 	mmc->ops->request(mmc, hsq->mrq);
 }
 
@@ -68,6 +70,14 @@ static void mmc_hsq_pump_requests(struct mmc_hsq *hsq)
 	hsq->qcnt--;
 
 	spin_unlock_irqrestore(&hsq->lock, flags);
+
+	/*
+	 * The software queue hands requests straight to the host driver and
+	 * so bypasses mmc_start_request(); raise the activity LED here like
+	 * that path would, or "mmcN" LEDs never leave LED_OFF (the LED_OFF
+	 * half still arrives through mmc_request_done()).
+	 */
+	led_trigger_event(mmc->led, LED_FULL);
 
 	if (mmc->ops->request_atomic)
 		ret = mmc->ops->request_atomic(mmc, hsq->mrq);
