@@ -407,13 +407,15 @@ static int mtu3_probe(struct platform_device *pdev)
 		goto comm_exit;
 	}
 
-	/* MT6797 releases IP reset during device enable, without a global pulse. */
-	if (ssusb->is_mt6797) {
-		if (ssusb->dr_mode == USB_DR_MODE_HOST)
-			ssusb_ip_dev_power_down(ssusb);
-	} else {
+	/*
+	 * MT6797 releases IP reset during device enable, without a global pulse.
+	 * Its USB2-only SSUSB IP also shares MAC power between the host and
+	 * device functions: setting SSUSB_IP_DEV_PDN here gates the shared
+	 * logic, XHCI_RST_B never releases and the xhci probe times out with
+	 * -110, so in host mode the IP must be left completely untouched.
+	 */
+	if (!ssusb->is_mt6797)
 		ssusb_ip_sw_reset(ssusb);
-	}
 	ssusb_u3_drd_check(ssusb);
 
 	if (IS_ENABLED(CONFIG_USB_MTU3_HOST))
