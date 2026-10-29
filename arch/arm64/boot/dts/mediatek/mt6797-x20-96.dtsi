@@ -16,6 +16,7 @@
 
 #include <dt-bindings/pinctrl/mt65xx.h>
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
 #include <dt-bindings/regulator/dlg,da9211-regulator.h>
 #include <dt-bindings/thermal/thermal.h>
 #include "mt6797-x20-96-cooling.h"
@@ -46,6 +47,10 @@
 
 	aliases {
 		serial0 = &uart0;
+		/* Pin the MSDC host indexes so the per-host LED triggers
+		 * ("mmc0" eMMC / "mmc1" TF) stay stable across boots. */
+		mmc0 = &mmc0;
+		mmc1 = &mmc1;
 	};
 
 	memory@40000000 {
@@ -1407,5 +1412,89 @@
 		mediatek,larb = <&smi_larb1>;
 		iommus = <&m4u 32>, <&m4u 33>, <&m4u 34>, <&m4u 35>, <&m4u 36>,
 			 <&m4u 37>, <&m4u 38>, <&m4u 39>, <&m4u 40>, <&m4u 41>;
+	};
+};
+
+/* ========== onboard indicator LEDs (schematic "KEY_LED_EXT26M" sheet) ========== */
+
+/*
+ * Six indicator LEDs, all driven high-active through NMOS gates
+ * (SSM3K35; the 100k gate pull-downs keep them off until claimed):
+ *   USER LED1-4 (green)  GPIO196-199  nets USER_LED_CTRL1-4 (BPI_BUS8-11)
+ *   WLAN ACTIVE (blue)   GPIO200      net WLAN_LED_CTRL    (BPI_BUS12, AK1)
+ *   BT ACTIVE (yellow)   GPIO201      net BT_LED_CTRL      (BPI_BUS13, AK3)
+ * The wlan0 binding for the netdev trigger cannot be expressed in DT and
+ * is applied by the x20-leds init script at boot.
+ */
+
+&pio {
+	user_leds_pins: user-leds-pins {
+		pinmux = <MT6797_GPIO196__FUNC_GPIO196>,
+			 <MT6797_GPIO197__FUNC_GPIO197>,
+			 <MT6797_GPIO198__FUNC_GPIO198>,
+			 <MT6797_GPIO199__FUNC_GPIO199>,
+			 <MT6797_GPIO200__FUNC_GPIO200>,
+			 <MT6797_GPIO201__FUNC_GPIO201>;
+	};
+};
+
+/ {
+	leds {
+		compatible = "gpio-leds";
+		pinctrl-names = "default";
+		pinctrl-0 = <&user_leds_pins>;
+
+		led-user1 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			function-enumerator = <1>;
+			gpios = <&pio 196 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "heartbeat";
+			panic-indicator;
+		};
+
+		led-user2 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			function-enumerator = <2>;
+			gpios = <&pio 197 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "activity";
+		};
+
+		led-user3 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			function-enumerator = <3>;
+			gpios = <&pio 198 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "mmc0";
+		};
+
+		led-user4 {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_STATUS;
+			function-enumerator = <4>;
+			gpios = <&pio 199 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "mmc1";
+		};
+
+		led-wlan {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WLAN;
+			gpios = <&pio 200 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "netdev";
+		};
+
+		led-bt {
+			color = <LED_COLOR_ID_YELLOW>;
+			function = LED_FUNCTION_BLUETOOTH;
+			gpios = <&pio 201 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+			linux,default-trigger = "default-on";
+		};
 	};
 };
