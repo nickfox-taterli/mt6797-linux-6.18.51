@@ -9,6 +9,7 @@
 #include <linux/mod_devicetable.h>
 #include <linux/io.h>
 #include <linux/nvmem-provider.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
 
@@ -92,10 +93,19 @@ static int mtk_efuse_probe(struct platform_device *pdev)
 	if (IS_ERR(nvmem))
 		return PTR_ERR(nvmem);
 
-	socinfo = platform_device_register_data(&pdev->dev, "mtk-socinfo",
-						PLATFORM_DEVID_AUTO, NULL, 0);
-	if (IS_ERR(socinfo))
-		dev_info(dev, "MediaTek SoC Information will be unavailable\n");
+	/*
+	 * Only spawn the mtk-socinfo child when the board actually provides
+	 * the socinfo-data1/2 cells it reads; otherwise the child probes and
+	 * fails with -ENOENT on every boot (all MT6797 boards so far).
+	 */
+	if (of_get_child_by_name(dev->of_node, "socinfo-data1")) {
+		socinfo = platform_device_register_data(&pdev->dev, "mtk-socinfo",
+							PLATFORM_DEVID_AUTO, NULL, 0);
+		if (IS_ERR(socinfo))
+			dev_info(dev, "MediaTek SoC Information will be unavailable\n");
+	} else {
+		socinfo = NULL;
+	}
 
 	platform_set_drvdata(pdev, socinfo);
 	return 0;
