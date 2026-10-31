@@ -184,3 +184,6 @@ sphinx_*/
 # Rust analyzer configuration
 /rust-project.json
 extra-firmware/
+
+# workspace convenience symlink (README: ln -sfn ../out mainline/out)
+/out
