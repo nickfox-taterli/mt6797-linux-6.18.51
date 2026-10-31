@@ -75,12 +75,6 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 
-#if defined(CONFIG_MTK_CLKMGR)
-#include <mach/mt_clkmgr.h>
-#else
-#include <linux/clk.h>
-#endif /* defined(CONFIG_MTK_CLKMGR) */
-
 #include "hif.h"
 #include "hif_pdma.h"
 #include "gl_os.h"
@@ -101,10 +95,6 @@
 #else
 #define PDMA_DBG(_fmt, ...)
 #endif /* PDMA_DEBUG_SUP */
-
-#if !defined(CONFIG_MTK_CLKMGR)
-struct clk *g_clk_wifi_pdma;
-#endif
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -137,7 +127,6 @@ static MTK_WCN_BOOL HifPdmaPollIntr(IN void *HifInfoSrc);
 
 static VOID HifPdmaAckIntr(IN void *HifInfoSrc);
 
-static VOID HifPdmaClockCtrl(IN UINT_32 FlgIsEnabled);
 
 static VOID HifPdmaRegDump(IN void *HifInfoSrc);
 
@@ -159,7 +148,6 @@ GL_HIF_DMA_OPS_T HifPdmaOps = {
 	.DmaPollStart = HifPdmaPollStart,
 	.DmaPollIntr = HifPdmaPollIntr,
 	.DmaAckIntr = HifPdmaAckIntr,
-	.DmaClockCtrl = HifPdmaClockCtrl,
 	.DmaRegDump = HifPdmaRegDump,
 	.DmaReset = HifPdmaReset
 };
@@ -199,10 +187,6 @@ VOID HifPdmaInit(GL_HIF_INFO_T *HifInfo)
 				      12,
 				      SET_ACCESS_PERMISSON(FORBIDDEN, FORBIDDEN, FORBIDDEN, FORBIDDEN, FORBIDDEN,
 							   NO_PROTECTION, FORBIDDEN, FORBIDDEN));
-#endif
-
-#if !defined(CONFIG_MTK_CLKMGR)
-	g_clk_wifi_pdma = HifInfo->clk_wifi_dma;
 #endif
 
 	PDMA_DBG("PDMA> HifPdmaInit ok!\n");
@@ -394,28 +378,6 @@ static VOID HifPdmaAckIntr(IN void *HifInfoSrc)
 * \retval NONE
 */
 /*----------------------------------------------------------------------------*/
-static VOID HifPdmaClockCtrl(IN UINT_32 FlgIsEnabled)
-{
-#if !defined(CONFIG_MTK_CLKMGR)
-	int ret = 0;
-#endif
-
-#if defined(CONFIG_MTK_CLKMGR)
-	if (FlgIsEnabled == TRUE)
-		enable_clock(MT_CG_PERI_APDMA, "WLAN");
-	else
-		disable_clock(MT_CG_PERI_APDMA, "WLAN");
-#else
-	if (FlgIsEnabled == TRUE) {
-		ret = clk_prepare_enable(g_clk_wifi_pdma);
-		if (ret)
-			DBGLOG(INIT, TRACE, "[CCF]clk_prepare_enable ret= %d\n", ret);
-	} else {
-		clk_disable_unprepare(g_clk_wifi_pdma);
-	}
-#endif
-}
-
 /*----------------------------------------------------------------------------*/
 /*!
 * \Dump PDMA related registers when there is abnormal, such as DMA timeout.

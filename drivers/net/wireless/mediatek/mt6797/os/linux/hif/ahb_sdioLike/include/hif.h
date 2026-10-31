@@ -163,7 +163,6 @@ typedef struct _GL_HIF_DMA_OPS_T {	/* DMA Operators */
 
 	VOID (*DmaAckIntr)(IN VOID *HifInfo);
 
-	VOID (*DmaClockCtrl)(IN UINT_32 FlgIsEnabled);
 
 	VOID (*DmaRegDump)(IN VOID *HifInfo);
 
@@ -218,10 +217,8 @@ typedef struct _GL_HIF_INFO_T {
 
 	UINT_8 *DmaRegBaseAddr;	/* DMA register base */
 	GL_HIF_DMA_OPS_T *DmaOps;	/* DMA Operators */
-
-#if !defined(CONFIG_MTK_CLKMGR)
-	struct clk *clk_wifi_dma;
-#endif
+	/* The AP-DMA clock belongs to the mt6797-wlan-hif provider, which
+	 * gates it around claim/release; this structure never carried one. */
 } GL_HIF_INFO_T, *P_GL_HIF_INFO_T;
 
 #define HIF_MOD_NAME                "AHB_SLAVE_HIF"
