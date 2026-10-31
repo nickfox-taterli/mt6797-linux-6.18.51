@@ -12,7 +12,6 @@
 #include <linux/mt6797-stp-session.h>
 #include <linux/mt6797-wmt.h>
 
-#define MT6797_WMT_TIMEOUT_MS	2000
 #define MT6797_WMT_RESET_TIMEOUT_MS	5000
 #define MT6797_WMT_RESPONSE_MAX	32
 #define MT6797_WMT_GEN_HVR		0x80000000

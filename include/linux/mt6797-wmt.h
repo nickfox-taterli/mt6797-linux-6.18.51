@@ -27,6 +27,9 @@ int mt6797_wmt_wifi_emi_write(struct mt6797_wmt_client *client, u32 offset,
 int mt6797_wmt_client_version(struct mt6797_wmt_client *client, u32 *hw, u32 *fw);
 int mt6797_wmt_client_cpupcr(struct mt6797_wmt_client *client, u32 *value);
 
+/* Timeout for WMT command exchanges during the boot/patch sequence. */
+#define MT6797_WMT_TIMEOUT_MS		2000
+
 #define MT6797_WMT_CALIBRATION_MAX 2044
 
 struct mt6797_wmt_calibration {
