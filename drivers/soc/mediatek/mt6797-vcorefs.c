@@ -23,7 +23,6 @@
 
 #include "mt6797-spm-regs.h"
 
-#define SPM_KEY			0x0b160000
 #define SPM_WAIT_US		10000
 #define SPM_RESET_STATE		0x48490
 #define PCM_COMMON		BIT(10)
@@ -607,40 +606,42 @@ static void put_provider(void *data)
 	put_device(data);
 }
 
-static int vcorefs_probe(struct platform_device *pdev)
+/* Probe step 1: clocks.  devm_clk_get() may report -EPROBE_DEFER while the
+ * clock providers load; that code must reach the driver core unchanged. */
+static int vcorefs_probe_clocks(struct device *dev, struct mt6797_vcorefs *s)
 {
-	struct device *dev = &pdev->dev;
-	struct mt6797_vcorefs *s;
-	struct device_node *np;
-	struct resource res;
-	struct resource *pwrap_res;
-	struct platform_device *wrapper;
-	struct platform_device *dcm;
-	struct regmap *infra;
 	struct clk_bulk_data *clocks;
-	void __iomem *chip;
-	u32 mapping, revision;
-	unsigned int i;
 	int ret;
 
-	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
-	if (!s)
-		return -ENOMEM;
-	s->dev = dev;
-	mutex_init(&s->lock);
 	ret = devm_clk_bulk_get_all_enabled(dev, &clocks);
 	if (ret < 0)
 		return ret;
 	if (ret != 8)
 		return -EINVAL;
 	s->axi = devm_clk_get(dev, "axi");
+	if (IS_ERR(s->axi))
+		return PTR_ERR(s->axi);
 	s->axi_high = devm_clk_get(dev, "axi-high");
+	if (IS_ERR(s->axi_high))
+		return PTR_ERR(s->axi_high);
 	s->axi_low = devm_clk_get(dev, "axi-low");
-	if (IS_ERR(s->axi) || IS_ERR(s->axi_high) || IS_ERR(s->axi_low))
-		return -EINVAL;
+	if (IS_ERR(s->axi_low))
+		return PTR_ERR(s->axi_low);
 	if (clk_get_rate(s->axi_low) <= 26000000 ||
 	    clk_get_rate(s->axi_low) > clk_get_rate(s->axi_high))
-		return dev_err_probe(dev, -EINVAL, "unresolved AXI clock parents\n");
+		return dev_err_probe(dev, -EINVAL,
+				     "unresolved AXI clock parents\n");
+	return 0;
+}
+
+/* Probe step 2: the DCM provider this driver serializes memory transitions
+ * with.  A missing or unbound provider defers the probe. */
+static int vcorefs_probe_dcm(struct device *dev, struct mt6797_vcorefs *s)
+{
+	struct platform_device *dcm;
+	struct device_node *np;
+	int ret;
+
 	np = of_parse_phandle(dev->of_node, "mediatek,dcm", 0);
 	if (!np)
 		return -EINVAL;
@@ -656,13 +657,28 @@ static int vcorefs_probe(struct platform_device *pdev)
 	s->dcm = &dcm->dev;
 	if (!device_link_add(dev, s->dcm, DL_FLAG_AUTOREMOVE_CONSUMER))
 		return -ENOMEM;
-	infra = syscon_regmap_lookup_by_phandle(dev->of_node, "mediatek,infracfg");
+	return 0;
+}
+
+/* Probe step 3: infracfg mapping flag and the chip revision that selects
+ * the PCM flag set. */
+static int vcorefs_probe_chip(struct device *dev, struct mt6797_vcorefs *s,
+			      u32 *mapping)
+{
+	struct regmap *infra;
+	void __iomem *chip;
+	u32 revision;
+	int ret;
+
+	infra = syscon_regmap_lookup_by_phandle(dev->of_node,
+						"mediatek,infracfg");
 	if (IS_ERR(infra))
 		return PTR_ERR(infra);
-	ret = regmap_read(infra, 0xf00, &mapping);
+	ret = regmap_read(infra, 0xf00, mapping);
 	if (ret)
 		return ret;
-	chip = devm_platform_ioremap_resource_byname(pdev, "chip-version");
+	chip = devm_platform_ioremap_resource_byname(to_platform_device(dev),
+						     "chip-version");
 	if (IS_ERR(chip))
 		return PTR_ERR(chip);
 	revision = readl(chip);
@@ -670,6 +686,19 @@ static int vcorefs_probe(struct platform_device *pdev)
 		return -ENODEV;
 	s->pcm_flags = PCM_COMMON |
 		(revision == 0xca01 ? BIT(18) : 0);
+	return 0;
+}
+
+/* Probe step 4: the PMIC wrapper provider giving this driver its DVFS
+ * regmap.  The wrapper device reference and the device link are released
+ * through devm actions on any later probe failure. */
+static int vcorefs_probe_pmic_wrapper(struct device *dev,
+				      struct mt6797_vcorefs *s)
+{
+	struct platform_device *wrapper;
+	struct device_node *np;
+	int ret;
+
 	np = of_parse_phandle(dev->of_node, "mediatek,pmic-wrapper", 0);
 	if (!np)
 		return -EINVAL;
@@ -685,34 +714,68 @@ static int vcorefs_probe(struct platform_device *pdev)
 		return -EPROBE_DEFER;
 	if (!device_link_add(dev, &wrapper->dev, DL_FLAG_AUTOREMOVE_CONSUMER))
 		return -ENOMEM;
-	np = of_parse_phandle(dev->of_node, "mediatek,spm", 0);
+	return 0;
+}
+
+/* Probe step 5: all MMIO windows — the SPM register file (via of_iomap,
+ * unmapped through a devm action) and the devm-mapped dramc/ddrphy/SPM
+ * banks plus the PWRAP DVFS command window. */
+static int vcorefs_probe_spm(struct platform_device *pdev,
+			     struct mt6797_vcorefs *s)
+{
+	struct resource *pwrap_res;
+	struct device_node *np;
+	struct resource res;
+	int ret;
+
+	np = of_parse_phandle(pdev->dev.of_node, "mediatek,spm", 0);
 	if (!np)
 		return -EINVAL;
 	s->spm = of_iomap(np, 0);
 	of_node_put(np);
 	if (!s->spm)
 		return -ENOMEM;
-	ret = devm_add_action_or_reset(dev, unmap_spm, s->spm);
+	ret = devm_add_action_or_reset(&pdev->dev, unmap_spm, s->spm);
 	if (ret)
 		return ret;
 	s->dram = devm_platform_ioremap_resource_byname(pdev, "dramc");
+	if (IS_ERR(s->dram))
+		return PTR_ERR(s->dram);
 	s->phy = devm_platform_ioremap_resource_byname(pdev, "ddrphy");
+	if (IS_ERR(s->phy))
+		return PTR_ERR(s->phy);
 	s->cpu_spm = devm_platform_ioremap_resource_byname(pdev, "cpu-spm");
+	if (IS_ERR(s->cpu_spm))
+		return PTR_ERR(s->cpu_spm);
 	s->big_spm = devm_platform_ioremap_resource_byname(pdev, "big-spm");
-	if (IS_ERR(s->cpu_spm) || IS_ERR(s->big_spm))
-		return -ENODEV;
+	if (IS_ERR(s->big_spm))
+		return PTR_ERR(s->big_spm);
 	/* PWRAP DVFS command bank is disjoint from its driver's WACS accesses. */
-	pwrap_res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "pwrap-dvfs");
+	pwrap_res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						 "pwrap-dvfs");
 	if (!pwrap_res || pwrap_res->start < 0x10c)
 		return -EINVAL;
 	res = *pwrap_res;
-	s->pwrap = devm_ioremap(dev, res.start - 0x10c, 0x200);
-	if (IS_ERR(s->dram) || IS_ERR(s->phy) || !s->pwrap)
-		return -ENODEV;
+	s->pwrap = devm_ioremap(&pdev->dev, res.start - 0x10c, 0x200);
+	if (!s->pwrap)
+		return -ENOMEM;
+	return 0;
+}
+
+/* Probe step 6: validate the DRAM profile, reserve the PCM scratch region,
+ * and load the SPM firmware image into its DMA buffer. */
+static int vcorefs_probe_firmware(struct platform_device *pdev,
+				  struct mt6797_vcorefs *s, u32 mapping)
+{
+	struct resource res;
+	struct device_node *np;
+	int ret;
+
 	/* This firmware/profile is for the board's LPDDR3-1600 configuration. */
 	if (dram_data_rate(s, true) != 1560 && dram_data_rate(s, true) != 1586)
-		return dev_err_probe(dev, -ENODEV, "unsupported DRAM PLL profile\n");
-	np = of_parse_phandle(dev->of_node, "memory-region", 0);
+		return dev_err_probe(&pdev->dev, -ENODEV,
+				     "unsupported DRAM PLL profile\n");
+	np = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
 	ret = np ? of_address_to_resource(np, 0, &res) : -EINVAL;
 	of_node_put(np);
 	if (ret || resource_size(&res) < PAGE_SIZE || upper_32_bits(res.start))
@@ -722,12 +785,12 @@ static int vcorefs_probe(struct platform_device *pdev)
 	if (s->initial_opp >= ARRAY_SIZE(dram_rates))
 		return -EINVAL;
 	s->current_opp = s->initial_opp;
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 	if (ret)
 		return ret;
 	ret = load_firmware(s);
 	if (ret)
-		return dev_err_probe(dev, ret, "SPM firmware rejected\n");
+		return dev_err_probe(&pdev->dev, ret, "SPM firmware rejected\n");
 	s->pcm_address = lower_32_bits(s->code_dma);
 	s->mapping_4g = mapping & BIT(13);
 	/* BSP enable_4G()/MAPPING_DRAM_ACCESS_ADDR(), SPM's bus address. */
@@ -737,16 +800,29 @@ static int vcorefs_probe(struct platform_device *pdev)
 		if (s->dummy_address >= 0x40000000 && s->dummy_address < 0xc0000000)
 			s->dummy_address += 0x40000000;
 	}
+	return 0;
+}
+
+/* Probe step 7: dynamic OPP table and the devfreq device.  On any failure
+ * the dynamically added OPPs are removed again. */
+static int vcorefs_probe_devfreq(struct platform_device *pdev,
+				 struct mt6797_vcorefs *s)
+{
+	unsigned int i;
+	int ret;
+
 	platform_set_drvdata(pdev, s);
 	for (i = 0; i < ARRAY_SIZE(dram_rates); i++) {
-		ret = dev_pm_opp_add(dev, dram_rates[i], i ? 900000 : 1000000);
+		ret = dev_pm_opp_add(&pdev->dev, dram_rates[i],
+				     i ? 900000 : 1000000);
 		if (ret)
 			goto remove_opps;
 	}
 	s->profile.initial_freq = dram_rates[s->initial_opp];
 	s->profile.target = vcorefs_target;
 	s->profile.get_cur_freq = vcorefs_get_cur_freq;
-	s->devfreq = devm_devfreq_add_device(dev, &s->profile, "userspace", NULL);
+	s->devfreq = devm_devfreq_add_device(&pdev->dev, &s->profile,
+					     "userspace", NULL);
 	if (IS_ERR(s->devfreq)) {
 		ret = PTR_ERR(s->devfreq);
 		goto remove_opps;
@@ -754,12 +830,46 @@ static int vcorefs_probe(struct platform_device *pdev)
 	/* initial_opp is read from the physical PHY, so this line records the
 	 * shuffle and data rate the boot chain (SPL training ends on shuffle 1)
 	 * actually handed over, before any userspace request. */
-	dev_info(dev, "%s; shuffle=%u ddr=%u MT/s, CPU voltages retained\n",
+	dev_info(&pdev->dev,
+		 "%s; shuffle=%u ddr=%u MT/s, CPU voltages retained\n",
 		 s->version, s->initial_opp, dram_data_rate(s, false));
 	return 0;
 remove_opps:
-	dev_pm_opp_remove_all_dynamic(dev);
+	dev_pm_opp_remove_all_dynamic(&pdev->dev);
 	return ret;
+}
+
+static int vcorefs_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct mt6797_vcorefs *s;
+	u32 mapping;
+	int ret;
+
+	s = devm_kzalloc(dev, sizeof(*s), GFP_KERNEL);
+	if (!s)
+		return -ENOMEM;
+	s->dev = dev;
+	mutex_init(&s->lock);
+	ret = vcorefs_probe_clocks(dev, s);
+	if (ret)
+		return ret;
+	ret = vcorefs_probe_dcm(dev, s);
+	if (ret)
+		return ret;
+	ret = vcorefs_probe_chip(dev, s, &mapping);
+	if (ret)
+		return ret;
+	ret = vcorefs_probe_pmic_wrapper(dev, s);
+	if (ret)
+		return ret;
+	ret = vcorefs_probe_spm(pdev, s);
+	if (ret)
+		return ret;
+	ret = vcorefs_probe_firmware(pdev, s, mapping);
+	if (ret)
+		return ret;
+	return vcorefs_probe_devfreq(pdev, s);
 }
 
 static void vcorefs_remove(struct platform_device *pdev)

@@ -28,7 +28,6 @@
 
 #include "mt6797-spm-regs.h"
 
-#define KEY 0x0b160000
 #define RESET_STATE 0x48490
 #define WAIT_US 10000
 /* CPU/DDRPHY/INFRA powerdown requested. Keep manual VCORE/VPROC policy,
@@ -101,7 +100,7 @@ static int pcm_wdt_disarm(void)
 
 	s.wdt_con1 = rd(PCM_CON1);
 	s.wdt_ticks = rd(PCM_WDT_OUT);
-	wr(PCM_CON1, KEY | (s.wdt_con1 & ~PCM_WDT_EN));
+	wr(PCM_CON1, SPM_KEY | (s.wdt_con1 & ~PCM_WDT_EN));
 	if (rd(PCM_CON1) & PCM_WDT_EN)
 		return -EIO;
 	s.wdt_armed = false;
@@ -116,7 +115,7 @@ static int pcm_wdt_arm(void)
 	if (s.wdt_armed || s.wdt_request_owned)
 		return -EBUSY;
 	con1 = rd(PCM_CON1) & ~(PCM_WDT_EN | PCM_WDT_WAKE_MODE);
-	wr(PCM_CON1, KEY | con1);
+	wr(PCM_CON1, SPM_KEY | con1);
 	if (rd(PCM_CON1) & (PCM_WDT_EN | PCM_WDT_WAKE_MODE))
 		return -EIO;
 	timer = rd(PCM_TIMER_VAL);
@@ -126,7 +125,7 @@ static int pcm_wdt_arm(void)
 	}
 	value = timer + PCM_WDT_TIMEOUT;
 	wr(PCM_WDT_VAL, value);
-	wr(PCM_CON1, KEY | con1 | PCM_WDT_EN);
+	wr(PCM_CON1, SPM_KEY | con1 | PCM_WDT_EN);
 	s.wdt_armed = true;
 	s.wdt_value = value;
 	s.wdt_ticks = rd(PCM_WDT_OUT);
@@ -163,12 +162,12 @@ static int stop_pcm(void)
 	/* Retain the current R0 memory controls, then stop instruction fetch. */
 	wr(SPM_POWER_ON_VAL0, rd(PCM_REG0_DATA));
 	wr(PCM_PWR_IO_EN, 0);
-	wr(PCM_CON1, KEY | (rd(PCM_CON1) & ~BIT(5)));
-	wr(PCM_CON0, KEY | BIT(2) | BIT(15));
+	wr(PCM_CON1, SPM_KEY | (rd(PCM_CON1) & ~BIT(5)));
+	wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(15));
 	ret = wait(PCM_FSM_STA, 0x7fffff, RESET_STATE);
 	if (ret)
 		return ret;
-	wr(PCM_CON0, KEY | BIT(2));
+	wr(PCM_CON0, SPM_KEY | BIT(2));
 	wr(SPM_CPU_WAKEUP_EVENT, 0);
 	wr(SPM_IRQ_STA, BIT(3));
 	wr(SPM_SW_INT_CLEAR, GENMASK(9, 0));
@@ -197,8 +196,8 @@ static void restore(void)
 		wr(PCM_EVENT_VECTOR0 + i * 4, s.vector_saved[i]);
 	wr(PCM_IM_PTR, s.ptr);
 	wr(PCM_IM_LEN, s.len);
-	wr(PCM_CON0, KEY | (s.con0 & 0xffff));
-	wr(PCM_CON1, KEY | (s.con1 & 0xffff));
+	wr(PCM_CON0, SPM_KEY | (s.con0 & 0xffff));
+	wr(PCM_CON1, SPM_KEY | (s.con1 & 0xffff));
 	s.prepared = false;
 }
 static int prepare(void)
@@ -226,17 +225,17 @@ static int prepare(void)
 	s.con1 = rd(PCM_CON1);
 	s.prepared = true;
 	s.safe = true;
-	wr(POWERON_CONFIG_EN, KEY | 1);
+	wr(POWERON_CONFIG_EN, SPM_KEY | 1);
 	wr(SPM_POWER_ON_VAL1, 0x15820);
 	wr(PCM_PWR_IO_EN, 0);
-	wr(PCM_CON0, KEY | BIT(2) | BIT(15));
+	wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(15));
 	ret = wait(PCM_FSM_STA, 0x7fffff, RESET_STATE);
 	if (ret)
 		goto failed;
 	s.safe = false;
-	wr(PCM_CON0, KEY | BIT(2) | BIT(3));
+	wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(3));
 	wr(PCM_CON1,
-	   KEY | BIT(12) | BIT(11) | BIT(10) | BIT(6) | BIT(3) | BIT(14));
+	   SPM_KEY | BIT(12) | BIT(11) | BIT(10) | BIT(6) | BIT(3) | BIT(14));
 	/* Keep the manual rail policy even if a firmware command executes.
 	 * Indices follow BSP SUSPEND; VCORE and VSRAM selectors stay at baseline.
 	 */
@@ -269,8 +268,8 @@ static int prepare(void)
 	dma_wmb();
 	wr(PCM_IM_PTR, s.pcm_address);
 	wr(PCM_IM_LEN, s.words - 1);
-	wr(PCM_CON0, KEY | BIT(2) | BIT(3) | BIT(1));
-	wr(PCM_CON0, KEY | BIT(2) | BIT(3));
+	wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(3) | BIT(1));
+	wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(3));
 	wr(PCM_REG_DATA_INI, rd(SPM_POWER_ON_VAL0));
 	wr(PCM_PWR_IO_EN, BIT(16));
 	wr(PCM_PWR_IO_EN, 0);
@@ -293,7 +292,7 @@ static int prepare(void)
 	wr(SPM_CLK_CON, value);
 	wr(0x010, 99);
 	wr(PCM_TIMER_VAL, DIV_ROUND_UP((u64)s.cycle_wake_ms * 32768, 1000));
-	wr(PCM_CON1, KEY | (rd(PCM_CON1) & ~BIT(5)) |
+	wr(PCM_CON1, SPM_KEY | (rd(PCM_CON1) & ~BIT(5)) |
 	   (s.cycle_wake_ms ? BIT(5) : 0));
 	/* PCM timer, AP watchdog, keypad, EINT and USB; no modem dependency. */
 	wr(SPM_WAKEUP_EVENT_MASK,
@@ -500,8 +499,8 @@ static int sleep_enter(suspend_state_t state)
 		wr(PCM_PWR_IO_EN, BIT(0) | BIT(7));
 		s.active = true;
 		s.safe = false;
-		wr(PCM_CON0, KEY | BIT(2) | BIT(3) | BIT(0));
-		wr(PCM_CON0, KEY | BIT(2) | BIT(3));
+		wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(3) | BIT(0));
+		wr(PCM_CON0, SPM_KEY | BIT(2) | BIT(3));
 		ret = cpu_pm_enter();
 		if (!ret) {
 			ret = psci_cpu_suspend_enter(MT6797_SLEEP_STATE);

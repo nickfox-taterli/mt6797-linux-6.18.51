@@ -7,6 +7,9 @@
 #define _MT6797_SPM_REGS_H
 
 #define POWERON_CONFIG_EN	0x000
+/* SPM PCM access key, written with the register address in POWERON_CONFIG_EN
+ * (BSP spm_v2 SPM_KEY); shared by the vcorefs and spm-suspend drivers. */
+#define SPM_KEY			0x0b160000
 #define SPM_POWER_ON_VAL0	0x004
 #define SPM_POWER_ON_VAL1	0x008
 #define SPM_CLK_CON	0x00C
