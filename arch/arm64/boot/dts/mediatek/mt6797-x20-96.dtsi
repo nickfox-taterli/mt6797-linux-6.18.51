@@ -227,6 +227,11 @@
 		};
 	};
 
+	rtc {
+		compatible = "mediatek,mt6351-rtc";
+		mediatek,pwrap = <&pwrap>;
+	};
+
 	fastboot-reboot {
 		compatible = "mediatek,mt6797-fastboot";
 		mediatek,pwrap = <&pwrap>;
@@ -426,13 +431,20 @@
 };
 
 &mmc1 {
-	/* Validated UHS-I path; the Loader still boots eMMC/MSDC0 only. */
+	/* SDR104 uses the 192 MHz parent; U-Boot starts from eMMC/MSDC0. */
 	bus-width = <4>;
-	max-frequency = <104000000>;
+	max-frequency = <200000000>;
 	cap-sd-highspeed;
+	sd-uhs-sdr12;
+	sd-uhs-sdr25;
+	sd-uhs-sdr50;
 	sd-uhs-sdr104;
-	/* This X20-96 board reports card insertion high on GPIO67. */
-	cd-gpios = <&pio 67 GPIO_ACTIVE_HIGH>;
+	/* EINT filtering is level-only; MMC provides its software debounce. */
+	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
+	cd-debounce-delay-ms = <0>;
+	no-sdio;
+	no-mmc;
+	disable-wp;
 	vmmc-supply = <&mt6351_vmch>;
 	vqmmc-supply = <&mt6351_vmc>;
 	pinctrl-names = "default", "state_uhs";
@@ -449,7 +461,6 @@
 			regulator-name = "vmch";
 			regulator-min-microvolt = <3300000>;
 			regulator-max-microvolt = <3300000>;
-			regulator-always-on;
 			regulator-boot-on;
 		};
 
@@ -604,8 +615,8 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <14>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <3>;
 		};
 
@@ -617,8 +628,8 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <14>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <3>;
 		};
 
@@ -627,14 +638,15 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <14>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <0>;
 		};
 
 		pins-cd {
-			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			pinmux = <MT6797_GPIO67__FUNC_EINT6>;
 			input-enable;
+			input-schmitt-enable;
 			bias-pull-up;
 		};
 	};
@@ -645,8 +657,8 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <8>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <0>;
 		};
 
@@ -658,8 +670,8 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-up = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <8>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <0>;
 		};
 
@@ -668,14 +680,15 @@
 			input-enable;
 			input-schmitt-enable;
 			bias-pull-down = <MTK_PUPD_SET_R1R0_10>;
-			drive-strength = <4>;
-			mediatek,tdsel = <10>;
+			drive-strength = <10>;
+			mediatek,tdsel = <12>;
 			mediatek,rdsel = <0>;
 		};
 
 		pins-cd {
-			pinmux = <MT6797_GPIO67__FUNC_GPIO67>;
+			pinmux = <MT6797_GPIO67__FUNC_EINT6>;
 			input-enable;
+			input-schmitt-enable;
 			bias-pull-up;
 		};
 	};
@@ -792,60 +805,6 @@
 	cap-mmc-hw-reset;
 };
 
-&mmc1 {
-	/* GPIO67 follows its bias with and without a card on this board.
-	 * Poll the removable SD card until a working detection signal is known.
-	 */
-	/delete-property/ cd-gpios;
-	broken-cd;
-	no-sdio;
-	no-mmc;
-	disable-wp;
-
-	/* BSP SDR104 target; the 384 MHz parent yields 192 MHz actual. */
-	max-frequency = <200000000>;
-	sd-uhs-sdr12;
-	sd-uhs-sdr25;
-	sd-uhs-sdr50;
-};
-
-&mt6351_vmch {
-	/delete-property/ regulator-always-on;
-};
-
-/* Board BSP drive encodings 6/3/4 correspond to 14/8/10 mA. */
-&mmc1_pins_default {
-	/delete-node/ pins-cd;
-	pins-cmd {
-		drive-strength = <14>;
-		mediatek,tdsel = <12>;
-	};
-	pins-dat {
-		drive-strength = <14>;
-		mediatek,tdsel = <12>;
-	};
-	pins-clk {
-		drive-strength = <14>;
-		mediatek,tdsel = <12>;
-	};
-};
-
-&mmc1_pins_uhs {
-	/delete-node/ pins-cd;
-	pins-cmd {
-		drive-strength = <8>;
-		mediatek,tdsel = <12>;
-	};
-	pins-dat {
-		drive-strength = <8>;
-		mediatek,tdsel = <12>;
-	};
-	pins-clk {
-		drive-strength = <10>;
-		mediatek,tdsel = <12>;
-	};
-};
-
 /* ========== legacy STM32 GPIO/EINT candidate pins ========== */
 
 /* STM32 GPIO/EINT candidate; not the installed canonical storage input. */
@@ -936,36 +895,6 @@
 			bias-disable;
 		};
 	};
-};
-
-/* ========== TF card-detect EINT ========== */
-
-/* Use the validated physical card-detect EINT with standard MMC debounce. */
-
-
-&mmc1_pins_default {
-	pins-cd {
-		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
-		input-enable;
-		input-schmitt-enable;
-		bias-pull-up;
-	};
-};
-
-&mmc1_pins_uhs {
-	pins-cd {
-		pinmux = <MT6797_GPIO67__FUNC_EINT6>;
-		input-enable;
-		input-schmitt-enable;
-		bias-pull-up;
-	};
-};
-
-&mmc1 {
-	/delete-property/ broken-cd;
-	cd-gpios = <&pio 67 GPIO_ACTIVE_LOW>;
-	/* EINT hardware filtering is level-only; keep MMC's 200 ms software filter. */
-	cd-debounce-delay-ms = <0>;
 };
 
 /* ========== I2C5 bus ========== */

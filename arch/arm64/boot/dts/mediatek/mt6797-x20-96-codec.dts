@@ -55,5 +55,7 @@
 		interrupts = <GIC_SPI 126 IRQ_TYPE_LEVEL_LOW>;
 		clocks = <&infrasys CLK_INFRA_SSUSB_SYS>, <&clk26m>;
 		clock-names = "sys_ck", "ref_ck";
+		vbus-supply = <&usb_host_vbus>;
+		vusb33-supply = <&mt6351_vusb33>;
 	};
 };
