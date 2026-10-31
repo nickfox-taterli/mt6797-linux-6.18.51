@@ -72,8 +72,20 @@ examples:
   - |
     #include <dt-bindings/clock/mt6797-clk.h>
 
+    // The infracfg reference points at the syscon clock-controller node
+    // (see mediatek,infracfg.yaml); the scpsys reg stays single-region.
+    infrasys: clock-controller@10001000 {
+        compatible = "mediatek,mt6797-infracfg", "syscon";
+        reg = <0 0x10001000 0 0x1000>;
+        #clock-cells = <1>;
+    };
+
     scpsys: power-controller@10006000 {
         compatible = "mediatek,mt6797-scpsys";
+        // The generated example wraps nodes at #address-cells=<1>; declare
+        // the 2/4-cell format inside, or the reg below parses as two regions.
+        #address-cells = <2>;
+        #size-cells = <2>;
         reg = <0 0x10006000 0 0x1000>;
         infracfg = <&infrasys>;
         #power-domain-cells = <1>;

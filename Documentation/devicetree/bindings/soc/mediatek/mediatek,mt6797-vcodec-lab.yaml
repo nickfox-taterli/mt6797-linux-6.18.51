@@ -3,6 +3,7 @@
 ---
 $id: http://devicetree.org/schemas/soc/mediatek/mediatek,mt6797-vcodec-lab.yaml#
 $title: MediaTek MT6797 codec lab diagnostic blocks
+$schema: http://devicetree.org/dtschema/draft-01/schema#
 
 maintainers:
   - X20-96 board port
@@ -56,6 +57,10 @@ examples:
   - |
     video-encoder@17002000 {
         compatible = "mediatek,mt6797-venc-lab";
+        // Declare the cell format: the wrapper defaults to 1/1 and would
+        // otherwise parse this reg as two regions.
+        #address-cells = <2>;
+        #size-cells = <2>;
         reg = <0 0x17002000 0 0x1000>;
         interrupts = <0 235 8>;
         clocks = <&mmsys 0>, <&vencsys 1>, <&vencsys 2>;
