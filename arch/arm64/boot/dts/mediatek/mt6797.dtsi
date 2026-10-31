@@ -324,10 +324,9 @@
 		      <0 0x10007000 0 0x100>,   /* AP_RGU (TOPRGU) */
 		      <0 0x10000000 0 0x2000>,  /* TOPCKGEN */
 		      <0 0x10006000 0 0x1000>;  /* SPM */
-		vcn18-supply = <&mt6351_vcn18>;
-		vcn28-supply = <&mt6351_vcn28>;
-		vcn33-bt-supply = <&mt6351_vcn33_bt>;
-		vcn33-wifi-supply = <&mt6351_vcn33_wifi>;
+		/* The VCN18/VCN28/VCN33 rails come from the board PMIC and are
+		 * wired in the board dts; referencing MT6351 phandles here
+		 * would break boards without that PMIC. */
 		status = "disabled";
 	};
 

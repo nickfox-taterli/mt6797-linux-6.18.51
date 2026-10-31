@@ -503,8 +503,13 @@
 	};
 };
 
-/* Wi-Fi/BT/GPS connectivity subsystem; driver is an opt-in module. */
+/* Wi-Fi/BT/GPS connectivity subsystem; driver is an opt-in module.  The
+ * VCN rails come from the board PMIC (mt6351 regulator nodes). */
 &consys {
+	vcn18-supply = <&mt6351_vcn18>;
+	vcn28-supply = <&mt6351_vcn28>;
+	vcn33-bt-supply = <&mt6351_vcn33_bt>;
+	vcn33-wifi-supply = <&mt6351_vcn33_wifi>;
 	status = "okay";
 };
 
