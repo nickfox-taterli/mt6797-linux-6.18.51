@@ -887,32 +887,55 @@ static int mt6797_pl_reason_str(char *buf, size_t size, u32 reason)
 	return len;
 }
 
-static void mtk_wdt_read_boot_reason(struct mtk_wdt_dev *mtk_wdt,
-				     const struct mtk_wdt_data *wdt_data)
+/* A record offset must land on a whole word, after the console header, and
+ * still leave room for the reason word itself. */
+static bool mt6797_ram_console_offset_valid(u32 offset, u32 size)
 {
-	void __iomem *sram = ioremap(wdt_data->ram_console_phys,
-				      wdt_data->ram_console_size);
-	u32 sig, off_pl, off_lpl, sz_pl, size = wdt_data->ram_console_size;
+	return !(offset & 3) && offset >= MT6797_RAM_CONSOLE_HDR_SIZE &&
+	       offset <= size - sizeof(u32);
+}
 
-	if (!sram)
-		return;
+/* Read the preloader's decoded reboot-reason records from the SRAM ram
+ * console.  Returns false when the header signature, the record size or
+ * either record offset does not match the layout the preloader writes
+ * (preloader ram_console.c); the caller then reports the reason as
+ * unavailable.  The reason words are decoded by the preloader, not raw
+ * TOPRGU status. */
+static bool mt6797_ram_console_read_reasons(void __iomem *sram, u32 size,
+					   u32 *pl_reason, u32 *prev_reason)
+{
+	u32 sig, off_pl, off_lpl, sz_pl;
 
 	sig = readl(sram);
 	off_pl = readl(sram + 4);
 	off_lpl = readl(sram + 8);
 	sz_pl = readl(sram + 12);
 
-	/* Same bounds discipline as the validated diagnostic: aligned offsets
-	 * inside the console, and a record that starts with the reason word.
-	 */
-	if (sig == MT6797_RAM_CONSOLE_SIG && sz_pl >= sizeof(u32) &&
-	    !(off_pl & 3) && off_pl >= MT6797_RAM_CONSOLE_HDR_SIZE &&
-	    off_pl <= size - sizeof(u32) &&
-	    !(off_lpl & 3) && off_lpl >= MT6797_RAM_CONSOLE_HDR_SIZE &&
-	    off_lpl <= size - sizeof(u32)) {
+	if (sig != MT6797_RAM_CONSOLE_SIG || sz_pl < sizeof(u32) ||
+	    !mt6797_ram_console_offset_valid(off_pl, size) ||
+	    !mt6797_ram_console_offset_valid(off_lpl, size))
+		return false;
+
+	*pl_reason = readl(sram + off_pl);
+	*prev_reason = readl(sram + off_lpl);
+	return true;
+}
+
+static void mtk_wdt_read_boot_reason(struct mtk_wdt_dev *mtk_wdt,
+				     const struct mtk_wdt_data *wdt_data)
+{
+	void __iomem *sram = ioremap(wdt_data->ram_console_phys,
+				      wdt_data->ram_console_size);
+	u32 pl_reason, prev_reason;
+
+	if (!sram)
+		return;
+
+	if (mt6797_ram_console_read_reasons(sram, wdt_data->ram_console_size,
+					   &pl_reason, &prev_reason)) {
 		mtk_wdt->ram_console = true;
-		mtk_wdt->pl_reason = readl(sram + off_pl);
-		mtk_wdt->prev_pl_reason = readl(sram + off_lpl);
+		mtk_wdt->pl_reason = pl_reason;
+		mtk_wdt->prev_pl_reason = prev_reason;
 	}
 	iounmap(sram);
 }
