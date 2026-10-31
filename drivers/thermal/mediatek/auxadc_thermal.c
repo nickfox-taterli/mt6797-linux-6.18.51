@@ -390,6 +390,18 @@ struct mtk_thermal {
 	bool tc_trace_previous_valid;
 	bool tc_trace_failure_valid;
 	bool tc_trace_hot_latched;
+	/* Same-boot follow-up of the first trip-level sample: the reading and
+	 * time when the latched sensor returned below the trip threshold, or
+	 * evidence that it was still at trip level at suspend/reset.  RAM
+	 * only: the 64-byte SRAM hot block is full, and the follow-up always
+	 * happens in the boot that latched the sample. */
+	bool tc_hot_follow_valid;
+	bool tc_hot_follow_still_hot;
+	u64 tc_hot_latch_ns;
+	u64 tc_hot_follow_ns;
+	u32 tc_hot_follow_raw;
+	unsigned int tc_hot_bank;
+	unsigned int tc_hot_sensor;
 
 	/* Calibration values */
 	s32 adc_ge;
@@ -1021,6 +1033,28 @@ static void mt6797_trace_bank(struct mtk_thermal *mt, u64 started)
 		writel(MT6797_TRACE_HOT_MAGIC, hot);
 		readl(hot);
 		mt->tc_trace_hot_latched = true;
+		mt->tc_hot_latch_ns = now;
+		mt->tc_hot_bank = bank;
+		mt->tc_hot_sensor = sensor;
+	} else if (mt->tc_trace_hot_latched && !mt->tc_hot_follow_valid &&
+		   bank == mt->tc_hot_bank) {
+		/* Watch the latched sensor: once its reading returns below the
+		 * trip threshold, record when and what.  A reading still at
+		 * trip level at reset shows up as still_hot via suspend. */
+		const struct thermal_bank_cfg *cfg =
+			&mt->conf->bank_data[bank];
+		unsigned int slot = mt->tc_hot_sensor;
+
+		if (slot < cfg->num_sensors) {
+			u32 raw = words[5 + slot] & 0xfff;
+			int sensor = cfg->sensors[slot];
+
+			if (raw && raw >= mt->tc_trace_hot_raw[sensor]) {
+				mt->tc_hot_follow_valid = true;
+				mt->tc_hot_follow_ns = now;
+				mt->tc_hot_follow_raw = raw;
+			}
+		}
 	}
 }
 
@@ -1508,6 +1542,27 @@ static ssize_t mt6797_trace_hot_show(char *buf, ssize_t len, const u32 *hot)
 		hot[1], hot[2], hot[3], hot[4], hot[10]);
 }
 
+static ssize_t hot_sample_follow_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+
+	if (!mt->tc_trace_hot_latched)
+		return sysfs_emit(buf, "latched=0\n");
+	if (!mt->tc_hot_follow_valid)
+		return sysfs_emit(buf,
+			"latched=1 bank=%u sensor_slot=%u followup=0 still_at_trip\n",
+			mt->tc_hot_bank, mt->tc_hot_sensor);
+	return sysfs_emit(buf,
+		"latched=1 bank=%u sensor_slot=%u followup=1 still_hot=%u elapsed_ns=%llu raw=%05x\n",
+		mt->tc_hot_bank, mt->tc_hot_sensor,
+		mt->tc_hot_follow_still_hot,
+		mt->tc_hot_follow_ns - mt->tc_hot_latch_ns,
+		mt->tc_hot_follow_raw);
+}
+static DEVICE_ATTR_RO(hot_sample_follow);
+
 static ssize_t previous_tc_trace_show(struct device *dev,
 				     struct device_attribute *attr, char *buf)
 {
@@ -1568,6 +1623,7 @@ static struct attribute *mt6797_thermal_attrs[] = {
 	&dev_attr_eem_status.attr,
 	&dev_attr_hw_critical_temp.attr,
 	&dev_attr_tc_hw_status.attr,
+	&dev_attr_hot_sample_follow.attr,
 	&dev_attr_bank_guard.attr,
 	&dev_attr_previous_tc_trace.attr,
 	&dev_attr_failure_tc_trace.attr,
@@ -2487,6 +2543,13 @@ static int mtk_thermal_suspend(struct device *dev)
 	    GENMASK(5, 4)) {
 		ret = -EIO;
 		goto restore;
+	}
+	/* Banks are stopped now.  No follow-up means the latched sensor was
+	 * never observed below the trip threshold between latch and suspend:
+	 * record that honestly instead of a synthetic raw value. */
+	if (mt->tc_trace_hot_latched && !mt->tc_hot_follow_valid) {
+		mt->tc_hot_follow_valid = true;
+		mt->tc_hot_follow_still_hot = true;
 	}
 	mt->pm_suspended = true;
 	mt->pm_suspends++;
