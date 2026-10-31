@@ -9,6 +9,31 @@ or read-only firmware fallback. The official default record is not this
 board's factory calibration. Workspace tests derive and persist distinct
 board-assigned WiFi/BT addresses from eMMC CID while preserving other bytes.
 
+## Provider ownership and startup
+
+- `mt6797-consys` owns the shared connectivity power, its regulators and
+  reserved EMI window. Its STP host claim serializes control of the shared
+  block; Wi-Fi and BT have separate VCN33 function supplies.
+- The first `mt6797-wmt` client opens the ConSys host, starts a BTIF-backed
+  STP session, loads the WMT patches and runs firmware initialization. WMT
+  serializes client power changes and retains the session until the last
+  client closes. BT uses WMT function control; the WLAN AHB probe owns its
+  own HIF function enable. RX client lifetime is protected by SRCU.
+- `mt6797-wlan-hif` owns WLAN's AHB PIO/DMA and IRQ claim; the gen3 WLAN
+  adapter uses that provider and the WMT client, rather than directly owning
+  the shared ConSys power sequence. `btmt6797` is a separate WMT client and
+  exposes the Bluetooth HCI device.
+- On last close, WMT stops the STP session before releasing the ConSys host.
+  The patch binaries, WLAN firmware, NVRAM/fallback record and board-derived
+  radio identities are distinct inputs; replacing one with another chip's
+  firmware or a generic calibration record is not an equivalent cleanup.
+
+On 2026-10-31 the X20 board also completed a live Bluetooth discovery while
+six WLAN ICMP requests to 192.168.31.50 succeeded; HCI remained up after
+discovery. See `out/headless-power-next/wlan-bt-coexist.log` in the workspace.
+This covers concurrent discovery and WLAN reachability, not a Bluetooth data
+connection or every coexistence mode.
+
 ## Implemented and tested on 2026-10-18
 
 - Standard dual-band STA, WPA2/CCMP/PMF, HT20/HT40/VHT80 and static AP have
