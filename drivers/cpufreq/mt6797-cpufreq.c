@@ -451,103 +451,181 @@ static unsigned int mt6797_cpufreq_get(unsigned int cpu)
 
 static int mt6797_pm_restore_locked(struct mt6797_cpufreq *data);
 
-static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
-					       unsigned int index)
-{
-	struct mt6797_cluster *cluster = policy->driver_data;
-	struct mt6797_cpufreq *data = mt6797_data;
+/* One target-frequency transaction, from OPP lookup through the final rail
+ * reduction.  The fields are filled in by the steps below, in order, all
+ * under data->lock. */
+struct mt6797_cpufreq_transition {
+	struct mt6797_cpufreq *data;
+	struct mt6797_cluster *cluster;
 	const struct mt6797_freq_method *old, *target, *old_cci, *target_cci;
+	unsigned int target_uv, vproc1_uv, vproc2_uv;
+	int old_vproc1, old_vproc2;
+};
+
+/* Validate the request and decode it: exact OPP for the table frequency,
+ * its voltage, and the board clock method entry that reaches that rate. */
+static int mt6797_cpufreq_resolve_target(struct cpufreq_policy *policy,
+					 unsigned int index,
+					 struct mt6797_cpufreq_transition *tr)
+{
 	struct dev_pm_opp *opp;
 	unsigned long target_hz;
-	unsigned int target_uv, vproc1_uv, vproc2_uv;
-	int old_vproc1, old_vproc2, ret;
 
-	if (!cluster || !policy->freq_table)
+	tr->cluster = policy->driver_data;
+	tr->data = mt6797_data;
+	if (!tr->cluster || !policy->freq_table)
 		return -EINVAL;
 
 	target_hz = (unsigned long)policy->freq_table[index].frequency * 1000;
-	opp = dev_pm_opp_find_freq_exact(cluster->cpu_dev, target_hz, true);
+	opp = dev_pm_opp_find_freq_exact(tr->cluster->cpu_dev, target_hz, true);
 	if (IS_ERR(opp))
 		return PTR_ERR(opp);
-	target_uv = dev_pm_opp_get_voltage(opp);
+	tr->target_uv = dev_pm_opp_get_voltage(opp);
 	dev_pm_opp_put(opp);
-	if (!target_uv)
+	if (!tr->target_uv)
 		return -EINVAL;
 
-	target = mt6797_method_for_rate(cluster, target_hz / 1000);
-	mutex_lock(&data->lock);
-	if (data->pm_rails_held) {
-		ret = data->pm_prepare_failed ? mt6797_pm_restore_locked(data) : -EBUSY;
+	tr->target = mt6797_method_for_rate(tr->cluster, target_hz / 1000);
+	return 0;
+}
+
+/* Snapshot the shared state the transition decision depends on: the clock
+ * method entries in effect, both shared rail levels, the CCI target derived
+ * from all clusters, and the VPROC2 level requested by this transition. */
+static int mt6797_cpufreq_capture_current(struct mt6797_cpufreq_transition *tr)
+{
+	struct mt6797_cpufreq *data = tr->data;
+
+	tr->old = mt6797_method_for_rate(tr->cluster, tr->cluster->current_khz);
+	tr->old_cci = mt6797_method_for_rate(&data->cci, data->cci.current_khz);
+	tr->old_vproc1 = regulator_get_voltage(data->cluster[0].vproc);
+	if (tr->old_vproc1 < 0)
+		return tr->old_vproc1;
+	tr->old_vproc2 = regulator_get_voltage(data->cluster[2].vproc);
+	if (tr->old_vproc2 < 0)
+		return tr->old_vproc2;
+	tr->target_cci = mt6797_cci_target(data, tr->cluster, tr->target->khz,
+					   tr->target_uv, &tr->vproc1_uv);
+	tr->vproc2_uv = tr->cluster->id == 2 ? tr->target_uv :
+			data->cluster[2].current_uv;
+	return 0;
+}
+
+/* Frequency increases require the shared rails at the target level first:
+ * the CCI vote decides how far VPROC1 rises, VPROC2 follows its own OPP. */
+static int mt6797_cpufreq_raise_voltages(struct mt6797_cpufreq_transition *tr)
+{
+	int ret;
+
+	if (tr->vproc1_uv > tr->old_vproc1) {
+		ret = mt6797_set_voltages(tr->data, &tr->data->cluster[0],
+					  tr->vproc1_uv);
+		if (ret)
+			return ret;
+	}
+	if (tr->cluster->id == 2 && tr->vproc2_uv > tr->old_vproc2) {
+		ret = mt6797_set_voltages(tr->data, &tr->data->cluster[2],
+					  tr->vproc2_uv);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/* Switch the cluster clock, record the new cluster state, then switch CCI.
+ * Sets *clocks_stable only when both clocks reached the target; a failed CCI
+ * transition keeps the current stable state unknown, so both rails must stay
+ * raised.  A failed cluster switch leaves the recorded state untouched. */
+static int mt6797_cpufreq_switch_clocks(struct mt6797_cpufreq_transition *tr,
+					bool *clocks_stable)
+{
+	struct mt6797_cpufreq *data = tr->data;
+	int ret;
+
+	*clocks_stable = false;
+	ret = mt6797_set_rate_locked(data, tr->cluster, tr->old, tr->target);
+	if (ret)
+		return ret;
+
+	tr->cluster->current_khz = tr->target->khz;
+	tr->cluster->current_uv = tr->target_uv;
+	ret = mt6797_set_rate_locked(data, &data->cci, tr->old_cci,
+				     tr->target_cci);
+	if (ret) {
+		dev_warn(data->dev,
+			 "CCI transition from %u to %ukHz failed: %d\n",
+			 tr->old_cci->khz, tr->target_cci->khz, ret);
+		return 0;
+	}
+	data->cci.current_khz = tr->target_cci->khz;
+	*clocks_stable = true;
+	return 0;
+}
+
+/* Reductions happen only after both clocks reached the target.  A failed
+ * reduction keeps the conservative higher voltage and is reported but not
+ * propagated: the request itself succeeded. */
+static void mt6797_cpufreq_lower_voltages(struct mt6797_cpufreq_transition *tr)
+{
+	int ret;
+
+	if (tr->cluster->id == 2 && tr->vproc2_uv < tr->old_vproc2) {
+		ret = mt6797_set_voltages(tr->data, &tr->data->cluster[2],
+					  tr->vproc2_uv);
+		if (ret)
+			dev_warn(tr->data->dev,
+				 "VPROC2 reduction incomplete at %ukHz: %d\n",
+				 tr->target->khz, ret);
+	}
+	if (tr->vproc1_uv < tr->old_vproc1) {
+		ret = mt6797_set_voltages(tr->data, &tr->data->cluster[0],
+					  tr->vproc1_uv);
+		if (ret)
+			dev_warn(tr->data->dev,
+				 "VPROC1 reduction incomplete at CCI %ukHz: %d\n",
+				 tr->target_cci->khz, ret);
+	}
+}
+
+static int mt6797_cpufreq_target_index(struct cpufreq_policy *policy,
+				       unsigned int index)
+{
+	struct mt6797_cpufreq_transition tr;
+	bool clocks_stable;
+	int ret;
+
+	ret = mt6797_cpufreq_resolve_target(policy, index, &tr);
+	if (ret)
+		return ret;
+
+	mutex_lock(&tr.data->lock);
+	if (tr.data->pm_rails_held) {
+		ret = tr.data->pm_prepare_failed ?
+			mt6797_pm_restore_locked(tr.data) : -EBUSY;
 		if (ret)
 			goto out_unlock;
 	}
-	if (!cluster->active) {
+	if (!tr.cluster->active) {
 		ret = -ENODEV;
 		goto out_unlock;
 	}
-	old = mt6797_method_for_rate(cluster, cluster->current_khz);
-	old_cci = mt6797_method_for_rate(&data->cci, data->cci.current_khz);
-	old_vproc1 = regulator_get_voltage(data->cluster[0].vproc);
-	if (old_vproc1 < 0) {
-		ret = old_vproc1;
-		goto out_unlock;
-	}
-	old_vproc2 = regulator_get_voltage(data->cluster[2].vproc);
-	if (old_vproc2 < 0) {
-		ret = old_vproc2;
-		goto out_unlock;
-	}
-	target_cci = mt6797_cci_target(data, cluster, target->khz,
-					 target_uv, &vproc1_uv);
-	vproc2_uv = cluster->id == 2 ? target_uv : data->cluster[2].current_uv;
-
-	if (vproc1_uv > old_vproc1) {
-		ret = mt6797_set_voltages(data, &data->cluster[0], vproc1_uv);
-		if (ret)
-			goto out_unlock;
-	}
-	if (cluster->id == 2 && vproc2_uv > old_vproc2) {
-		ret = mt6797_set_voltages(data, &data->cluster[2], vproc2_uv);
-		if (ret)
-			goto out_unlock;
-	}
-
-	ret = mt6797_set_rate_locked(data, cluster, old, target);
+	ret = mt6797_cpufreq_capture_current(&tr);
 	if (ret)
 		goto out_unlock;
 
-	cluster->current_khz = target->khz;
-	cluster->current_uv = target_uv;
-	ret = mt6797_set_rate_locked(data, &data->cci, old_cci, target_cci);
-	if (ret) {
-		dev_warn(data->dev, "CCI transition from %u to %ukHz failed: %d\n",
-			 old_cci->khz, target_cci->khz, ret);
-		/* Keep both rails raised until the CCI state is known again. */
-		ret = 0;
+	ret = mt6797_cpufreq_raise_voltages(&tr);
+	if (ret)
 		goto out_unlock;
-	}
-	data->cci.current_khz = target_cci->khz;
-	if (cluster->id == 2 && vproc2_uv < old_vproc2) {
-		ret = mt6797_set_voltages(data, &data->cluster[2], vproc2_uv);
-		if (ret) {
-			dev_warn(data->dev,
-				 "VPROC2 reduction incomplete at %ukHz: %d\n",
-				 target->khz, ret);
-			ret = 0;
-		}
-	}
-	if (vproc1_uv < old_vproc1) {
-		ret = mt6797_set_voltages(data, &data->cluster[0], vproc1_uv);
-		if (ret) {
-			dev_warn(data->dev,
-				 "VPROC1 reduction incomplete at CCI %ukHz: %d\n",
-				 target_cci->khz, ret);
-			ret = 0;
-		}
-	}
+
+	ret = mt6797_cpufreq_switch_clocks(&tr, &clocks_stable);
+	if (ret)
+		goto out_unlock;
+	if (clocks_stable)
+		mt6797_cpufreq_lower_voltages(&tr);
+	ret = 0;
 
 out_unlock:
-	mutex_unlock(&data->lock);
+	mutex_unlock(&tr.data->lock);
 	return ret;
 }
 
