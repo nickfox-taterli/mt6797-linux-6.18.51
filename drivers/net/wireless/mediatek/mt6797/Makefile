@@ -9,7 +9,6 @@ ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0 -DCFG_MET_PACKET_TRACE_SUPPORT=0
 ccflags-y += -DDBG=0
 ccflags-y += -I$(src)/os -I$(src)/os/linux/include -I$(src)/os/linux/hif/ahb_sdioLike/include
 ccflags-y += -I$(src)/include -I$(src)/include/nic -I$(src)/include/mgmt
-ccflags-y += -I$(srctree)/drivers/misc/mediatek/base/power/include
 
 MODULE_NAME := mt6797-wlan
 obj-$(CONFIG_MTK_MT6797_WLAN) += $(MODULE_NAME).o
