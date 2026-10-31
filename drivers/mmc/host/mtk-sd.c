@@ -584,6 +584,79 @@ static bool msdc_mt6797_sd_autok(struct msdc_host *host)
 		!(mmc_from_priv(host)->caps & MMC_CAP_NONREMOVABLE);
 }
 
+/* The BSP AutoK windows cover the removable slot running SDR104 only. */
+static bool msdc_mt6797_sd_autok_sdr104(struct msdc_host *host,
+					unsigned char timing)
+{
+	return msdc_mt6797_sd_autok(host) && timing == MMC_TIMING_UHS_SDR104;
+}
+
+/* Snapshot the reset PAD_TUNE1 value and invalidate any previous window, so
+ * a failed or absent AutoK always leaves the reset tuning in place. */
+static void msdc_mt6797_sd_autok_save_default(struct msdc_host *host)
+{
+	host->def_tune_para.pad_tune1 =
+		readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
+	host->bsp_autok_valid = false;
+}
+
+/* Record the tuned PAD_TUNE1 so clock changes can replay it. */
+static void msdc_mt6797_sd_autok_save_tuned(struct msdc_host *host)
+{
+	host->saved_tune_para.pad_tune1 =
+		readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
+}
+
+static void msdc_mt6797_sd_autok_restore_default(struct msdc_host *host)
+{
+	writel(host->def_tune_para.pad_tune1,
+	       host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
+}
+
+/* Replay the saved AutoK window after a clock change; without a valid saved
+ * window this keeps the reset/tuned register state untouched. */
+static void msdc_mt6797_sd_autok_replay(struct msdc_host *host,
+					struct mmc_host *mmc,
+					unsigned char timing)
+{
+	if (msdc_mt6797_sd_autok(host) && host->bsp_autok_valid &&
+	    timing == MMC_TIMING_UHS_SDR104) {
+		/* Bring-up diagnostic: makes window replays observable without
+		 * ftrace, which this build does not ship. */
+		dev_info(host->dev,
+			 "MT6797 SD AutoK replay: actual=%u src=%u\n",
+			 mmc->actual_clock, host->src_clk_freq);
+		mt6797_bsp_autok_apply(mmc, host->base, host->src_clk_freq,
+				       mmc->actual_clock,
+				       host->bsp_autok_result);
+	}
+}
+
+/* Run the BSP AutoK window for the current SDR104 clock and remember the
+ * result for replay.  The caller has already checked the tuning opcode.
+ * The BSP owns command submission, polling and the FIFO tests; the host IRQ
+ * is held off for the duration. */
+static int msdc_mt6797_sd_autok_run(struct msdc_host *host,
+				    struct mmc_host *mmc, u32 opcode)
+{
+	int ret;
+
+	/* Bring-up diagnostic: entry and return of the tuning execution, so
+	 * the AutoK path is observable on hardware without ftrace. */
+	dev_info(host->dev,
+		 "MT6797 SD AutoK run: opcode=%u actual=%u src=%u\n",
+		 opcode, mmc->actual_clock, host->src_clk_freq);
+	disable_irq(host->irq);
+	ret = mt6797_bsp_autok_execute(mmc, host->base, host->src_clk_freq,
+				       mmc->actual_clock,
+				       host->bsp_autok_result);
+	enable_irq(host->irq);
+	host->bsp_autok_valid = !ret;
+	dev_info(host->dev, "MT6797 SD AutoK result: ret=%d valid=%d\n",
+		 ret, host->bsp_autok_valid);
+	return ret;
+}
+
 static inline bool msdc_pio_enabled(const struct msdc_host *host)
 {
 	return host->hs400_tuning;
@@ -1336,9 +1409,7 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 			writel(host->def_tune_para.pad_tune,
 			       host->base + tune_reg);
 			if (msdc_mt6797_sd_autok(host))
-				writel(host->def_tune_para.pad_tune1,
-				       host->base + MSDC_PAD_TUNE0 +
-				       TUNING_REG2_FIXED_OFFEST);
+				msdc_mt6797_sd_autok_restore_default(host);
 		}
 	} else {
 		writel(host->saved_tune_para.iocon, host->base + MSDC_IOCON);
@@ -1355,10 +1426,7 @@ static void msdc_set_mclk(struct msdc_host *host, unsigned char timing, u32 hz)
 		}
 	}
 
-	if (msdc_mt6797_sd_autok(host) && host->bsp_autok_valid &&
-	    timing == MMC_TIMING_UHS_SDR104)
-		mt6797_bsp_autok_apply(mmc, host->base, host->src_clk_freq,
-				       mmc->actual_clock, host->bsp_autok_result);
+	msdc_mt6797_sd_autok_replay(host, mmc, timing);
 
 	if (timing == MMC_TIMING_MMC_HS400 &&
 	    host->dev_comp->hs400_tune)
@@ -2458,11 +2526,8 @@ static void msdc_init_hw(struct msdc_host *host)
 	} else {
 		host->def_tune_para.pad_tune = readl(host->base + tune_reg);
 		host->saved_tune_para.pad_tune = readl(host->base + tune_reg);
-		if (msdc_mt6797_sd_autok(host)) {
-			host->def_tune_para.pad_tune1 =
-				readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
-			host->bsp_autok_valid = false;
-		}
+		if (msdc_mt6797_sd_autok(host))
+			msdc_mt6797_sd_autok_save_default(host);
 	}
 	dev_dbg(host->dev, "init hardware done!");
 }
@@ -3080,16 +3145,10 @@ static int msdc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 
 	if (mmc->ios.timing == MMC_TIMING_MMC_HS200)
 		msdc_mt6797_hs200_tuning_init(host);
-	if (msdc_mt6797_sd_autok(host) &&
-	    mmc->ios.timing == MMC_TIMING_UHS_SDR104) {
+	if (msdc_mt6797_sd_autok_sdr104(host, mmc->ios.timing)) {
 		if (opcode != MMC_SEND_TUNING_BLOCK)
 			return -EINVAL;
-		/* The original BSP owns command submission, polling and FIFO tests. */
-		disable_irq(host->irq);
-		ret = mt6797_bsp_autok_execute(mmc, host->base, host->src_clk_freq,
-					       mmc->actual_clock, host->bsp_autok_result);
-		enable_irq(host->irq);
-		host->bsp_autok_valid = !ret;
+		ret = msdc_mt6797_sd_autok_run(host, mmc, opcode);
 		goto tuning_diag;
 	}
 
@@ -3135,8 +3194,7 @@ tune_done:
 	host->saved_tune_para.iocon = readl(host->base + MSDC_IOCON);
 	host->saved_tune_para.pad_tune = readl(host->base + tune_reg);
 	if (msdc_mt6797_sd_autok(host))
-		host->saved_tune_para.pad_tune1 =
-			readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
+		msdc_mt6797_sd_autok_save_tuned(host);
 	host->saved_tune_para.pad_cmd_tune = readl(host->base + PAD_CMD_TUNE);
 	if (host->top_base) {
 		host->saved_tune_para.emmc_top_control = readl(host->top_base +
