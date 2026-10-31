@@ -364,7 +364,10 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 		return PTR_ERR(rtc->rtc_dev);
 
 	if (rtc->data->mt6351_pwrap) {
-		/* No MT6351 PMIC interrupt controller is wired up yet. */
+		/* The X20-96 board leaves the MT6351 INT pin unconnected, so an
+		 * AP-level alarm IRQ has no hardware path (schematic net audit
+		 * and BSP both confirm); alarm ops stay for boards that route
+		 * the interrupt. */
 		clear_bit(RTC_FEATURE_ALARM, rtc->rtc_dev->features);
 	} else {
 		ret = devm_request_threaded_irq(&pdev->dev, rtc->irq, NULL,
