@@ -1,0 +1,29 @@
+MT6797 MSDC1 SDR104 tuning (X20 board rework)
+=============================================
+
+This directory is the board-specific implementation of MSDC1 SD tuning,
+replacing the vendor AutoK import.  The register sequence, scan counts,
+latch-CK handling and failure classification follow the tuning flow that
+was verified on this board; they are hardware facts of the MT6797 MSDC1
+SD path and are kept, while the code is written against this board's own
+register map (regs.h) and the kernel's MMIO helpers.  The vendor
+multi-IP code paths this board never exercised (eMMC/SDIO AutoK, offline
+tuning) are gone.  eMMC HS400 tuning lives in mtk-sd.c.
+
+Layout:
+
+- regs.h        MT6797 MSDC1 register offsets and fields used by tuning.
+- mt6797-sd-autok.h
+                Result-record layout (18 bytes) and engine entry points;
+                the record is the stored replay ABI with mtk-sd.c.
+- mt6797-sd-autok.c
+                Tune-path setup, the two-edge command/data scans, the
+                latch-CK search and result application.
+- analysis.c/h  Controller-independent 64-bit window scoring and
+                selection (project-original; unchanged by this rework).
+
+mtk-sd-mt6797-autok-core.c is the mtk-sd adapter: it isolates PIO, runs
+the tuning with the host IRQ off, and propagates failures to the MMC
+core.  Tuning results are stored by mtk-sd.c, reapplied on clock changes
+and cleared on card power-off.  Routine diagnostics are debug-only; a
+failed SDR104 tuning remains an error.

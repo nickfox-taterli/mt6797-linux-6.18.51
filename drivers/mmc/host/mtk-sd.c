@@ -37,6 +37,7 @@
 #include "cqhci.h"
 #include "mmc_hsq.h"
 #include "mtk-sd-mt6797-autok.h"
+#include "mt6797-sd-autok/mt6797-sd-autok.h"
 
 #define MAX_BD_NUM          1024
 #define MSDC_NR_CLOCKS      3
@@ -572,8 +573,8 @@ struct msdc_host {
 	struct msdc_save_para save_para; /* used when gate HCLK */
 	struct msdc_tune_para def_tune_para; /* default tune setting */
 	struct msdc_tune_para saved_tune_para; /* tune result of CMD21/CMD19 */
-	u8 bsp_autok_result[MT6797_BSP_AUTOK_RESULT_SIZE];
-	bool bsp_autok_valid;
+	u8 sd_autok_result[MT6797_SDAUTOK_RESULT_SIZE];
+	bool sd_autok_valid;
 	struct cqhci_host *cq_host;
 	u32 cq_ssc1_time;
 };
@@ -597,7 +598,7 @@ static void msdc_mt6797_sd_autok_save_default(struct msdc_host *host)
 {
 	host->def_tune_para.pad_tune1 =
 		readl(host->base + MSDC_PAD_TUNE0 + TUNING_REG2_FIXED_OFFEST);
-	host->bsp_autok_valid = false;
+	host->sd_autok_valid = false;
 }
 
 /* Record the tuned PAD_TUNE1 so clock changes can replay it. */
@@ -619,16 +620,16 @@ static void msdc_mt6797_sd_autok_replay(struct msdc_host *host,
 					struct mmc_host *mmc,
 					unsigned char timing)
 {
-	if (msdc_mt6797_sd_autok(host) && host->bsp_autok_valid &&
+	if (msdc_mt6797_sd_autok(host) && host->sd_autok_valid &&
 	    timing == MMC_TIMING_UHS_SDR104) {
 		/* Bring-up diagnostic: makes window replays observable without
 		 * ftrace, which this build does not ship. */
 		dev_info(host->dev,
 			 "MT6797 SD AutoK replay: actual=%u src=%u\n",
 			 mmc->actual_clock, host->src_clk_freq);
-		mt6797_bsp_autok_apply(mmc, host->base, host->src_clk_freq,
+		mt6797_sd_autok_apply(mmc, host->base, host->src_clk_freq,
 				       mmc->actual_clock,
-				       host->bsp_autok_result);
+				       host->sd_autok_result);
 	}
 }
 
@@ -647,13 +648,13 @@ static int msdc_mt6797_sd_autok_run(struct msdc_host *host,
 		 "MT6797 SD AutoK run: opcode=%u actual=%u src=%u\n",
 		 opcode, mmc->actual_clock, host->src_clk_freq);
 	disable_irq(host->irq);
-	ret = mt6797_bsp_autok_execute(mmc, host->base, host->src_clk_freq,
+	ret = mt6797_sd_autok_execute(mmc, host->base, host->src_clk_freq,
 				       mmc->actual_clock,
-				       host->bsp_autok_result);
+				       host->sd_autok_result);
 	enable_irq(host->irq);
-	host->bsp_autok_valid = !ret;
+	host->sd_autok_valid = !ret;
 	dev_info(host->dev, "MT6797 SD AutoK result: ret=%d valid=%d\n",
-		 ret, host->bsp_autok_valid);
+		 ret, host->sd_autok_valid);
 	return ret;
 }
 
@@ -2612,7 +2613,7 @@ static void msdc_ops_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		}
 		break;
 	case MMC_POWER_OFF:
-		host->bsp_autok_valid = false;
+		host->sd_autok_valid = false;
 		if (!IS_ERR(mmc->supply.vmmc))
 			mmc_regulator_set_ocr(mmc, mmc->supply.vmmc, 0);
 

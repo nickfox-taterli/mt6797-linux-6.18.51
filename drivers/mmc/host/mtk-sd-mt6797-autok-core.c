@@ -1,58 +1,54 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Linux 6.18 interface adapter; scanning and selection stay in BSP autok.c. */
+/*
+ * mtk-sd interface adapter for the MT6797 MSDC1 SDR104 tuning engine.
+ *
+ * Bridges the kernel MMC core to the board tuning flow.  The MMC core
+ * owns the policy (when to tune, what opcode); this module owns the
+ * Linux-side calling convention and failure propagation.  The stored
+ * result record feeds the replay on later clock changes.
+ */
 #include <linux/module.h>
 
 #include "mtk-sd-mt6797-autok.h"
-#include "mt6797-bsp-autok/autok.h"
+#include "mt6797-sd-autok/mt6797-sd-autok.h"
 
-#include "mt6797-bsp-autok/tune-path.h"
-
-int mt6797_bsp_autok_execute(struct mmc_host *mmc, void __iomem *base,
+int mt6797_sd_autok_execute(struct mmc_host *mmc, void __iomem *base,
 			    u32 hclk, u32 sclk, u8 *result)
 {
-	struct mt6797_autok_ctx host = {
+	struct mt6797_sdautok_ctx ctx = {
 		.base = base,
 		.hclk = hclk, .sclk = sclk,
 	};
-	u32 pio;
 	int ret;
 
-	BUILD_BUG_ON(TUNING_PARAM_COUNT != MT6797_BSP_AUTOK_RESULT_SIZE);
 	if (!sclk || hclk < sclk)
 		return -EINVAL;
 
-	/* No MMC request is active: BSP tuning polls the controller directly. */
-	pio = autok_get_field(MSDC_CFG, MSDC_CFG_PIO);
-	autok_set_field(MSDC_CFG, MSDC_CFG_PIO, 1);
-	msdc_init_tune_path(&host, mmc->ios.timing);
-	autok_msdc_tx_setting(&host, &mmc->ios);
-	ret = autok_execute_tuning(&host, result);
-	autok_set_field(MSDC_CFG, MSDC_CFG_PIO, pio);
+	ret = mt6797_sdautok_run(&ctx, result);
 
-	/* Propagate BSP failures to the modern MMC core; never substitute a point. */
-	if (ret || host.autok_error || result[INT_DAT_LATCH_CK] > 7) {
+	/* Propagate failures to the modern MMC core; never substitute a point. */
+	if (ret || ctx.error || result[AUTOK_INT_DAT_LATCH_CK] > 7) {
 		dev_err(mmc_dev(mmc), "SDR104 tuning failed (ret=%d, error=%d, latch=%u)\n",
-			ret, host.autok_error, result[INT_DAT_LATCH_CK]);
+			ret, ctx.error, result[AUTOK_INT_DAT_LATCH_CK]);
 		return -EIO;
 	}
 	return 0;
 }
-EXPORT_SYMBOL_GPL(mt6797_bsp_autok_execute);
+EXPORT_SYMBOL_GPL(mt6797_sd_autok_execute);
 
-void mt6797_bsp_autok_apply(struct mmc_host *mmc, void __iomem *base,
-			   u32 hclk, u32 sclk, u8 *result)
+void mt6797_sd_autok_apply(struct mmc_host *mmc, void __iomem *base,
+			   u32 hclk, u32 sclk, const u8 *result)
 {
-	struct mt6797_autok_ctx host = {
+	struct mt6797_sdautok_ctx ctx = {
 		.base = base,
 		.hclk = hclk, .sclk = sclk,
 	};
 
-	/* Match the BSP's saved-result application path. */
-	autok_init_sdr104(&host);
-	autok_tuning_parameter_init(&host, result);
-	autok_msdc_tx_setting(&host, &mmc->ios);
+	/* Replay the stored window; the timing setup precedes it. */
+	mt6797_sdautok_apply(&ctx, result);
+	mt6797_sdautok_tx_setting(&ctx, true);
 }
-EXPORT_SYMBOL_GPL(mt6797_bsp_autok_apply);
+EXPORT_SYMBOL_GPL(mt6797_sd_autok_apply);
 
-MODULE_DESCRIPTION("Original MT6797 BSP AutoK with Linux 6.18 interface adapter");
+MODULE_DESCRIPTION("MT6797 MSDC1 SDR104 tuning engine, mtk-sd adapter");
 MODULE_LICENSE("GPL");
