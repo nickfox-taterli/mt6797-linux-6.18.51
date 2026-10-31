@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/regulator/dlg,da9211.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Dialog Semiconductor DA9211/DA9212/DA9213/DA9223/DA9214/DA9224/DA9215/DA9225 buck regulators
+
+maintainers:
+  - Support Opensource <support.opensource@diasemi.com>
+
+description: |
+  Multi-phase buck converters controlled over I2C. Every package provides
+  BUCKA; BUCKB is described for the dual-rail parts (and boards may leave
+  it unwired, like mt8173-evb wiring both rails on a DA9211). The
+  regulator subnode contract, including the initial/allowed mode values
+  from include/dt-bindings/regulator/dlg,da9211-regulator.h, follows
+  regulator.yaml. The optional enable GPIO is consumed per rail from the
+  BUCK subnode, matching da9211_parse_regulators_dt().
+
+properties:
+  compatible:
+    enum:
+      - dlg,da9211
+      - dlg,da9212
+      - dlg,da9213
+      - dlg,da9223
+      - dlg,da9214
+      - dlg,da9224
+      - dlg,da9215
+      - dlg,da9225
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+    description: IRQ line of the converter; unused on boards that only drive
+      the rails over I2C.
+
+  regulators:
+    type: object
+    additionalProperties: false
+
+    properties:
+      BUCKA:
+        type: object
+        $ref: /schemas/regulator/regulator.yaml#
+        unevaluatedProperties: false
+        properties:
+          enable-gpios:
+            maxItems: 1
+            description: Optional GPIO controlling this rail's enable input.
+
+      BUCKB:
+        type: object
+        $ref: /schemas/regulator/regulator.yaml#
+        unevaluatedProperties: false
+        properties:
+          enable-gpios:
+            maxItems: 1
+            description: Optional GPIO controlling this rail's enable input.
+
+required:
+  - compatible
+  - reg
+  - regulators
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/regulator/dlg,da9211-regulator.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        da9214@68 {
+            compatible = "dlg,da9214";
+            reg = <0x68>;
+
+            regulators {
+                BUCKA {
+                    regulator-name = "vproc1";
+                    regulator-min-microvolt = <780000>;
+                    regulator-max-microvolt = <1200000>;
+                    regulator-min-microamp = <3000000>;
+                    regulator-max-microamp = <6000000>;
+                    regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+                    regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+                                                DA9211_BUCK_MODE_AUTO>;
+                    regulator-always-on;
+                };
+
+                BUCKB {
+                    regulator-name = "vproc2";
+                    regulator-min-microvolt = <800000>;
+                    regulator-max-microvolt = <1200000>;
+                    regulator-min-microamp = <3000000>;
+                    regulator-max-microamp = <6000000>;
+                    regulator-initial-mode = <DA9211_BUCK_MODE_SYNC>;
+                    regulator-allowed-modes = <DA9211_BUCK_MODE_SYNC
+                                                DA9211_BUCK_MODE_AUTO>;
+                    regulator-always-on;
+                };
+            };
+        };
+    };
+...

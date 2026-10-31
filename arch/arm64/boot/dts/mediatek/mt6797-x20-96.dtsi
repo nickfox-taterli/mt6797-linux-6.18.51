@@ -254,7 +254,6 @@
 	cluster0_opp: opp-table-cluster0 {
 		compatible = "operating-points-v2";
 		opp-shared;
-		clock-latency-ns = <30000>;
 
 		opp-1391000000 { opp-hz = /bits/ 64 <1391000000>; opp-microvolt = <1180000>; };
 		opp-1339000000 { opp-hz = /bits/ 64 <1339000000>; opp-microvolt = <1160000>; };
@@ -277,7 +276,6 @@
 	cluster1_opp: opp-table-cluster1 {
 		compatible = "operating-points-v2";
 		opp-shared;
-		clock-latency-ns = <30000>;
 
 		opp-1846000000 { opp-hz = /bits/ 64 <1846000000>; opp-microvolt = <1180000>; };
 		opp-1781000000 { opp-hz = /bits/ 64 <1781000000>; opp-microvolt = <1160000>; };
@@ -300,7 +298,6 @@
 	cluster2_opp: opp-table-cluster2 {
 		compatible = "operating-points-v2";
 		opp-shared;
-		clock-latency-ns = <30000>;
 
 		/* Board experiment curve; no requests above the verified 2.405 GHz. */
 		/* Highest tested execution point, using the user voltage curve. */

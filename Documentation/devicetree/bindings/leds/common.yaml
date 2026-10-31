@@ -87,6 +87,8 @@ properties:
           - default-on
             # LED "double" flashes at a load average based rate
           - heartbeat
+            # LED flashes based on average CPU usage
+          - activity
             # LED indicates disk activity
           - disk-activity
             # LED indicates disk read activity
