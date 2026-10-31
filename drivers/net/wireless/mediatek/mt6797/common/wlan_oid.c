@@ -1283,7 +1283,7 @@
 */
 #include "precomp.h"
 #include "mgmt/rsn.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 #include "debug.h"
 #include <linux/stddef.h>
 
@@ -8879,7 +8879,7 @@ wlanoidSetWapiAssocInfo(IN P_ADAPTER_T prAdapter,
 	if (u4SetBufferLen < 20 /* From EID to Group cipher */)
 		return WLAN_STATUS_INVALID_LENGTH;
 
-	if (!wextSrchDesiredWAPIIE((PUINT_8) pvSetBuffer, u4SetBufferLen, (PUINT_8 *) &prWapiInfo))
+	if (!ieSrchDesiredWAPIIE((PUINT_8) pvSetBuffer, u4SetBufferLen, (PUINT_8 *) &prWapiInfo))
 		return WLAN_STATUS_INVALID_LENGTH;
 
 	if (!prWapiInfo || prWapiInfo->ucLength < 18)

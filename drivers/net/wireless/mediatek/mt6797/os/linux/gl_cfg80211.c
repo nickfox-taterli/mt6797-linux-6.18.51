@@ -135,7 +135,39 @@
 #include "gl_os.h"
 #include "debug.h"
 #include "wlan_lib.h"
-#include "gl_wext.h"
+#include "ie_search.h"
+
+/* Netlink attribute helpers for the testmode replies, formerly provided by
+ * the retired vendor layer: same 1-on-success convention as the gen3 code. */
+static int mtk_cfg80211_NLA_PUT(struct sk_buff *skb, int attrtype, int attrlen, const void *data)
+{
+	return nla_put(skb, attrtype, attrlen, data) < 0 ? 0 : 1;
+}
+
+static int mtk_cfg80211_nla_put_type_u8(struct sk_buff *skb, int attrtype, const u8 *value)
+{
+	return mtk_cfg80211_NLA_PUT(skb, attrtype, sizeof(*value), value);
+}
+
+static int mtk_cfg80211_nla_put_type_u16(struct sk_buff *skb, int attrtype, const u16 *value)
+{
+	return mtk_cfg80211_NLA_PUT(skb, attrtype, sizeof(*value), value);
+}
+
+static int mtk_cfg80211_nla_put_type_u32(struct sk_buff *skb, int attrtype, const u32 *value)
+{
+	return mtk_cfg80211_NLA_PUT(skb, attrtype, sizeof(*value), value);
+}
+
+#define NLA_PUT(skb, attrtype, attrlen, data) \
+	mtk_cfg80211_NLA_PUT(skb, attrtype, attrlen, data)
+#define NLA_PUT_U8(skb, attrtype, value) \
+	mtk_cfg80211_nla_put_type_u8(skb, attrtype, value)
+#define NLA_PUT_U16(skb, attrtype, value) \
+	mtk_cfg80211_nla_put_type_u16(skb, attrtype, value)
+#define NLA_PUT_U32(skb, attrtype, value) \
+	mtk_cfg80211_nla_put_type_u32(skb, attrtype, value)
+
 #include "precomp.h"
 #include <linux/can/netlink.h>
 #include <net/netlink.h>
@@ -976,7 +1008,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 			DBGLOG(REQ, TRACE, "[wapi] set wapi assoc info error:%lx\n", rStatus);
 #endif
 #if CFG_SUPPORT_WPS2
-		if (wextSrchDesiredWPSIE(pucIEStart, sme->ie_len, 0xDD, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredWPSIE(pucIEStart, sme->ie_len, 0xDD, (PUINT_8 *) &prDesiredIE)) {
 			prGlueInfo->fgWpsActive = TRUE;
 			fgCarryWPSIE = TRUE;
 
@@ -988,7 +1020,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 		}
 #endif
 #if CFG_SUPPORT_PASSPOINT
-		if (wextSrchDesiredHS20IE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredHS20IE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetHS20Info,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);
@@ -997,7 +1029,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 				DBGLOG(INIT, INFO, "[HS20] set HS20 assoc info error:%lx\n", rStatus);
 #endif
 		}
-		if (wextSrchDesiredInterworkingIE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredInterworkingIE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetInterworkingInfo,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);
@@ -1006,7 +1038,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 				DBGLOG(INIT, INFO, "[HS20] set Interworking assoc info error:%lx\n", rStatus);
 #endif
 		}
-		if (wextSrchDesiredRoamingConsortiumIE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredRoamingConsortiumIE(pucIEStart, sme->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetRoamingConsortiumIEInfo,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);
@@ -1789,6 +1821,8 @@ int mtk_cfg80211_testmode_hs20_cmd(IN struct wiphy *wiphy, IN void *data, IN int
 #endif /* CFG_SUPPORT_PASSPOINT */
 
 #if CFG_SUPPORT_WAPI
+static UINT_8 keyStructBuf[1024];	/* WAPI testmode key buffer */
+#define IW_ENCODE_ALG_SMS4  0x20	/* gen3 WAPI cipher selector */
 int mtk_cfg80211_testmode_set_key_ext(IN struct wiphy *wiphy, IN void *data, IN int len)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
@@ -2289,7 +2323,7 @@ int mtk_cfg80211_assoc(struct wiphy *wiphy, struct net_device *ndev, struct cfg8
 
 	if (req->ie && req->ie_len > 0) {
 #if CFG_SUPPORT_PASSPOINT
-		if (wextSrchDesiredHS20IE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredHS20IE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetHS20Info,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);
@@ -2299,7 +2333,7 @@ int mtk_cfg80211_assoc(struct wiphy *wiphy, struct net_device *ndev, struct cfg8
 			}
 		}
 
-		if (wextSrchDesiredInterworkingIE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredInterworkingIE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetInterworkingInfo,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);
@@ -2309,7 +2343,7 @@ int mtk_cfg80211_assoc(struct wiphy *wiphy, struct net_device *ndev, struct cfg8
 			}
 		}
 
-		if (wextSrchDesiredRoamingConsortiumIE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
+		if (ieSrchDesiredRoamingConsortiumIE((PUINT_8) req->ie, req->ie_len, (PUINT_8 *) &prDesiredIE)) {
 			rStatus = kalIoctl(prGlueInfo,
 					   wlanoidSetRoamingConsortiumIEInfo,
 					   prDesiredIE, IE_SIZE(prDesiredIE), FALSE, FALSE, TRUE, &u4BufLen);

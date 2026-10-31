@@ -32,7 +32,7 @@
 */
 #include "net/cfg80211.h"
 #include "precomp.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -138,11 +138,11 @@ kalP2PUpdateAssocInfo(IN P_GLUE_INFO_T prGlueInfo,
 	}
 
 	/* do supplicant a favor, parse to the start of WPA/RSN IE */
-	if (wextSrchDesiredWPSIE(cp, u4FrameBodyLen, 0xDD, &pucDesiredIE)) {
+	if (ieSrchDesiredWPSIE(cp, u4FrameBodyLen, 0xDD, &pucDesiredIE)) {
 		/* WPS IE found */
-	} else if (wextSrchDesiredWPAIE(cp, u4FrameBodyLen, 0x30, &pucDesiredIE)) {
+	} else if (ieSrchDesiredWPAIE(cp, u4FrameBodyLen, 0x30, &pucDesiredIE)) {
 		/* RSN IE found */
-	} else if (wextSrchDesiredWPAIE(cp, u4FrameBodyLen, 0xDD, &pucDesiredIE)) {
+	} else if (ieSrchDesiredWPAIE(cp, u4FrameBodyLen, 0xDD, &pucDesiredIE)) {
 		/* WPA IE found */
 	} else {
 		/* no WPA/RSN IE found, skip this event */

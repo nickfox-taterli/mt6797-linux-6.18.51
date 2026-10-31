@@ -257,5 +257,6 @@ BOOLEAN glP2pCreateWirelessDevice(P_GLUE_INFO_T prGlueInfo);
 VOID glP2pDestroyWirelessDevice(VOID);
 
 VOID p2pSetMulticastListWorkQueueWrapper(P_GLUE_INFO_T prGlueInfo);
+VOID p2pApplyMulticastList(P_GLUE_INFO_T prGlueInfo);
 
 #endif

@@ -775,7 +775,7 @@
 */
 #include "gl_os.h"
 #include "wlan_lib.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 #include "gl_cfg80211.h"
 #include "precomp.h"
 #include <linux/sched/debug.h>
@@ -783,7 +783,6 @@
 #if CFG_SUPPORT_AGPS_ASSIST
 #include "gl_kal.h"
 #endif
-#include "gl_vendor.h"
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -1040,139 +1039,6 @@ static struct cfg80211_ops mtk_wlan_ops = {
 #endif
 };
 
-static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = WIFI_SUBCMD_GET_CHANNEL_LIST
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_channel_list,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_country_code,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	/* GSCAN */
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_GET_CAPABILITIES
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_capabilities,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_SET_CONFIG
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_config,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_SET_SCAN_CONFIG
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV,
-		.doit = mtk_cfg80211_vendor_set_scan_config,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_ENABLE_GSCAN
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_enable_scan,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_ENABLE_FULL_SCAN_RESULTS
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_enable_full_scan_results,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_GET_SCAN_RESULTS
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_scan_results,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_SET_SIGNIFICANT_CHANGE_CONFIG
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_significant_change,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	{
-		{
-			.vendor_id = GOOGLE_OUI,
-			.subcmd = GSCAN_SUBCMD_SET_HOTLIST
-		},
-		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_hotlist,
-		.policy = VENDOR_CMD_RAW_DATA
-	},
-	/*Link Layer Statistics */
-	/*{
-	   {
-	   .vendor_id = GOOGLE_OUI,
-	   .subcmd = LSTATS_SUBCMD_GET_INFO
-	   },
-	   .flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-	   .doit = NULL; //mtk_cfg80211_vendor_llstats_get_info
-	   }, */
-};
-
-static const struct nl80211_vendor_cmd_info mtk_wlan_vendor_events[] = {
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_SIGNIFICANT_CHANGE_RESULTS
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_HOTLIST_RESULTS_FOUND
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_SCAN_RESULTS_AVAILABLE
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_FULL_SCAN_RESULTS
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = RTT_EVENT_COMPLETE
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_COMPLETE_SCAN
-	},
-	{
-		.vendor_id = GOOGLE_OUI,
-		.subcmd = GSCAN_EVENT_HOTLIST_RESULTS_LOST
-	},
-};
 
 /* There isn't a lot of sense in it, but you can transmit anything you like */
 static const struct ieee80211_txrx_stypes
@@ -1484,46 +1350,6 @@ static int wlanGetDevIdx(struct net_device *prDev)
 * \retval 0  The IOCTL command is executed successfully.
 * \retval <0 The execution of IOCTL command is failed.
 */
-/*----------------------------------------------------------------------------*/
-int wlanDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd)
-{
-	P_GLUE_INFO_T prGlueInfo = NULL;
-	int ret = 0;
-
-	/* Verify input parameters for the following functions */
-	ASSERT(prDev && prIfReq);
-	if (!prDev || !prIfReq) {
-		DBGLOG(INIT, ERROR, "Invalid input data\n");
-		return -EINVAL;
-	}
-
-	prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
-	if (!prGlueInfo) {
-		DBGLOG(INIT, ERROR, "prGlueInfo is NULL\n");
-		return -EFAULT;
-	}
-
-	if (prGlueInfo->u4ReadyFlag == 0) {
-		DBGLOG(INIT, ERROR, "Adapter is not ready\n");
-		return -EINVAL;
-	}
-
-	if ((i4Cmd >= SIOCIWFIRST) && (i4Cmd < SIOCIWFIRSTPRIV)) {
-		/* 0x8B00 ~ 0x8BDF, wireless extension region */
-		ret = wext_support_ioctl(prDev, prIfReq, i4Cmd);
-	} else if ((i4Cmd >= SIOCIWFIRSTPRIV) && (i4Cmd < SIOCIWLASTPRIV)) {
-		/* 0x8BE0 ~ 0x8BFF, private ioctl region */
-		ret = priv_support_ioctl(prDev, prIfReq, i4Cmd);
-	} else if (i4Cmd == SIOCDEVPRIVATE + 1) {
-		ret = priv_support_driver_cmd(prDev, prIfReq, i4Cmd);
-	} else {
-		DBGLOG(INIT, WARN, "Unexpected ioctl command: 0x%04x\n", i4Cmd);
-		ret = -EOPNOTSUPP;
-	}
-
-	return ret;
-}				/* end of wlanDoIOCTL() */
-
 /*----------------------------------------------------------------------------*/
 /*!
 * \brief Export wlan GLUE_INFO_T pointer to p2p module
@@ -2136,7 +1962,6 @@ static const struct net_device_ops wlan_netdev_ops = {
 	.ndo_stop = wlanStop,
 	.ndo_set_rx_mode = wlanSetMulticastList,
 	.ndo_get_stats = wlanGetStats,
-	.ndo_do_ioctl = wlanDoIOCTL,
 	.ndo_start_xmit = wlanHardStartXmit,
 	.ndo_init = wlanInit,
 	.ndo_uninit = wlanUninit,
@@ -2192,10 +2017,6 @@ static int createWirelessDevice(void)
 #endif /* CFG_SUPPORT_TDLS */
 	prWiphy->max_remain_on_channel_duration = 5000;
 	prWiphy->mgmt_stypes = mtk_cfg80211_ais_default_mgmt_stypes;
-	prWiphy->vendor_commands = mtk_wlan_vendor_ops;
-	prWiphy->n_vendor_commands = sizeof(mtk_wlan_vendor_ops) / sizeof(struct wiphy_vendor_command);
-	prWiphy->vendor_events = mtk_wlan_vendor_events;
-	prWiphy->n_vendor_events = ARRAY_SIZE(mtk_wlan_vendor_events);
 
 	/* 4 <1.4> wowlan support */
 #ifdef CONFIG_PM
@@ -2203,7 +2024,6 @@ static int createWirelessDevice(void)
 #endif
 #ifdef CONFIG_CFG80211_WEXT
 	/* 4 <1.5> Use wireless extension to replace IOCTL */
-	prWiphy->wext = &wext_handler_def;
 #endif
 
 	ret = wiphy_register(prWiphy);
@@ -2314,7 +2134,6 @@ static struct wireless_dev *wlanNetCreate(PVOID pvData)
 #endif
 	prGlueInfo->prDevHandler->netdev_ops = &wlan_netdev_ops;
 #ifdef CONFIG_WIRELESS_EXT
-	prGlueInfo->prDevHandler->wireless_handlers = &wext_handler_def;
 #endif
 	netif_carrier_off(prGlueInfo->prDevHandler);
 	netif_tx_stop_all_queues(prGlueInfo->prDevHandler);

@@ -243,7 +243,7 @@
 #include "gl_os.h"
 #include "debug.h"
 #include "wlan_lib.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 #include "precomp.h"
 #include <linux/poll.h>
 #include "bss.h"

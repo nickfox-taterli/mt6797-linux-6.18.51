@@ -1049,12 +1049,12 @@ Add per station flow control when STA is in PS
 #include "gl_os.h"
 #include "debug.h"
 #include "wlan_lib.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 #include <linux/can/netlink.h>
 #include <net/netlink.h>
 #include <net/cfg80211.h>
 #include "gl_cfg80211.h"
-#include "gl_vendor.h"
+#include "wlan_gscan_types.h"
 #endif
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -2515,77 +2515,23 @@ UINT_8 nicRxProcessGSCNEvent(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb
 			memcpy(prEventGscnAvailable, (P_EVENT_GSCAN_SCAN_AVAILABLE_T) (prEvent->aucBuffer),
 			       sizeof(EVENT_GSCAN_SCAN_AVAILABLE_T));
 
-			mtk_cfg80211_vendor_event_scan_results_available(wiphy, NULL,
-									 prEventGscnAvailable->u2Num);
+			DBGLOG(SCN, INFO, "GSCAN results available: %u\n",
+			       prEventGscnAvailable->u2Num);
 		}
 		break;
 
 	case EVENT_ID_GSCAN_RESULT:
 		{
-			UINT_8 u1Buf = 0;
-
-			DBGLOG(SCN, INFO, "EVENT_ID_GSCAN_RESULT 2\n");
 			prEventBuffer = (P_EVENT_GSCAN_RESULT_T) (prEvent->aucBuffer);
 			prEventGscnResult = prEventBuffer->rResult;
-			/* the following event struct should moved to kal and
-			use the kal api to avoid future porting effort */
 
 			scan_id = prEventBuffer->u2ScanId;
 			scan_flag = prEventBuffer->u2ScanFlags;
 			real_num = prEventBuffer->u2NumOfResults;
 
-			DBGLOG(SCN, INFO, "scan_id=%d, scan_flag =%d, real_num=%d\r\n", scan_id, scan_flag, real_num);
-
-			skb = cfg80211_vendor_cmd_alloc_reply_skb(wiphy, sizeof(PARAM_WIFI_GSCAN_RESULT) * real_num);
-
-			if (!skb) {
-				DBGLOG(RX, ERROR, "%s allocate skb failed:%x\n", __func__, i4Status);
-				return -ENOMEM;
-			}
-
-			attr = nla_nest_start(skb, GSCAN_ATTRIBUTE_SCAN_RESULTS);
-			{
-				if (!NLA_PUT_U32(skb, GSCAN_ATTRIBUTE_SCAN_ID, &scan_id)) {
-					DBGLOG(SCN, INFO, "nla_put_failure\n");
-					return 0;
-				}
-
-				u1Buf = 1;
-				if (!NLA_PUT_U8(skb, GSCAN_ATTRIBUTE_SCAN_FLAGS, &u1Buf)) {
-					DBGLOG(SCN, INFO, "nla_put_failure\n");
-					return 0;
-				}
-				if (!NLA_PUT_U32(skb, GSCAN_ATTRIBUTE_NUM_OF_RESULTS, &real_num)) {
-					DBGLOG(SCN, INFO, "nla_put_failure\n");
-					return 0;
-				}
-				prResults = (P_PARAM_WIFI_GSCAN_RESULT) prEventGscnResult;
-				if (prResults)
-					DBGLOG(SCN, INFO, "ssid=%s, rssi=%d, channel=%d \r\n", prResults->ssid,
-					       prResults->rssi, prResults->channel);
-				if (!NLA_PUT(skb, GSCAN_ATTRIBUTE_SCAN_RESULTS,
-					sizeof(PARAM_WIFI_GSCAN_RESULT) * real_num,
-					prResults)) {
-					DBGLOG(SCN, INFO, "nla_put_failure\n");
-					return 0;
-				}
-				DBGLOG(SCN, INFO, "NLA_PUT scan results over \t");
-			}
-			nla_nest_end(skb, attr);
-			u1Buf = 1;
-			/* report_events=1 */
-			if (!NLA_PUT_U8(skb, GSCAN_ATTRIBUTE_SCAN_RESULTS_COMPLETE, &u1Buf)) {
-				DBGLOG(SCN, INFO, "nla_put_failure\n");
-				return 0;
-			}
-
-			i4Status = cfg80211_vendor_cmd_reply(skb);
-			/*cfg80211_vendor_event(skb, GFP_KERNEL); */
-
-			prScanInfo->fgGscnGetResWaiting = FALSE;
-
-			DBGLOG(SCN, INFO, " i4Status %d\n", i4Status);
-
+			DBGLOG(SCN, INFO,
+			       "GSCAN result: scan_id=%u flag=%u num=%u (vendor emission retired)\n",
+			       scan_id, scan_flag, real_num);
 		}
 		break;
 
@@ -2604,8 +2550,8 @@ UINT_8 nicRxProcessGSCNEvent(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb
 			memcpy(prEventGscnScnDone, (P_EVENT_GSCAN_SCAN_COMPLETE_T) (prEvent->aucBuffer),
 			       sizeof(EVENT_GSCAN_SCAN_COMPLETE_T));
 
-			mtk_cfg80211_vendor_event_complete_scan(wiphy, NULL,
-								prEventGscnScnDone->ucScanState);
+			DBGLOG(SCN, INFO, "GSCAN scan complete: state=%u\n",
+			       prEventGscnScnDone->ucScanState);
 		}
 		break;
 
@@ -2613,19 +2559,6 @@ UINT_8 nicRxProcessGSCNEvent(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb
 		{
 			prEventGscnFullResult =
 			    (P_WIFI_GSCAN_RESULT_T) ((prEvent->aucBuffer) + sizeof(EVENT_GSCAN_FULL_RESULT_T));
-
-			prEventGscnFullResult = kalMemAlloc(sizeof(WIFI_GSCAN_RESULT_T), VIR_MEM_TYPE);
-			memcpy(prEventGscnFullResult, (P_WIFI_GSCAN_RESULT_T) (prEvent->aucBuffer),
-			       sizeof(WIFI_GSCAN_RESULT_T));
-
-			prParamGscnFullResult = kalMemAlloc(sizeof(PARAM_WIFI_GSCAN_RESULT), VIR_MEM_TYPE);
-			kalMemZero(prParamGscnFullResult, sizeof(PARAM_WIFI_GSCAN_RESULT));
-			memcpy(prParamGscnFullResult, prEventGscnFullResult, sizeof(WIFI_GSCAN_RESULT_T));
-
-			mtk_cfg80211_vendor_event_full_scan_results(wiphy,
-								    NULL,
-								    prParamGscnFullResult,
-								    sizeof(PARAM_WIFI_GSCAN_RESULT));
 		}
 		break;
 

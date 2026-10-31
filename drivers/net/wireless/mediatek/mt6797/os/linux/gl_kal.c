@@ -849,7 +849,7 @@
 */
 #include "gl_os.h"
 #include "gl_kal.h"
-#include "gl_wext.h"
+#include "ie_search.h"
 #include "precomp.h"
 #include <linux/sched/debug.h>
 #include <linux/timekeeping.h>
@@ -1551,7 +1551,7 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 
 		/* indicate assoc event */
 		wlanQueryInformation(prGlueInfo->prAdapter, wlanoidQueryBssid, &arBssid[0], sizeof(arBssid), &bufLen);
-		wext_indicate_wext_event(prGlueInfo, SIOCGIWAP, arBssid, bufLen);
+		/* legacy wext event dropped: cfg80211 connect/roam path reports it */
 
 		/* switch netif on */
 		netif_carrier_on(prGlueInfo->prDevHandler);
@@ -1646,7 +1646,6 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 	case WLAN_STATUS_MEDIA_DISCONNECT:
 	case WLAN_STATUS_MEDIA_DISCONNECT_LOCALLY:
 		/* indicate disassoc event */
-		wext_indicate_wext_event(prGlueInfo, SIOCGIWAP, NULL, 0);
 		/* For CR 90 and CR99, While supplicant do reassociate, driver will do netif_carrier_off first,
 		   after associated success, at joinComplete(), do netif_carier_on,
 		   but for unknown reason, the supplicant 1x pkt will not called the driver
@@ -1676,8 +1675,6 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 
 	case WLAN_STATUS_SCAN_COMPLETE:
 		/* indicate scan complete event */
-		wext_indicate_wext_event(prGlueInfo, SIOCGIWSCAN, NULL, 0);
-
 		DBGLOG(SCN, EVENT, "scan complete, cfg80211 scan request is %p\n", prGlueInfo->prScanRequest);
 		/* 1. reset first for newly incoming request */
 		GLUE_ACQUIRE_SPIN_LOCK(prGlueInfo, SPIN_LOCK_NET_DEV);
@@ -1713,9 +1710,6 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 								      PARAM_AUTH_REQUEST_PAIRWISE_ERROR)
 								     ? NL80211_KEYTYPE_PAIRWISE :
 								     NL80211_KEYTYPE_GROUP, 0, NULL, GFP_KERNEL);
-					wext_indicate_wext_event(prGlueInfo, IWEVMICHAELMICFAILURE,
-								 (unsigned char *)&pAuth->arRequest[0],
-								 pAuth->arRequest[0].u4Length);
 				}
 				break;
 
@@ -1726,13 +1720,8 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 					P_PARAM_PMKID_CANDIDATE_T prPmkidCand =
 					    (P_PARAM_PMKID_CANDIDATE_T) &pPmkid->arCandidateList[0];
 
-					for (i = 0; i < pPmkid->u4NumCandidates; i++) {
-						wext_indicate_wext_event(prGlueInfo,
-									 IWEVPMKIDCAND,
-									 (unsigned char *)&pPmkid->arCandidateList[i],
-									 pPmkid->u4NumCandidates);
+					for (i = 0; i < pPmkid->u4NumCandidates; i++)
 						prPmkidCand += sizeof(PARAM_PMKID_CANDIDATE_T);
-					}
 				}
 				break;
 
@@ -1747,10 +1736,6 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 
 #if CFG_SUPPORT_BCM && CFG_SUPPORT_BCM_BWCS
 	case WLAN_STATUS_BWCS_UPDATE:
-		{
-			wext_indicate_wext_event(prGlueInfo, IWEVCUSTOM, pvBuf, sizeof(PTA_IPC_T));
-		}
-
 		break;
 
 #endif
@@ -1823,8 +1808,6 @@ kalUpdateReAssocReqInfo(IN P_GLUE_INFO_T prGlueInfo,
 		cp += 4;
 		u4FrameBodyLen -= 4;
 	}
-
-	wext_indicate_wext_event(prGlueInfo, IWEVASSOCREQIE, cp, u4FrameBodyLen);
 
 	if (u4FrameBodyLen <= CFG_CFG80211_IE_BUF_LEN) {
 		prGlueInfo->u4ReqIeLength = u4FrameBodyLen;
