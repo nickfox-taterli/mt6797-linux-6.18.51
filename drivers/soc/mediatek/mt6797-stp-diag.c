@@ -135,8 +135,145 @@ static int mt6797_stp_diag_function(struct mt6797_stp_diag *diag,
 	return 0;
 }
 
+/* INIT: managed WMT bootstrap, filling the diag WMT config/calibration. */
+static int mt6797_stp_diag_init_step(struct mt6797_stp_diag *diag,
+				     struct mt6797_stp_session *session,
+				     void *host_context)
+{
+	return mt6797_wmt_bootstrap(diag->dev, session, host_context,
+				    &diag->config, &diag->calibration);
+}
+
+/* QUERY: mandatory BTIF preparation only, then the bounded WMT query. */
+static int mt6797_stp_diag_query_step(struct mt6797_stp_diag *diag,
+				      struct mt6797_stp_session *session)
+{
+	int ret;
+
+	ret = mt6797_stp_session_prepare_btif_mandatory(session);
+	if (ret)
+		return ret;
+	return mt6797_stp_diag_query(diag, session);
+}
+
+/* FULL/VERSION/PATCH: full BTIF setup, then the mode-specific exchange. */
+static int mt6797_stp_diag_version_step(struct mt6797_stp_diag *diag,
+					struct mt6797_stp_session *session,
+					void *host_context,
+					enum mt6797_stp_diag_mode mode)
+{
+	u32 hw_version, fw_version;
+	int ret;
+
+	ret = mt6797_stp_session_configure_btif_full(
+		session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+	if (ret)
+		return ret;
+	if (mode == MT6797_STP_DIAG_FULL)
+		return mt6797_stp_diag_query_full(diag, session);
+
+	ret = mt6797_wmt_read_version(diag->dev, session,
+				      &hw_version, &fw_version);
+	if (ret)
+		return ret;
+	if (mode == MT6797_STP_DIAG_VERSION) {
+		put_unaligned_le32(hw_version, diag->response);
+		put_unaligned_le32(fw_version, diag->response + 4);
+		diag->response_length = 8;
+		return 0;
+	}
+	return mt6797_wmt_download_patches(diag->dev, session, host_context,
+					   hw_version, fw_version);
+}
+
+/* BT/Wi-Fi function switch plus the optional Wi-Fi HIF ownership check.
+ * Every failure path recycles the radio power and the claimed HIF before
+ * returning; a function-off request also powers the radio down. */
+static int mt6797_stp_diag_function_step(struct mt6797_stp_diag *diag,
+					 struct mt6797_stp_session *session,
+					 void *host_context,
+					 enum mt6797_stp_diag_mode mode)
+{
+	u8 function = (mode == MT6797_STP_DIAG_BT_ON ||
+		       mode == MT6797_STP_DIAG_BT_OFF) ?
+		      MT6797_CONSYS_FUNC_BT : MT6797_CONSYS_FUNC_WIFI;
+	bool function_enabled = mode == MT6797_STP_DIAG_BT_ON ||
+				mode == MT6797_STP_DIAG_WIFI_ON ||
+				mode == MT6797_STP_DIAG_WIFI_HIF;
+	bool function_powered = false;
+	bool function_power_changed = false;
+	bool function_on_ack = false;
+	bool hif_claimed = false;
+	int release_ret;
+	int ret;
+
+	ret = mt6797_stp_session_configure_btif_full(
+		session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
+	if (!ret && function_enabled) {
+		ret = mt6797_consys_radio_power(host_context, function, true,
+						&function_power_changed);
+		function_powered = !ret && function_power_changed;
+	}
+	if (!ret)
+		ret = mt6797_stp_diag_function(diag, session, function,
+					       function_enabled);
+	function_on_ack = !ret && function_enabled;
+	if (!ret && mode == MT6797_STP_DIAG_WIFI_HIF) {
+		u32 wcir;
+
+		/* Function-on is the ownership hand-off.  The HIF driver does
+		 * not power the radio or infer this state itself. */
+		ret = mt6797_wlan_hif_claim(diag->dev);
+		if (!ret)
+			hif_claimed = true;
+		if (!ret)
+			ret = mt6797_wlan_hif_wcir_read(diag->dev, &wcir);
+		if (!ret) {
+			put_unaligned_le32(wcir, diag->response);
+			diag->response_length = sizeof(wcir);
+			if ((wcir & 0xffff) != MT6797_WLAN_WCIR_CHIP_ID) {
+				dev_err(diag->dev,
+					"WLAN WCIR chip ID 0x%08x != 0x%04x\n",
+					wcir, MT6797_WLAN_WCIR_CHIP_ID);
+				ret = -EPROTO;
+			} else {
+				dev_info(diag->dev,
+					 "WLAN HIF WCIR chip ID 0x%04x confirmed\n",
+					 wcir & 0xffff);
+			}
+		}
+	}
+	if (hif_claimed) {
+		release_ret = mt6797_wlan_hif_release(diag->dev);
+		hif_claimed = false;
+		if (!ret && release_ret)
+			ret = release_ret;
+	}
+	if (mode == MT6797_STP_DIAG_WIFI_HIF && function_on_ack) {
+		int off_ret;
+
+		off_ret = mt6797_stp_diag_function(diag, session, function,
+						   false);
+		if (!ret && off_ret)
+			ret = off_ret;
+		if (function_powered) {
+			off_ret = mt6797_consys_radio_power(host_context,
+							    function, false,
+							    NULL);
+			if (!ret && off_ret)
+				ret = off_ret;
+		}
+	}
+	if (!ret && !function_enabled)
+		ret = mt6797_consys_radio_power(host_context, function, false,
+						NULL);
+	if (ret && function_powered)
+		mt6797_consys_radio_power(host_context, function, false, NULL);
+	return ret;
+}
+
 static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
-				       enum mt6797_stp_diag_mode mode)
+			       enum mt6797_stp_diag_mode mode)
 {
 	static const struct mt6797_stp_session_ops session_ops = {
 		.rx_frame = mt6797_stp_diag_rx,
@@ -146,12 +283,6 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	void *host_context = NULL;
 	int ret;
 	int release_ret;
-	u8 function = 0;
-	bool function_enabled = false;
-	bool function_powered = false;
-	bool function_power_changed = false;
-	bool function_on_ack = false;
-	bool hif_claimed = false;
 
 	if (mode == MT6797_STP_DIAG_INIT)
 		ret = mt6797_consys_stp_open(diag->consys_dev, &host_ops,
@@ -183,107 +314,20 @@ static int mt6797_stp_diag_run(struct mt6797_stp_diag *diag,
 	if (ret)
 		goto out_stop;
 
-	if (mode == MT6797_STP_DIAG_INIT) {
-		ret = mt6797_wmt_bootstrap(diag->dev, session, host_context,
-					   &diag->config, &diag->calibration);
-	} else if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
+	if (mode == MT6797_STP_DIAG_INIT)
+		ret = mt6797_stp_diag_init_step(diag, session, host_context);
+	else if (mode == MT6797_STP_DIAG_BT_ON || mode == MT6797_STP_DIAG_BT_OFF ||
 	    mode == MT6797_STP_DIAG_WIFI_ON || mode == MT6797_STP_DIAG_WIFI_OFF ||
-	    mode == MT6797_STP_DIAG_WIFI_HIF) {
-		function = (mode == MT6797_STP_DIAG_BT_ON ||
-			    mode == MT6797_STP_DIAG_BT_OFF) ?
-			   MT6797_CONSYS_FUNC_BT : MT6797_CONSYS_FUNC_WIFI;
-		function_enabled = mode == MT6797_STP_DIAG_BT_ON ||
-				 mode == MT6797_STP_DIAG_WIFI_ON ||
-				 mode == MT6797_STP_DIAG_WIFI_HIF;
-		ret = mt6797_stp_session_configure_btif_full(
-			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
-		if (!ret && function_enabled) {
-			ret = mt6797_consys_radio_power(host_context, function, true,
-							&function_power_changed);
-			function_powered = !ret && function_power_changed;
-		}
-		if (!ret)
-			ret = mt6797_stp_diag_function(diag, session, function,
-						function_enabled);
-		function_on_ack = !ret && function_enabled;
-		if (!ret && mode == MT6797_STP_DIAG_WIFI_HIF) {
-			u32 wcir;
-
-			/* Function-on is the ownership hand-off.  The HIF driver does
-			 * not power the radio or infer this state itself. */
-			ret = mt6797_wlan_hif_claim(diag->dev);
-			if (!ret)
-				hif_claimed = true;
-			if (!ret)
-				ret = mt6797_wlan_hif_wcir_read(diag->dev, &wcir);
-			if (!ret) {
-				put_unaligned_le32(wcir, diag->response);
-				diag->response_length = sizeof(wcir);
-				if ((wcir & 0xffff) != MT6797_WLAN_WCIR_CHIP_ID) {
-					dev_err(diag->dev,
-						"WLAN WCIR chip ID 0x%08x != 0x%04x\n",
-						wcir, MT6797_WLAN_WCIR_CHIP_ID);
-					ret = -EPROTO;
-				} else {
-					dev_info(diag->dev,
-						 "WLAN HIF WCIR chip ID 0x%04x confirmed\n",
-						 wcir & 0xffff);
-				}
-			}
-		}
-		if (hif_claimed) {
-			release_ret = mt6797_wlan_hif_release(diag->dev);
-			hif_claimed = false;
-			if (!ret && release_ret)
-				ret = release_ret;
-		}
-		if (mode == MT6797_STP_DIAG_WIFI_HIF && function_on_ack) {
-			int off_ret;
-
-			off_ret = mt6797_stp_diag_function(diag, session, function,
-							false);
-			if (!ret && off_ret)
-				ret = off_ret;
-			if (function_powered) {
-				off_ret = mt6797_consys_radio_power(host_context, function,
-								false, NULL);
-				if (!ret && off_ret)
-					ret = off_ret;
-			}
-		}
-		if (!ret && !function_enabled)
-			ret = mt6797_consys_radio_power(host_context, function, false, NULL);
-		if (ret && function_powered)
-			mt6797_consys_radio_power(host_context, function, false, NULL);
-	} else if (mode == MT6797_STP_DIAG_FULL ||
-		   mode == MT6797_STP_DIAG_VERSION ||
-		   mode == MT6797_STP_DIAG_PATCH) {
-		ret = mt6797_stp_session_configure_btif_full(
-			session, msecs_to_jiffies(MT6797_STP_DIAG_TIMEOUT_MS));
-		if (!ret && mode == MT6797_STP_DIAG_FULL)
-			ret = mt6797_stp_diag_query_full(diag, session);
-		if (!ret && (mode == MT6797_STP_DIAG_VERSION ||
-			     mode == MT6797_STP_DIAG_PATCH)) {
-			u32 hw_version;
-			u32 fw_version;
-
-			ret = mt6797_wmt_read_version(diag->dev, session,
-							   &hw_version, &fw_version);
-			if (!ret && mode == MT6797_STP_DIAG_VERSION) {
-				put_unaligned_le32(hw_version, diag->response);
-				put_unaligned_le32(fw_version, diag->response + 4);
-				diag->response_length = 8;
-			}
-			if (!ret && mode == MT6797_STP_DIAG_PATCH)
-				ret = mt6797_wmt_download_patches(diag->dev, session, host_context, hw_version,
-							    fw_version);
-		}
-	} else {
-		ret = mt6797_stp_session_prepare_btif_mandatory(session);
-		if (ret)
-			goto out_stop;
-		ret = mt6797_stp_diag_query(diag, session);
-	}
+	    mode == MT6797_STP_DIAG_WIFI_HIF)
+		ret = mt6797_stp_diag_function_step(diag, session, host_context,
+						    mode);
+	else if (mode == MT6797_STP_DIAG_FULL ||
+		 mode == MT6797_STP_DIAG_VERSION ||
+		 mode == MT6797_STP_DIAG_PATCH)
+		ret = mt6797_stp_diag_version_step(diag, session, host_context,
+						   mode);
+	else
+		ret = mt6797_stp_diag_query_step(diag, session);
 
 out_stop:
 	mt6797_stp_session_stop(session);
