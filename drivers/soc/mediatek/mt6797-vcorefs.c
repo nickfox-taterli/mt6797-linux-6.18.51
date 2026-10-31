@@ -113,13 +113,15 @@ static unsigned int current_opp(struct mt6797_vcorefs *s)
 	return readl(s->phy + 0x63c) & 3;
 }
 
-/* BSP get_dram_data_rate_from_reg(), before its advertised-rate rounding. */
-static unsigned int dram_data_rate(struct mt6797_vcorefs *s, bool highest)
+/* BSP get_dram_data_rate_from_reg(), before its advertised-rate rounding.
+ * opp0 reads the corner-0 (HPM) PLL regardless of the running shuffle; use
+ * it for capability checks, never as evidence that the corner was entered. */
+static unsigned int dram_data_rate(struct mt6797_vcorefs *s, bool opp0)
 {
 	static const u32 div_regs[] = { 0x42c, 0x448, 0x9c4 };
 	static const u32 pll_regs[] = { 0x408, 0x644, 0xa44 };
-	u32 div_index = highest ? 0 : (readl(s->dram + 0x28) >> 8) & 7;
-	u32 pll_index = highest ? 0 : current_opp(s);
+	u32 div_index = opp0 ? 0 : (readl(s->dram + 0x28) >> 8) & 7;
+	u32 pll_index = opp0 ? 0 : current_opp(s);
 	u32 divider, pll, prediv, frequency;
 
 	if ((readl(s->dram + 0x28) & BIT(17)) || div_index >= 3 || pll_index >= 3)
@@ -527,7 +529,7 @@ static ssize_t state_show(struct device *dev, struct device_attribute *attr, cha
 	ssize_t len;
 
 	mutex_lock(&s->lock);
-	len = sysfs_emit(buf, "running=%u stopped=%u shuffle=%u ddr_MT_s=%u highest_ddr_MT_s=%u axi_Hz=%lu initial=%u changes=%lu failures=%lu cpu_voltage_owner=cpufreq firmware=%s r1=%08x r6=%08x flags=%08x im_ptr=%08x im_len=%u\n",
+	len = sysfs_emit(buf, "running=%u stopped=%u shuffle=%u ddr_MT_s=%u opp0_ddr_MT_s=%u axi_Hz=%lu initial=%u changes=%lu failures=%lu cpu_voltage_owner=cpufreq firmware=%s r1=%08x r6=%08x flags=%08x im_ptr=%08x im_len=%u\n",
 			 s->running, s->stopped, current_opp(s), dram_data_rate(s, false),
 			 dram_data_rate(s, true), clk_get_rate(s->axi), s->initial_opp, s->changes,
 			 s->failures, s->version, spm_read(s, PCM_REG1_DATA),
@@ -749,8 +751,11 @@ static int vcorefs_probe(struct platform_device *pdev)
 		ret = PTR_ERR(s->devfreq);
 		goto remove_opps;
 	}
-	dev_info(dev, "%s; shuffle=%u, CPU voltages retained\n",
-		 s->version, s->initial_opp);
+	/* initial_opp is read from the physical PHY, so this line records the
+	 * shuffle and data rate the boot chain (SPL training ends on shuffle 1)
+	 * actually handed over, before any userspace request. */
+	dev_info(dev, "%s; shuffle=%u ddr=%u MT/s, CPU voltages retained\n",
+		 s->version, s->initial_opp, dram_data_rate(s, false));
 	return 0;
 remove_opps:
 	dev_pm_opp_remove_all_dynamic(dev);
