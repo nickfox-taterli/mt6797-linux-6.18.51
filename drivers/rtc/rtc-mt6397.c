@@ -10,11 +10,18 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
 #include <linux/mfd/mt6397/rtc.h>
 #include <linux/mod_devicetable.h>
+
+#define MT6351_RTC_BASE		0x4000
+#define MT6351_RTC_PROT		0x0036
+#define MT6351_RTC_UNLOCK1	0x586a
+#define MT6351_RTC_UNLOCK2	0x9136
+#define MT6351_RTC_BBPU_RELOAD	BIT(5)
 
 static int mtk_rtc_write_trigger(struct mt6397_rtc *rtc)
 {
@@ -66,6 +73,21 @@ static int __mtk_rtc_read_time(struct mt6397_rtc *rtc,
 	u16 data[RTC_OFFSET_COUNT];
 
 	mutex_lock(&rtc->lock);
+	if (rtc->data->mt6351_pwrap) {
+		unsigned int bbpu;
+
+		/* MT6351 snapshots the counter into TC registers on reload. */
+		ret = regmap_read(rtc->regmap, rtc->addr_base + RTC_BBPU, &bbpu);
+		if (ret)
+			goto exit;
+		ret = regmap_write(rtc->regmap, rtc->addr_base + RTC_BBPU,
+				   bbpu | RTC_BBPU_KEY | MT6351_RTC_BBPU_RELOAD);
+		if (ret)
+			goto exit;
+		ret = mtk_rtc_write_trigger(rtc);
+		if (ret)
+			goto exit;
+	}
 	ret = regmap_bulk_read(rtc->regmap, rtc->addr_base + RTC_TC_SEC,
 			       data, RTC_OFFSET_COUNT);
 	if (ret < 0)
@@ -99,6 +121,16 @@ static int mtk_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	/* HW register start mon/wday from one, but tm_mon/tm_wday start from zero. */
 	tm->tm_mon--;
 	tm->tm_wday--;
+	/* MT6351 BSP defines register year zero as 1968, not 1900. */
+	if (rtc->data->mt6351_pwrap) {
+		struct rtc_time calculated;
+
+		tm->tm_year += 68;
+		if (!rtc_valid_tm(tm)) {
+			rtc_time64_to_tm(rtc_tm_to_time64(tm), &calculated);
+			tm->tm_wday = calculated.tm_wday;
+		}
+	}
 
 exit:
 	return ret;
@@ -119,11 +151,44 @@ static int mtk_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	data[RTC_OFFSET_DOM] = tm->tm_mday;
 	data[RTC_OFFSET_DOW] = tm->tm_wday;
 	data[RTC_OFFSET_MTH] = tm->tm_mon;
-	data[RTC_OFFSET_YEAR] = tm->tm_year;
+	data[RTC_OFFSET_YEAR] = tm->tm_year -
+				(rtc->data->mt6351_pwrap ? 68 : 0);
 
 	mutex_lock(&rtc->lock);
-	ret = regmap_bulk_write(rtc->regmap, rtc->addr_base + RTC_TC_SEC,
-				data, RTC_OFFSET_COUNT);
+	if (rtc->data->mt6351_pwrap) {
+		/* MT6351 protects RTC writes; each key needs its own trigger. */
+		ret = regmap_write(rtc->regmap, rtc->addr_base + MT6351_RTC_PROT,
+				   MT6351_RTC_UNLOCK1);
+		if (ret)
+			goto exit;
+		ret = mtk_rtc_write_trigger(rtc);
+		if (ret)
+			goto exit;
+		ret = regmap_write(rtc->regmap, rtc->addr_base + MT6351_RTC_PROT,
+				   MT6351_RTC_UNLOCK2);
+		if (ret)
+			goto exit;
+		ret = mtk_rtc_write_trigger(rtc);
+		if (ret)
+			goto exit;
+	}
+	if (rtc->data->mt6351_pwrap) {
+		int i;
+
+		/* The BSP leaves the day-of-week register untouched. */
+		for (i = RTC_OFFSET_COUNT - 1; i >= 0; i--) {
+			if (i == RTC_OFFSET_DOW)
+				continue;
+			ret = regmap_write(rtc->regmap,
+					   rtc->addr_base + RTC_TC_SEC + 2 * i,
+					   data[i]);
+			if (ret)
+				goto exit;
+		}
+	} else {
+		ret = regmap_bulk_write(rtc->regmap, rtc->addr_base + RTC_TC_SEC,
+					data, RTC_OFFSET_COUNT);
+	}
 	if (ret < 0)
 		goto exit;
 
@@ -247,7 +312,6 @@ static const struct rtc_class_ops mtk_rtc_ops = {
 static int mtk_rtc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
-	struct mt6397_chip *mt6397_chip = dev_get_drvdata(pdev->dev.parent);
 	struct mt6397_rtc *rtc;
 	int ret;
 
@@ -255,18 +319,42 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 	if (!rtc)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -EINVAL;
-	rtc->addr_base = res->start;
-
 	rtc->data = of_device_get_match_data(&pdev->dev);
+	if (!rtc->data)
+		return -EINVAL;
+	if (rtc->data->mt6351_pwrap) {
+		struct device_node *node;
+		struct platform_device *pwrap;
 
-	rtc->irq = platform_get_irq(pdev, 0);
-	if (rtc->irq < 0)
-		return rtc->irq;
+		node = of_parse_phandle(pdev->dev.of_node, "mediatek,pwrap", 0);
+		if (!node)
+			return -EINVAL;
+		pwrap = of_find_device_by_node(node);
+		of_node_put(node);
+		if (!pwrap)
+			return -EPROBE_DEFER;
+		rtc->regmap = dev_get_regmap(&pwrap->dev, NULL);
+		if (rtc->regmap && !device_link_add(&pdev->dev, &pwrap->dev,
+						 DL_FLAG_AUTOREMOVE_CONSUMER)) {
+			put_device(&pwrap->dev);
+			return -ENOMEM;
+		}
+		put_device(&pwrap->dev);
+		if (!rtc->regmap)
+			return -EPROBE_DEFER;
+		rtc->addr_base = MT6351_RTC_BASE;
+	} else {
+		struct mt6397_chip *chip = dev_get_drvdata(pdev->dev.parent);
 
-	rtc->regmap = mt6397_chip->regmap;
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		if (!res || !chip)
+			return -EINVAL;
+		rtc->addr_base = res->start;
+		rtc->irq = platform_get_irq(pdev, 0);
+		if (rtc->irq < 0)
+			return rtc->irq;
+		rtc->regmap = chip->regmap;
+	}
 	mutex_init(&rtc->lock);
 
 	platform_set_drvdata(pdev, rtc);
@@ -275,24 +363,32 @@ static int mtk_rtc_probe(struct platform_device *pdev)
 	if (IS_ERR(rtc->rtc_dev))
 		return PTR_ERR(rtc->rtc_dev);
 
-	ret = devm_request_threaded_irq(&pdev->dev, rtc->irq, NULL,
-					mtk_rtc_irq_handler_thread,
-					IRQF_ONESHOT | IRQF_TRIGGER_HIGH,
-					"mt6397-rtc", rtc);
-
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to request alarm IRQ: %d: %d\n",
-			rtc->irq, ret);
-		return ret;
+	if (rtc->data->mt6351_pwrap) {
+		/* No MT6351 PMIC interrupt controller is wired up yet. */
+		clear_bit(RTC_FEATURE_ALARM, rtc->rtc_dev->features);
+	} else {
+		ret = devm_request_threaded_irq(&pdev->dev, rtc->irq, NULL,
+						mtk_rtc_irq_handler_thread,
+						IRQF_ONESHOT | IRQF_TRIGGER_HIGH,
+						"mt6397-rtc", rtc);
+		if (ret) {
+			dev_err(&pdev->dev, "Failed to request alarm IRQ: %d: %d\n",
+				rtc->irq, ret);
+			return ret;
+		}
+		device_init_wakeup(&pdev->dev, true);
 	}
 
-	device_init_wakeup(&pdev->dev, true);
-
 	rtc->rtc_dev->ops = &mtk_rtc_ops;
-	rtc->rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_1900;
-	rtc->rtc_dev->range_max = mktime64(2027, 12, 31, 23, 59, 59);
-	rtc->rtc_dev->start_secs = mktime64(1968, 1, 2, 0, 0, 0);
-	rtc->rtc_dev->set_start_time = true;
+	if (rtc->data->mt6351_pwrap) {
+		rtc->rtc_dev->range_min = mktime64(1968, 1, 1, 0, 0, 0);
+		rtc->rtc_dev->range_max = mktime64(2095, 12, 31, 23, 59, 59);
+	} else {
+		rtc->rtc_dev->range_min = RTC_TIMESTAMP_BEGIN_1900;
+		rtc->rtc_dev->range_max = mktime64(2027, 12, 31, 23, 59, 59);
+		rtc->rtc_dev->start_secs = mktime64(1968, 1, 2, 0, 0, 0);
+		rtc->rtc_dev->set_start_time = true;
+	}
 
 	return devm_rtc_register_device(rtc->rtc_dev);
 }
@@ -330,7 +426,13 @@ static const struct mtk_rtc_data mt6397_rtc_data = {
 	.wrtgr = RTC_WRTGR_MT6397,
 };
 
+static const struct mtk_rtc_data mt6351_rtc_data = {
+	.wrtgr = RTC_WRTGR_MT6397,
+	.mt6351_pwrap = true,
+};
+
 static const struct of_device_id mt6397_rtc_of_match[] = {
+	{ .compatible = "mediatek,mt6351-rtc", .data = &mt6351_rtc_data },
 	{ .compatible = "mediatek,mt6323-rtc", .data = &mt6397_rtc_data },
 	{ .compatible = "mediatek,mt6357-rtc", .data = &mt6358_rtc_data },
 	{ .compatible = "mediatek,mt6358-rtc", .data = &mt6358_rtc_data },

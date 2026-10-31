@@ -65,6 +65,7 @@
 
 struct mtk_rtc_data {
 	u32                     wrtgr;
+	bool                    mt6351_pwrap;
 };
 
 struct mt6397_rtc {
