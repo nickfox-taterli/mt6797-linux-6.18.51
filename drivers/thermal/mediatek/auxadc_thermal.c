@@ -390,13 +390,22 @@ struct mtk_thermal {
 	bool tc_trace_previous_valid;
 	bool tc_trace_failure_valid;
 	bool tc_trace_hot_latched;
-	/* Same-boot follow-up of the first trip-level sample: the reading and
-	 * time when the latched sensor returned below the trip threshold, or
-	 * evidence that it was still at trip level at suspend/reset.  RAM
-	 * only: the 64-byte SRAM hot block is full, and the follow-up always
-	 * happens in the boot that latched the sample. */
-	bool tc_hot_follow_valid;
-	bool tc_hot_follow_still_hot;
+	/* Same-boot follow-up of the first trip-level sample.  States:
+	 * TC_HOT_FOLLOW_NONE    - latched, no sample of that sensor since
+	 *                        (nothing observed yet; proves nothing);
+	 * TC_HOT_FOLLOW_RECOVERED - the sensor was observed back at/below the
+	 *                        trip threshold (time + raw recorded);
+	 * TC_HOT_FOLLOW_NO_RECOVERY - suspended with no recovery observed;
+	 *                        this proves only that no recovery was SEEN,
+	 *                        not that the sensor stayed hot.
+	 * RAM only: the 64-byte SRAM hot block is full, and the follow-up
+	 * always happens in the boot that latched the sample.  Written under
+	 * mt6797_thermal_eem_lock; the sysfs reader takes the same lock. */
+	enum {
+		TC_HOT_FOLLOW_NONE = 0,
+		TC_HOT_FOLLOW_RECOVERED,
+		TC_HOT_FOLLOW_NO_RECOVERY,
+	} tc_hot_follow_state;
 	u64 tc_hot_latch_ns;
 	u64 tc_hot_follow_ns;
 	u32 tc_hot_follow_raw;
@@ -1036,11 +1045,13 @@ static void mt6797_trace_bank(struct mtk_thermal *mt, u64 started)
 		mt->tc_hot_latch_ns = now;
 		mt->tc_hot_bank = bank;
 		mt->tc_hot_sensor = sensor;
-	} else if (mt->tc_trace_hot_latched && !mt->tc_hot_follow_valid &&
+	} else if (mt->tc_trace_hot_latched &&
+		   mt->tc_hot_follow_state == TC_HOT_FOLLOW_NONE &&
 		   bank == mt->tc_hot_bank) {
-		/* Watch the latched sensor: once its reading returns below the
-		 * trip threshold, record when and what.  A reading still at
-		 * trip level at reset shows up as still_hot via suspend. */
+		/* Watch the latched sensor: once its reading returns to or below
+		 * the trip threshold, record when and what.  Only the observed
+		 * recovery goes here; "no recovery before suspend" is recorded
+		 * separately at suspend time. */
 		const struct thermal_bank_cfg *cfg =
 			&mt->conf->bank_data[bank];
 		unsigned int slot = mt->tc_hot_sensor;
@@ -1050,9 +1061,11 @@ static void mt6797_trace_bank(struct mtk_thermal *mt, u64 started)
 			int sensor = cfg->sensors[slot];
 
 			if (raw && raw >= mt->tc_trace_hot_raw[sensor]) {
-				mt->tc_hot_follow_valid = true;
 				mt->tc_hot_follow_ns = now;
 				mt->tc_hot_follow_raw = raw;
+				/* state last: readers check it first */
+				smp_store_release(&mt->tc_hot_follow_state,
+						  TC_HOT_FOLLOW_RECOVERED);
 			}
 		}
 	}
@@ -1547,19 +1560,36 @@ static ssize_t hot_sample_follow_show(struct device *dev,
 				      char *buf)
 {
 	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	unsigned long flags;
+	int state;
+	u64 latch, follow;
+	u32 raw;
 
 	if (!mt->tc_trace_hot_latched)
 		return sysfs_emit(buf, "latched=0\n");
-	if (!mt->tc_hot_follow_valid)
+
+	spin_lock_irqsave(&mt6797_thermal_eem_lock, flags);
+	state = smp_load_acquire(&mt->tc_hot_follow_state);
+	latch = mt->tc_hot_latch_ns;
+	follow = mt->tc_hot_follow_ns;
+	raw = mt->tc_hot_follow_raw;
+	spin_unlock_irqrestore(&mt6797_thermal_eem_lock, flags);
+
+	switch (state) {
+	case TC_HOT_FOLLOW_NONE:
 		return sysfs_emit(buf,
-			"latched=1 bank=%u sensor_slot=%u followup=0 still_at_trip\n",
+			"latched=1 bank=%u sensor_slot=%u followup=none_no_sample_yet\n",
 			mt->tc_hot_bank, mt->tc_hot_sensor);
-	return sysfs_emit(buf,
-		"latched=1 bank=%u sensor_slot=%u followup=1 still_hot=%u elapsed_ns=%llu raw=%05x\n",
-		mt->tc_hot_bank, mt->tc_hot_sensor,
-		mt->tc_hot_follow_still_hot,
-		mt->tc_hot_follow_ns - mt->tc_hot_latch_ns,
-		mt->tc_hot_follow_raw);
+	case TC_HOT_FOLLOW_NO_RECOVERY:
+		return sysfs_emit(buf,
+			"latched=1 bank=%u sensor_slot=%u followup=no_recovery_before_suspend (no recovery OBSERVED; not proof it stayed hot)\n",
+			mt->tc_hot_bank, mt->tc_hot_sensor);
+	default:
+		return sysfs_emit(buf,
+			"latched=1 bank=%u sensor_slot=%u followup=recovered elapsed_ns=%llu raw=%05x\n",
+			mt->tc_hot_bank, mt->tc_hot_sensor,
+			follow >= latch ? follow - latch : 0, raw);
+	}
 }
 static DEVICE_ATTR_RO(hot_sample_follow);
 
@@ -2544,13 +2574,12 @@ static int mtk_thermal_suspend(struct device *dev)
 		ret = -EIO;
 		goto restore;
 	}
-	/* Banks are stopped now.  No follow-up means the latched sensor was
-	 * never observed below the trip threshold between latch and suspend:
-	 * record that honestly instead of a synthetic raw value. */
-	if (mt->tc_trace_hot_latched && !mt->tc_hot_follow_valid) {
-		mt->tc_hot_follow_valid = true;
-		mt->tc_hot_follow_still_hot = true;
-	}
+	/* Banks are stopped now.  If the latched sensor was never observed
+	 * back at/below the trip threshold before suspend, record exactly
+	 * that: no recovery OBSERVED (not proof that it stayed hot). */
+	if (mt->tc_trace_hot_latched &&
+	    mt->tc_hot_follow_state == TC_HOT_FOLLOW_NONE)
+		mt->tc_hot_follow_state = TC_HOT_FOLLOW_NO_RECOVERY;
 	mt->pm_suspended = true;
 	mt->pm_suspends++;
 	dev_dbg(dev, "BSP suspend: banks stopped, AHB drained, TS buffer off\n");
