@@ -431,6 +431,7 @@ static int mt6797_wmt_expect(struct mt6797_stp_session *session, u8 opcode,
 	return 0;
 }
 
+/* consumed cross-module by mt6797-wmt.ko (radio on/off) */
 int mt6797_wmt_function_control(struct device *dev,
 				struct mt6797_stp_session *session,
 				u8 function, bool enabled)
@@ -446,6 +447,7 @@ int mt6797_wmt_function_control(struct device *dev,
 			 enabled ? "on" : "off");
 	return ret;
 }
+EXPORT_SYMBOL_GPL(mt6797_wmt_function_control);
 
 static int mt6797_wmt_calibrate(struct device *dev,
 			       struct mt6797_stp_session *session, void *host_context,
