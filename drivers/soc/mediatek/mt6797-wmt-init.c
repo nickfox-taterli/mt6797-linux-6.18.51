@@ -446,7 +446,6 @@ int mt6797_wmt_function_control(struct device *dev,
 			 enabled ? "on" : "off");
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_wmt_function_control);
 
 static int mt6797_wmt_calibrate(struct device *dev,
 			       struct mt6797_stp_session *session, void *host_context,
@@ -532,7 +531,6 @@ int mt6797_wmt_post_patch_init(struct device *dev,
 			 config->antenna_mode, config->co_clock, config->fm_transport);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_wmt_post_patch_init);
 
 int mt6797_wmt_bootstrap(struct device *dev, struct mt6797_stp_session *session,
 			 void *host_context, const struct mt6797_wmt_config *config,

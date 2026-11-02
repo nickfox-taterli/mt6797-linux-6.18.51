@@ -467,7 +467,6 @@ int mt6797_consys_stp_set_mode(void *context, u32 mode)
 	mutex_unlock(&cs->lock);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_mode);
 
 int mt6797_consys_stp_set_enabled(void *context, bool enabled)
 {
@@ -488,7 +487,6 @@ int mt6797_consys_stp_set_enabled(void *context, bool enabled)
 	mutex_unlock(&cs->lock);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(mt6797_consys_stp_set_enabled);
 
 static int consys_stp_acquire(struct device *consys_dev,
 			      struct mt6797_stp_host_ops *ops,
@@ -609,29 +607,6 @@ int mt6797_consys_radio_power(void *context, u8 function, bool enabled,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(mt6797_consys_radio_power);
-
-int mt6797_consys_get_emi(void *context, phys_addr_t *base,
-				  phys_addr_t *size)
-{
-	struct mt6797_consys *cs = context;
-	int ret = 0;
-
-	if (!cs || !base || !size)
-		return -EINVAL;
-
-	mutex_lock(&cs->lock);
-	if (!cs->stp_claimed)
-		ret = -EPERM;
-	else if (!cs->emi_size || !cs->emi_mapping_active || !cs->powered)
-		ret = -ENODEV;
-	else {
-		*base = cs->emi_base;
-		*size = cs->emi_size;
-	}
-	mutex_unlock(&cs->lock);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(mt6797_consys_get_emi);
 
 int mt6797_consys_read_cpupcr(void *context, u32 *value)
 {
