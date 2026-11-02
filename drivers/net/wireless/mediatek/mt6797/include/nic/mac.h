@@ -342,8 +342,6 @@
 #define ETH_SNAP_BT_SIG_OUI_2                   0x58
 #define ETH_SNAP_BT_SIG_OUI                     {ETH_SNAP_BT_SIG_OUI_0 , ETH_SNAP_BT_SIG_OUI_1, ETH_SNAP_BT_SIG_OUI_2}
 
-#define BOW_PROTOCOL_ID_SECURITY_FRAME          0x0003
-
 /* IEEE 802.11 WLAN Frame Field Size, in byte */
 #define WLAN_MAC_HEADER_LEN                     24	/* Address 4 excluded */
 #define WLAN_MAC_HEADER_A4_LEN                  30	/* Address 4 included */

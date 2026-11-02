@@ -332,8 +332,7 @@ extern UINT_16 g_u2DumpIndex;
 	(IS_BSS_ACTIVE(_prBssInfo) && \
 	 ((_prBssInfo)->eConnectionState == PARAM_MEDIA_STATE_CONNECTED || \
 	  (_prBssInfo)->eCurrentOPMode == OP_MODE_ACCESS_POINT || \
-	  (_prBssInfo)->eCurrentOPMode == OP_MODE_IBSS || \
-	  IS_BSS_BOW(_prBssInfo)) \
+	  (_prBssInfo)->eCurrentOPMode == OP_MODE_IBSS) \
 	)
 
 #define RLM_NET_IS_11N(_prBssInfo) \

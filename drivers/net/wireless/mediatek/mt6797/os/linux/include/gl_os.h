@@ -683,10 +683,6 @@ extern BOOLEAN fgIsBusAccessFailed;
 #define GLUE_FLAG_HIF_FW_OWN_BIT    (15)
 #endif
 
-#define GLUE_BOW_KFIFO_DEPTH        (1024)
-/* #define GLUE_BOW_DEVICE_NAME        "MT6620 802.11 AMP" */
-#define GLUE_BOW_DEVICE_NAME        "ampc0"
-
 #define WAKE_LOCK_RX_TIMEOUT                            300	/* ms */
 #define WAKE_LOCK_THREAD_WAKEUP_TIMEOUT                 50	/* ms */
 
@@ -709,7 +705,6 @@ typedef struct _GL_WPA_INFO_T {
 typedef enum _ENUM_NET_DEV_IDX_T {
 	NET_DEV_WLAN_IDX = 0,
 	NET_DEV_P2P_IDX,
-	NET_DEV_BOW_IDX,
 	NET_DEV_NUM
 } ENUM_NET_DEV_IDX_T;
 
@@ -758,31 +753,6 @@ typedef struct _GL_IO_REQ_T {
 	WLAN_STATUS rStatus;
 	UINT_32 u4Flag;
 } GL_IO_REQ_T, *P_GL_IO_REQ_T;
-
-#if CFG_ENABLE_BT_OVER_WIFI
-typedef struct _GL_BOW_INFO {
-	BOOLEAN fgIsRegistered;
-	dev_t u4DeviceNumber;	/* dynamic device number */
-	/* struct kfifo            *prKfifo;       *//* for buffering indicated events */
-	struct kfifo rKfifo;	/* for buffering indicated events */
-	spinlock_t rSpinLock;	/* spin lock for kfifo */
-	struct cdev cdev;
-	UINT_32 u4FreqInKHz;	/* frequency */
-
-	UINT_8 aucRole[CFG_BOW_PHYSICAL_LINK_NUM];	/* 0: Responder, 1: Initiator */
-	ENUM_BOW_DEVICE_STATE aeState[CFG_BOW_PHYSICAL_LINK_NUM];
-	PARAM_MAC_ADDRESS arPeerAddr[CFG_BOW_PHYSICAL_LINK_NUM];
-
-	wait_queue_head_t outq;
-
-#if CFG_BOW_SEPARATE_DATA_PATH
-	/* Device handle */
-	struct net_device *prDevHandler;
-	BOOLEAN fgIsNetRegistered;
-#endif
-
-} GL_BOW_INFO, *P_GL_BOW_INFO;
-#endif
 
 /*
 * type definition of pointer to p2p structure
@@ -922,10 +892,6 @@ struct _GLUE_INFO_T {
 	/* Should be large than the PARAM_WAPI_ASSOC_INFO_T */
 	UINT_8 aucWapiAssocInfoIEs[42];
 	UINT_16 u2WapiAssocInfoIESz;
-#endif
-
-#if CFG_ENABLE_BT_OVER_WIFI
-	GL_BOW_INFO rBowInfo;
 #endif
 
 #if CFG_ENABLE_WIFI_DIRECT

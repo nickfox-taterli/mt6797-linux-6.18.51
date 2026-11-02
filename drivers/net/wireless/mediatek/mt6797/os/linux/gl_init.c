@@ -2752,12 +2752,6 @@ bailout:
 		kalMetInit(prGlueInfo);
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI
-		prGlueInfo->rBowInfo.fgIsNetRegistered = FALSE;
-		prGlueInfo->rBowInfo.fgIsRegistered = FALSE;
-		glRegisterAmpc(prGlueInfo);
-#endif
-
 #if (CFG_ENABLE_WIFI_DIRECT)
 		{
 			PARAM_CUSTOM_P2P_SET_STRUCT_T mode = { .u4Enable = 1, .u4Mode = 0 };
@@ -2867,14 +2861,6 @@ static VOID wlanRemove(VOID)
 
 	kalPerMonDestroy(prGlueInfo);
 
-#if CFG_ENABLE_BT_OVER_WIFI
-	if (prGlueInfo->rBowInfo.fgIsNetRegistered) {
-		bowNotifyAllLinkDisconnected(prGlueInfo->prAdapter);
-		/* wait 300ms for BoW module to send deauth */
-		kalMsleep(300);
-	}
-#endif
-
 	flush_delayed_work(&workq);
 
 /* 20150205 work queue for sched_scan */
@@ -2912,11 +2898,6 @@ static VOID wlanRemove(VOID)
 		/*p2pRemove must before wlanAdapterStop */
 		p2pRemove(prGlueInfo);
 	}
-#endif
-
-#if CFG_ENABLE_BT_OVER_WIFI
-	if (prGlueInfo->rBowInfo.fgIsRegistered)
-		glUnregisterAmpc(prGlueInfo);
 #endif
 
 #if (CFG_MET_PACKET_TRACE_SUPPORT == 1)

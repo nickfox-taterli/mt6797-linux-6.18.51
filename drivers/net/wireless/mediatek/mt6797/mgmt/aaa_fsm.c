@@ -288,8 +288,6 @@ WLAN_STATUS aaaFsmSendEventJoinComplete(WLAN_STATUS rJoinStatus, P_STA_RECORD_T 
 		prJoinCompMsg->rMsgHdr.eMsgId = MID_SAA_AIS_JOIN_COMPLETE;
 	else if (IS_STA_IN_P2P(prStaRec))
 		prJoinCompMsg->rMsgHdr.eMsgId = MID_SAA_P2P_JOIN_COMPLETE;
-	else if (IS_STA_IN_BOW(prStaRec))
-		prJoinCompMsg->rMsgHdr.eMsgId = MID_SAA_BOW_JOIN_COMPLETE;
 	else
 		ASSERT(0);
 
@@ -423,41 +421,6 @@ VOID aaaFsmRunEventRxAuth(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb)
 		}
 #endif /* CFG_ENABLE_WIFI_DIRECT */
 
-		/* 4 <2> Check BOW network conditions */
-#if CFG_ENABLE_BT_OVER_WIFI
-		{
-			P_BOW_FSM_INFO_T prBowFsmInfo = (P_BOW_FSM_INFO_T) NULL;
-
-			prBowFsmInfo = &(prAdapter->rWifiVar.rBowFsmInfo);
-			prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter, prBowFsmInfo->ucBssIndex);
-
-			if ((prBssInfo->fgIsNetActive) && (OP_MODE_BOW == prBssInfo->eCurrentOPMode)) {
-
-				/* 4 <2.1> Validate Auth Frame by Auth Algorithm/Transation Seq */
-				/* Check if for this BSSID */
-				if (WLAN_STATUS_SUCCESS ==
-				    authProcessRxAuth1Frame(prAdapter,
-							    prSwRfb,
-							    prBssInfo->aucBSSID,
-							    AUTH_ALGORITHM_NUM_OPEN_SYSTEM,
-							    AUTH_TRANSACTION_SEQ_1, &u2StatusCode)) {
-
-					if (STATUS_CODE_SUCCESSFUL == u2StatusCode) {
-
-						/* 4 <2.2> Validate Auth Frame for Network Specific Conditions */
-						fgReplyAuth =
-						    bowValidateAuth(prAdapter, prSwRfb, &prStaRec, &u2StatusCode);
-
-					} else {
-
-						fgReplyAuth = TRUE;
-					}
-					/* TODO(Kevin): Allocate a STA_RECORD_T for new client */
-					break;
-				}
-			}
-		}
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 
 		return;
 	} while (FALSE);
@@ -590,36 +553,6 @@ WLAN_STATUS aaaFsmRunEventRxAssoc(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRf
 		}
 #endif /* CFG_ENABLE_WIFI_DIRECT */
 
-		/* 4 <3> Check BOW network conditions */
-#if CFG_ENABLE_BT_OVER_WIFI
-		if (IS_STA_BOW_TYPE(prStaRec)) {
-
-			prBssInfo = GET_BSS_INFO_BY_INDEX(prAdapter, prStaRec->ucBssIndex);
-
-			if ((prBssInfo->fgIsNetActive) && (OP_MODE_BOW == prBssInfo->eCurrentOPMode)) {
-
-				/* 4 <3.1> Validate Auth Frame by Auth Algorithm/Transation Seq */
-				/* Check if for this BSSID */
-				if (WLAN_STATUS_SUCCESS ==
-				    assocProcessRxAssocReqFrame(prAdapter, prSwRfb, &u2StatusCode)) {
-
-					if (STATUS_CODE_SUCCESSFUL == u2StatusCode) {
-
-						/* 4 <3.2> Validate Auth Frame for Network Specific Conditions */
-						fgReplyAssocResp =
-						    bowValidateAssocReq(prAdapter, prSwRfb, &u2StatusCode);
-
-					} else {
-
-						fgReplyAssocResp = TRUE;
-					}
-
-					/* TODO(Kevin): Allocate a STA_RECORD_T for new client */
-					break;
-				}
-			}
-		}
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 
 		return WLAN_STATUS_SUCCESS;	/* To release the SW_RFB_T */
 	} while (FALSE);
@@ -673,16 +606,6 @@ WLAN_STATUS aaaFsmRunEventRxAssoc(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRf
 			}
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI
-			if ((IS_STA_BOW_TYPE(prStaRec))) {
-				/* if (bowRunEventAAAComplete(prAdapter, prStaRec) == WLAN_STATUS_SUCCESS) { */
-				prStaRec->u2AssocId = bssAssignAssocID(prStaRec);
-				prStaRec->eAuthAssocState = AAA_STATE_SEND_ASSOC2;	/* NOTE(Kevin): for TX done */
-
-				/* NOTE(Kevin): Method A: Change to STATE_3 before handle TX Done */
-				/* cnmStaRecChangeState(prAdapter, prStaRec, STA_STATE_3); */
-			}
-#endif
 		} else {
 			prStaRec->u2AssocId = 0;	/* Invalid Association ID */
 
@@ -768,11 +691,6 @@ aaaFsmRunEventTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN E
 					if (prBssInfo->eNetworkType == NETWORK_TYPE_P2P)
 						p2pRoleFsmRunEventAAATxFail(prAdapter, prStaRec, prBssInfo);
 #endif /* CFG_ENABLE_WIFI_DIRECT */
-#if CFG_ENABLE_BT_OVER_WIFI
-					if (IS_STA_BOW_TYPE(prStaRec))
-						bowRunEventAAATxFail(prAdapter, prStaRec);
-
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 				}
 
 			}
@@ -798,12 +716,6 @@ aaaFsmRunEventTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN E
 						p2pRoleFsmRunEventAAASuccess(prAdapter, prStaRec, prBssInfo);
 #endif /* CFG_ENABLE_WIFI_DIRECT */
 
-#if CFG_ENABLE_BT_OVER_WIFI
-
-					if (IS_STA_BOW_TYPE(prStaRec))
-						bowRunEventAAAComplete(prAdapter, prStaRec);
-
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 
 				} else {
 
@@ -817,11 +729,6 @@ aaaFsmRunEventTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN E
 						p2pRoleFsmRunEventAAATxFail(prAdapter, prStaRec, prBssInfo);
 #endif /* CFG_ENABLE_WIFI_DIRECT */
 
-#if CFG_ENABLE_BT_OVER_WIFI
-					if (IS_STA_BOW_TYPE(prStaRec))
-						bowRunEventAAATxFail(prAdapter, prStaRec);
-
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 
 				}
 			}

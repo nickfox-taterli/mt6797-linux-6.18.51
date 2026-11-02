@@ -1934,11 +1934,6 @@ nicMediaStateChange(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex, IN P_EVENT_C
 		}
 		break;
 
-#if CFG_ENABLE_BT_OVER_WIFI
-	case NETWORK_TYPE_BOW:
-		break;
-#endif
-
 #if CFG_ENABLE_WIFI_DIRECT
 	case NETWORK_TYPE_P2P:
 		break;
@@ -1972,7 +1967,6 @@ WLAN_STATUS nicMediaJoinFailure(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex, 
 
 		break;
 
-	case NETWORK_TYPE_BOW:
 	case NETWORK_TYPE_P2P:
 	default:
 		break;
@@ -2344,12 +2338,6 @@ WLAN_STATUS nicUpdateBss(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex)
 		rCmdSetBssInfo.ucWapiMode = (UINT_8) prConnSettings->fgWapiMode;
 		rCmdSetBssInfo.ucDisconnectDetectTh = prWifiVar->ucStaDisconnectDetectTh;
 	}
-#if CFG_ENABLE_BT_OVER_WIFI
-	else if (IS_BSS_BOW(prBssInfo)) {
-		rCmdSetBssInfo.ucAuthMode = (UINT_8) AUTH_MODE_WPA2_PSK;
-		rCmdSetBssInfo.ucEncStatus = (UINT_8) ENUM_ENCRYPTION3_KEY_ABSENT;
-	}
-#endif
 	else {
 #if CFG_ENABLE_WIFI_DIRECT
 		if (prAdapter->fgIsP2PRegistered) {
@@ -2395,12 +2383,6 @@ WLAN_STATUS nicUpdateBss(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex)
 	}
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI	/* disabled for BOW to finish ucBssIndex migration */
-	else if (prBssInfo->eNetworkType == NETWORK_TYPE_BOW &&
-		 prBssInfo->eCurrentOPMode == OP_MODE_BOW && prBssInfo->prStaRecOfAP != NULL) {
-		rCmdSetBssInfo.ucStaRecIdxOfAP = prBssInfo->prStaRecOfAP->ucIndex;
-	}
-#endif
 	else
 		rCmdSetBssInfo.ucStaRecIdxOfAP = STA_REC_INDEX_NOT_FOUND;
 
@@ -4313,15 +4295,6 @@ WLAN_STATUS nicApplyNetworkAddress(IN P_ADAPTER_T prAdapter)
 				COPY_MAC_ADDR(prAdapter->rWifiVar.arBssInfoPool[i].aucOwnMacAddr,
 					      prAdapter->rWifiVar.aucDeviceAddress);
 			}
-		}
-	}
-#endif
-
-#if CFG_ENABLE_BT_OVER_WIFI
-	for (i = 0; i < BSS_INFO_NUM; i++) {
-		if (prAdapter->rWifiVar.arBssInfoPool[i].eNetworkType == NETWORK_TYPE_BOW) {
-			COPY_MAC_ADDR(prAdapter->rWifiVar.arBssInfoPool[i].aucOwnMacAddr,
-				      prAdapter->rWifiVar.aucDeviceAddress);
 		}
 	}
 #endif

@@ -1458,14 +1458,6 @@ WLAN_STATUS kalRxIndicateOnePkt(IN P_GLUE_INFO_T prGlueInfo, IN PVOID pvPkt)
 #else
 		prNetDev = prGlueInfo->prDevHandler;
 #endif
-	} else if (GLUE_GET_PKT_IS_PAL(prSkb)) {
-		/* BOW */
-#if CFG_ENABLE_BT_OVER_WIFI && CFG_BOW_SEPARATE_DATA_PATH
-		if (prGlueInfo->rBowInfo.fgIsNetRegistered)
-			prNetDev = prGlueInfo->rBowInfo.prDevHandler;
-#else
-		prNetDev = prGlueInfo->prDevHandler;
-#endif
 	} else {
 		/* AIS */
 		prNetDev = prGlueInfo->prDevHandler;

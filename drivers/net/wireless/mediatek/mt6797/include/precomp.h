@@ -99,7 +99,6 @@
 
 #include "wlan_lib.h"
 #include "wlan_oid.h"
-#include "wlan_bow.h"
 
 #if CFG_ENABLE_WIFI_DIRECT
 #include "wlan_p2p.h"

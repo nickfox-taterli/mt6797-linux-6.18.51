@@ -627,7 +627,8 @@ typedef enum _ENUM_AC_T {
 typedef enum _ENUM_NETWORK_TYPE_T {
 	NETWORK_TYPE_AIS,
 	NETWORK_TYPE_P2P,
-	NETWORK_TYPE_BOW,
+	NETWORK_TYPE_BOW,	/* reserved slot: BSS index numbering is firmware-visible
+				 * (kept stable after the BOW removal) */
 	NETWORK_TYPE_MBSS,
 	NETWORK_TYPE_NUM
 } ENUM_NETWORK_TYPE_T;
@@ -636,7 +637,6 @@ typedef enum _ENUM_NETWORK_TYPE_T {
 typedef enum _ENUM_STA_TYPE_INDEX_T {
 	STA_TYPE_LEGACY_INDEX = 0,
 	STA_TYPE_P2P_INDEX,
-	STA_TYPE_BOW_INDEX,
 	STA_TYPE_INDEX_NUM
 } ENUM_STA_TYPE_INDEX_T;
 
@@ -776,7 +776,6 @@ typedef enum _ENUM_OP_MODE_T {
 	OP_MODE_IBSS,		/* AdHoc */
 	OP_MODE_ACCESS_POINT,	/* For GO */
 	OP_MODE_P2P_DEVICE,	/* P2P Device */
-	OP_MODE_BOW,
 	OP_MODE_NUM
 } ENUM_OP_MODE_T, *P_ENUM_OP_MODE_T;
 
@@ -905,7 +904,6 @@ typedef enum _ENUM_PARAM_AP_MODE_T {
 /* Masks for determining the Network Type or the Station Role, given the ENUM_STA_TYPE_T */
 #define STA_TYPE_LEGACY_MASK                BIT(STA_TYPE_LEGACY_INDEX)
 #define STA_TYPE_P2P_MASK                   BIT(STA_TYPE_P2P_INDEX)
-#define STA_TYPE_BOW_MASK                   BIT(STA_TYPE_BOW_INDEX)
 #define STA_TYPE_ADHOC_MASK                 BIT(STA_ROLE_ADHOC_INDEX)
 #define STA_TYPE_CLIENT_MASK                BIT(STA_ROLE_CLIENT_INDEX)
 #define STA_TYPE_AP_MASK                    BIT(STA_ROLE_AP_INDEX)
@@ -917,7 +915,6 @@ typedef enum _ENUM_PARAM_AP_MODE_T {
 					 NETWORK_TYPE_P2P)
 #define IS_STA_LEGACY_TYPE(_prStaRec)   ((_prStaRec->eStaType) & STA_TYPE_LEGACY_MASK)
 #define IS_STA_P2P_TYPE(_prStaRec)      ((_prStaRec->eStaType) & STA_TYPE_P2P_MASK)
-#define IS_STA_BOW_TYPE(_prStaRec)      ((_prStaRec->eStaType) & STA_TYPE_BOW_MASK)
 #define IS_ADHOC_STA(_prStaRec)         ((_prStaRec->eStaType) & STA_TYPE_ADHOC_MASK)
 #define IS_CLIENT_STA(_prStaRec)        ((_prStaRec->eStaType) & STA_TYPE_CLIENT_MASK)
 #define IS_AP_STA(_prStaRec)            ((_prStaRec->eStaType) & STA_TYPE_AP_MASK)
@@ -934,10 +931,6 @@ typedef enum _ENUM_STA_TYPE_T {
 	STA_TYPE_P2P_GO = (STA_TYPE_P2P_MASK | STA_TYPE_AP_MASK),
 	STA_TYPE_P2P_GC = (STA_TYPE_P2P_MASK | STA_TYPE_CLIENT_MASK),
 #endif
-#if CFG_ENABLE_BT_OVER_WIFI
-	STA_TYPE_BOW_AP = (STA_TYPE_BOW_MASK | STA_TYPE_AP_MASK),
-	STA_TYPE_BOW_CLIENT = (STA_TYPE_BOW_MASK | STA_TYPE_CLIENT_MASK),
-#endif
 	STA_TYPE_DLS_PEER = (STA_TYPE_LEGACY_MASK | STA_TYPE_DLS_MASK),
 } ENUM_STA_TYPE_T, *P_ENUM_STA_TYPE_T;
 
@@ -946,7 +939,6 @@ typedef enum _ENUM_BSS_TYPE_T {
 	BSS_TYPE_INFRASTRUCTURE = 1,
 	BSS_TYPE_IBSS,
 	BSS_TYPE_P2P_DEVICE,
-	BSS_TYPE_BOW_DEVICE,
 	BSS_TYPE_NUM
 } ENUM_BSS_TYPE_T, *P_ENUM_BSS_TYPE_T;
 

@@ -479,8 +479,7 @@
 
 static PUINT_8 apucStaRecType[STA_TYPE_INDEX_NUM] = {
 	(PUINT_8) "LEGACY",
-	(PUINT_8) "P2P",
-	(PUINT_8) "BOW"
+	(PUINT_8) "P2P"
 };
 
 static PUINT_8 apucStaRecRole[STA_ROLE_INDEX_NUM] = {
@@ -1432,8 +1431,6 @@ PUINT_8 cnmStaRecGetTypeString(ENUM_STA_TYPE_T eStaType)
 		pucTypeString = apucStaRecType[STA_TYPE_LEGACY_INDEX];
 	if (eStaType & STA_TYPE_P2P_MASK)
 		pucTypeString = apucStaRecType[STA_TYPE_P2P_INDEX];
-	if (eStaType & STA_TYPE_BOW_MASK)
-		pucTypeString = apucStaRecType[STA_TYPE_BOW_INDEX];
 
 	return pucTypeString;
 }

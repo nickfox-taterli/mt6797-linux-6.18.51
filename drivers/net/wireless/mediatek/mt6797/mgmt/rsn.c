@@ -1068,19 +1068,6 @@ BOOLEAN rsnPerformPolicySelection(IN P_ADAPTER_T prAdapter, IN P_BSS_DESC_T prBs
 	}
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI
-	if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_BOW) {
-		if (u4PairwiseCipher != RSN_CIPHER_SUITE_CCMP ||
-		    u4GroupCipher != RSN_CIPHER_SUITE_CCMP || u4AkmSuite != RSN_AKM_SUITE_PSK) {
-			/* Todo:: Nothing */
-		}
-		DBGLOG(RSN, TRACE,
-		       "Failed to select pairwise/group cipher for BT over Wi-Fi network (0x%08lx/0x%08lx)\n",
-			u4PairwiseCipher, u4GroupCipher);
-		return FALSE;
-	}
-#endif
-
 	/* Verify if selected pairwisse cipher is supported */
 	fgSuiteSupported = rsnSearchSupportedCipher(prAdapter, u4PairwiseCipher, &i);
 
@@ -1451,10 +1438,6 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		   ((prAdapter->fgIsP2PRegistered) &&
 		    (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_P2P)
 		    && (kalP2PGetCcmpCipher(prAdapter->prGlueInfo))) ||
-#endif
-#if CFG_ENABLE_BT_OVER_WIFI
-		   (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_BOW)
-		   ||
 #endif
 		   (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType ==
 		    NETWORK_TYPE_AIS /* prCurrentBss->fgIERSN */  &&

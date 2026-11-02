@@ -255,8 +255,6 @@ BOOLEAN cnmAisIbssIsPermitted(P_ADAPTER_T prAdapter);
 
 BOOLEAN cnmP2PIsPermitted(P_ADAPTER_T prAdapter);
 
-BOOLEAN cnmBowIsPermitted(P_ADAPTER_T prAdapter);
-
 BOOLEAN cnmBss40mBwPermitted(P_ADAPTER_T prAdapter, UINT_8 ucBssIndex);
 
 BOOLEAN cnmBss80mBwPermitted(P_ADAPTER_T prAdapter, UINT_8 ucBssIndex);

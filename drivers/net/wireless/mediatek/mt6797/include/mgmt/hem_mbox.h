@@ -258,7 +258,6 @@ typedef enum _ENUM_MSG_ID_T {
 
 	MID_CNM_AIS_CH_GRANT,	/* CNM notify AIS for indicating channel granted */
 	MID_CNM_P2P_CH_GRANT,	/* CNM notify P2P for indicating channel granted */
-	MID_CNM_BOW_CH_GRANT,	/* CNM notify BOW for indicating channel granted */
 
     /*--------------------------------------------------*/
 	/* SCN Module Mailbox Messages                      */
@@ -269,15 +268,11 @@ typedef enum _ENUM_MSG_ID_T {
 	MID_P2P_SCN_SCAN_REQ,	/* P2P notify SCN for starting scan */
 	MID_P2P_SCN_SCAN_REQ_V2,	/* P2P notify SCN for starting scan with multiple SSID support */
 	MID_P2P_SCN_SCAN_CANCEL,	/* P2P notify SCN for cancelling scan */
-	MID_BOW_SCN_SCAN_REQ,	/* BOW notify SCN for starting scan */
-	MID_BOW_SCN_SCAN_REQ_V2,	/* BOW notify SCN for starting scan with multiple SSID support */
-	MID_BOW_SCN_SCAN_CANCEL,	/* BOW notify SCN for cancelling scan */
 	MID_RLM_SCN_SCAN_REQ,	/* RLM notify SCN for starting scan (OBSS-SCAN) */
 	MID_RLM_SCN_SCAN_REQ_V2,	/* RLM notify SCN for starting scan (OBSS-SCAN) with multiple SSID support */
 	MID_RLM_SCN_SCAN_CANCEL,	/* RLM notify SCN for cancelling scan (OBSS-SCAN) */
 	MID_SCN_AIS_SCAN_DONE,	/* SCN notify AIS for scan completion */
 	MID_SCN_P2P_SCAN_DONE,	/* SCN notify P2P for scan completion */
-	MID_SCN_BOW_SCAN_DONE,	/* SCN notify BOW for scan completion */
 	MID_SCN_RLM_SCAN_DONE,	/* SCN notify RLM for scan completion (OBSS-SCAN) */
 
     /*--------------------------------------------------*/
@@ -289,15 +284,6 @@ typedef enum _ENUM_MSG_ID_T {
 	MID_AIS_SAA_FSM_ABORT,	/* AIS notify SAA for Aborting authentication/association fsm */
 	MID_OID_SAA_EXTERNAL_AUTH,
 	MID_SAA_AIS_JOIN_COMPLETE,	/* SAA notify AIS for indicating join complete */
-
-#if CFG_ENABLE_BT_OVER_WIFI
-    /*--------------------------------------------------*/
-	/* BOW Module Mailbox Messages                      */
-    /*--------------------------------------------------*/
-	MID_BOW_SAA_FSM_START,	/* BOW notify SAA for Starting authentication/association fsm */
-	MID_BOW_SAA_FSM_ABORT,	/* BOW notify SAA for Aborting authentication/association fsm */
-	MID_SAA_BOW_JOIN_COMPLETE,	/* SAA notify BOW for indicating join complete */
-#endif
 
 #if CFG_ENABLE_WIFI_DIRECT
     /*--------------------------------------------------*/

@@ -149,9 +149,6 @@ extern UINT_32 u4DebugModule;
 #define SEC_DBG_CLASSES \
 	(DBG_CLASS_DEFAULT)
 
-#define BOW_DBG_CLASSES \
-	(DBG_CLASS_DEFAULT)
-
 #define WAPI_DBG_CLASSES \
 	(DBG_CLASS_DEFAULT)
 
@@ -2796,111 +2793,6 @@ extern UINT_32 u4DebugModule;
 #define SEC_TEMP_LOGDUMP32(_StartAddr, _Length)
 #endif
 
-/* Define BOW related debug classes */
-#if (BOW_DBG_CLASSES & DBG_CLASS_ERROR)
-#define BOW_ERROR_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_ERROR_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_ERROR, _StartAddr, _Length)
-#define BOW_ERROR_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_ERROR, _StartAddr, _Length)
-#else
-#define BOW_ERROR_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_ERROR_LOGDUMP8(_StartAddr, _Length)
-#define BOW_ERROR_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_WARN)
-#define BOW_WARN_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_WARN_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_WARN, _StartAddr, _Length)
-#define BOW_WARN_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_WARN, _StartAddr, _Length)
-#else
-#define BOW_WARN_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_WARN_LOGDUMP8(_StartAddr, _Length)
-#define BOW_WARN_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_STATE)
-#define BOW_STATE_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_STATE_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_STATE, _StartAddr, _Length)
-#define BOW_STATE_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_STATE, _StartAddr, _Length)
-#else
-#define BOW_STATE_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_STATE_LOGDUMP8(_StartAddr, _Length)
-#define BOW_STATE_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_EVENT)
-#define BOW_EVENT_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_EVENT_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_EVENT, _StartAddr, _Length)
-#define BOW_EVENT_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_EVENT, _StartAddr, _Length)
-#else
-#define BOW_EVENT_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_EVENT_LOGDUMP8(_StartAddr, _Length)
-#define BOW_EVENT_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_TRACE)
-#define BOW_TRACE_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_TRACE_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_TRACE, _StartAddr, _Length)
-#define BOW_TRACE_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_TRACE, _StartAddr, _Length)
-#else
-#define BOW_TRACE_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_TRACE_LOGDUMP8(_StartAddr, _Length)
-#define BOW_TRACE_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_INFO)
-#define BOW_INFO_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_INFO_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_INFO, _StartAddr, _Length)
-#define BOW_INFO_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_INFO, _StartAddr, _Length)
-#else
-#define BOW_INFO_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_INFO_LOGDUMP8(_StartAddr, _Length)
-#define BOW_INFO_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_LOUD)
-#define BOW_LOUD_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_LOUD_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_LOUD, _StartAddr, _Length)
-#define BOW_LOUD_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_LOUD, _StartAddr, _Length)
-#else
-#define BOW_LOUD_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_LOUD_LOGDUMP8(_StartAddr, _Length)
-#define BOW_LOUD_LOGDUMP32(_StartAddr, _Length)
-#endif
-
-#if (BOW_DBG_CLASSES & DBG_CLASS_TEMP)
-#define BOW_TEMP_LOGFUNC(_Module, _Class, _Fmt...) \
-	DBGLOG_FUNC(_Module, _Class, _Fmt)
-#define BOW_TEMP_LOGDUMP8(_StartAddr, _Length) \
-	dumpMemory8(DBG_BOW_IDX, DBG_CLASS_TEMP, _StartAddr, _Length)
-#define BOW_TEMP_LOGDUMP32(_StartAddr, _Length) \
-	dumpMemory32(DBG_BOW_IDX, DBG_CLASS_TEMP, _StartAddr, _Length)
-#else
-#define BOW_TEMP_LOGFUNC(_Module, _Class, _Fmt...)
-#define BOW_TEMP_LOGDUMP8(_StartAddr, _Length)
-#define BOW_TEMP_LOGDUMP32(_StartAddr, _Length)
-#endif
-
 /* Define WAPI related debug classes */
 #if (WAPI_DBG_CLASSES & DBG_CLASS_ERROR)
 #define WAPI_ERROR_LOGFUNC(_Module, _Class, _Fmt...) \
@@ -3573,8 +3465,7 @@ typedef enum _ENUM_DBG_MODULE_T {
 	DBG_P2P_IDX,		/* 0x16 */ /* P2P */
 	DBG_QM_IDX,		/* 0x17 */ /* QUE_MGT */
 	DBG_SEC_IDX,		/* 0x18 */ /* SEC */
-	DBG_BOW_IDX,		/* 0x19 */ /* BOW */
-	DBG_WAPI_IDX,		/* 0x1A */ /* WAPI */
+		DBG_WAPI_IDX,		/* 0x1A */ /* WAPI */
 	DBG_ROAMING_IDX,	/* 0x1B */ /* ROAMING */
 	DBG_TDLS_IDX,		/* 0x1C */ /* TDLS */ /* CFG_SUPPORT_TDLS */
 	DBG_OID_IDX,

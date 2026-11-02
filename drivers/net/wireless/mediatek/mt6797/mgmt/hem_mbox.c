@@ -421,7 +421,6 @@ static PUINT_8 apucDebugMsg[] = {
 	(PUINT_8) DISP_STRING("MID_MNY_CNM_CH_ABORT"),
 	(PUINT_8) DISP_STRING("MID_CNM_AIS_CH_GRANT"),
 	(PUINT_8) DISP_STRING("MID_CNM_P2P_CH_GRANT"),
-	(PUINT_8) DISP_STRING("MID_CNM_BOW_CH_GRANT"),
 
 	(PUINT_8) DISP_STRING("MID_AIS_SCN_SCAN_REQ"),
 	(PUINT_8) DISP_STRING("MID_AIS_SCN_SCAN_REQ_V2"),
@@ -429,15 +428,11 @@ static PUINT_8 apucDebugMsg[] = {
 	(PUINT_8) DISP_STRING("MID_P2P_SCN_SCAN_REQ"),
 	(PUINT_8) DISP_STRING("MID_P2P_SCN_SCAN_REQ_V2"),
 	(PUINT_8) DISP_STRING("MID_P2P_SCN_SCAN_CANCEL"),
-	(PUINT_8) DISP_STRING("MID_BOW_SCN_SCAN_REQ"),
-	(PUINT_8) DISP_STRING("MID_BOW_SCN_SCAN_REQ_V2"),
-	(PUINT_8) DISP_STRING("MID_BOW_SCN_SCAN_CANCEL"),
 	(PUINT_8) DISP_STRING("MID_RLM_SCN_SCAN_REQ"),
 	(PUINT_8) DISP_STRING("MID_RLM_SCN_SCAN_REQ_V2"),
 	(PUINT_8) DISP_STRING("MID_RLM_SCN_SCAN_CANCEL"),
 	(PUINT_8) DISP_STRING("MID_SCN_AIS_SCAN_DONE"),
 	(PUINT_8) DISP_STRING("MID_SCN_P2P_SCAN_DONE"),
-	(PUINT_8) DISP_STRING("MID_SCN_BOW_SCAN_DONE"),
 	(PUINT_8) DISP_STRING("MID_SCN_RLM_SCAN_DONE"),
 
 	(PUINT_8) DISP_STRING("MID_OID_AIS_FSM_JOIN_REQ"),
@@ -448,9 +443,6 @@ static PUINT_8 apucDebugMsg[] = {
 	(PUINT_8) DISP_STRING("MID_SAA_AIS_JOIN_COMPLETE"),
 
 #if CFG_ENABLE_BT_OVER_WIFI
-	(PUINT_8) DISP_STRING("MID_BOW_SAA_FSM_START"),
-	(PUINT_8) DISP_STRING("MID_BOW_SAA_FSM_ABORT"),
-	(PUINT_8) DISP_STRING("MID_SAA_BOW_JOIN_COMPLETE"),
 #endif
 
 #if CFG_ENABLE_WIFI_DIRECT
@@ -505,11 +497,6 @@ static MSG_HNDL_ENTRY_T arMsgMapTable[] = {
 	{MID_CNM_P2P_CH_GRANT, mboxDummy},
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI
-	{MID_CNM_BOW_CH_GRANT, bowRunEventChGrant},
-#else
-	{MID_CNM_BOW_CH_GRANT, mboxDummy},
-#endif
 
     /*--------------------------------------------------*/
 	/* SCN Module Mailbox Messages                      */
@@ -520,9 +507,6 @@ static MSG_HNDL_ENTRY_T arMsgMapTable[] = {
 	{MID_P2P_SCN_SCAN_REQ, scnFsmMsgStart},
 	{MID_P2P_SCN_SCAN_REQ_V2, scnFsmMsgStart},
 	{MID_P2P_SCN_SCAN_CANCEL, scnFsmMsgAbort},
-	{MID_BOW_SCN_SCAN_REQ, scnFsmMsgStart},
-	{MID_BOW_SCN_SCAN_REQ_V2, scnFsmMsgStart},
-	{MID_BOW_SCN_SCAN_CANCEL, scnFsmMsgAbort},
 	{MID_RLM_SCN_SCAN_REQ, scnFsmMsgStart},
 	{MID_RLM_SCN_SCAN_REQ_V2, scnFsmMsgStart},
 	{MID_RLM_SCN_SCAN_CANCEL, scnFsmMsgAbort},
@@ -533,11 +517,6 @@ static MSG_HNDL_ENTRY_T arMsgMapTable[] = {
 	{MID_SCN_P2P_SCAN_DONE, mboxDummy},
 #endif
 
-#if CFG_ENABLE_BT_OVER_WIFI
-	{MID_SCN_BOW_SCAN_DONE, bowResponderScanDone},
-#else
-	{MID_SCN_BOW_SCAN_DONE, mboxDummy},
-#endif
 	{MID_SCN_RLM_SCAN_DONE, rlmObssScanDone},
 
     /*--------------------------------------------------*/
@@ -549,15 +528,6 @@ static MSG_HNDL_ENTRY_T arMsgMapTable[] = {
 	{MID_AIS_SAA_FSM_ABORT, saaFsmRunEventAbort},
 	{MID_OID_SAA_EXTERNAL_AUTH, saaFsmRunEventExternalAuth},
 	{MID_SAA_AIS_JOIN_COMPLETE, aisFsmRunEventJoinComplete},
-
-#if CFG_ENABLE_BT_OVER_WIFI
-    /*--------------------------------------------------*/
-	/* BOW Module Mailbox Messages                      */
-    /*--------------------------------------------------*/
-	{MID_BOW_SAA_FSM_START, saaFsmRunEventStart},
-	{MID_BOW_SAA_FSM_ABORT, saaFsmRunEventAbort},
-	{MID_SAA_BOW_JOIN_COMPLETE, bowFsmRunEventJoinComplete},
-#endif
 
 #if CFG_ENABLE_WIFI_DIRECT	/*set in gl_p2p_init.c */
 	{MID_P2P_SAA_FSM_START, saaFsmRunEventStart},

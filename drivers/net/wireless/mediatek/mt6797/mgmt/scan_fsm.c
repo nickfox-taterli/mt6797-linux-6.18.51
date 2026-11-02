@@ -396,7 +396,6 @@ VOID scnFsmSteps(IN P_ADAPTER_T prAdapter, IN ENUM_SCAN_STATE_T eNextState)
 				LINK_REMOVE_HEAD(&(prScanInfo->rPendingMsgList), prMsgHdr, P_MSG_HDR_T);
 
 				if (prMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ
-				    || prMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ
 				    || prMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ
 				    || prMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ) {
 					scnFsmHandleScanMsg(prAdapter, (P_MSG_SCN_SCAN_REQ) prMsgHdr);
@@ -404,7 +403,6 @@ VOID scnFsmSteps(IN P_ADAPTER_T prAdapter, IN ENUM_SCAN_STATE_T eNextState)
 					eNextState = SCAN_STATE_SCANNING;
 					fgIsTransition = TRUE;
 				} else if (prMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ_V2
-					   || prMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ_V2
 					   || prMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ_V2
 					   || prMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ_V2) {
 					scnFsmHandleScanMsgV2(prAdapter, (P_MSG_SCN_SCAN_REQ_V2) prMsgHdr);
@@ -637,11 +635,9 @@ VOID scnFsmMsgStart(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr)
 
 	if (prScanInfo->eCurrentState == SCAN_STATE_IDLE) {
 		if (prMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ
-		    || prMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ
 		    || prMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ || prMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ) {
 			scnFsmHandleScanMsg(prAdapter, (P_MSG_SCN_SCAN_REQ) prMsgHdr);
 		} else if (prMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ_V2
-			   || prMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ_V2
 			   || prMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ_V2
 			   || prMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ_V2) {
 			scnFsmHandleScanMsgV2(prAdapter, (P_MSG_SCN_SCAN_REQ_V2) prMsgHdr);
@@ -875,7 +871,6 @@ VOID scnFsmRemovePendingMsg(IN P_ADAPTER_T prAdapter, IN UINT_8 ucSeqNum, IN UIN
 	LINK_FOR_EACH_ENTRY_SAFE(prPendingMsgHdr,
 				 prPendingMsgHdrNext, &(prScanInfo->rPendingMsgList), rLinkEntry, MSG_HDR_T) {
 		if (prPendingMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ
-		    || prPendingMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ
 		    || prPendingMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ
 		    || prPendingMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ) {
 			P_MSG_SCN_SCAN_REQ prScanReqMsg = (P_MSG_SCN_SCAN_REQ) prPendingMsgHdr;
@@ -886,7 +881,6 @@ VOID scnFsmRemovePendingMsg(IN P_ADAPTER_T prAdapter, IN UINT_8 ucSeqNum, IN UIN
 				fgIsRemovingScan = TRUE;
 			}
 		} else if (prPendingMsgHdr->eMsgId == MID_AIS_SCN_SCAN_REQ_V2
-			   || prPendingMsgHdr->eMsgId == MID_BOW_SCN_SCAN_REQ_V2
 			   || prPendingMsgHdr->eMsgId == MID_P2P_SCN_SCAN_REQ_V2
 			   || prPendingMsgHdr->eMsgId == MID_RLM_SCN_SCAN_REQ_V2) {
 			P_MSG_SCN_SCAN_REQ_V2 prScanReqMsgV2 = (P_MSG_SCN_SCAN_REQ_V2) prPendingMsgHdr;
@@ -1002,10 +996,6 @@ scnFsmGenerateScanDoneMsg(IN P_ADAPTER_T prAdapter,
 
 		case NETWORK_TYPE_P2P:
 			prScanDoneMsg->rMsgHdr.eMsgId = MID_SCN_P2P_SCAN_DONE;
-			break;
-
-		case NETWORK_TYPE_BOW:
-			prScanDoneMsg->rMsgHdr.eMsgId = MID_SCN_BOW_SCAN_DONE;
 			break;
 
 		default:

@@ -2033,9 +2033,6 @@ VOID rlmProcessBcn(P_ADAPTER_T prAdapter, P_SW_RFB_T prSwRfb, PUINT_8 pucIE, UIN
 	for (i = 0; i < BSS_INFO_NUM; i++) {
 		prBssInfo = prAdapter->aprBssInfo[i];
 
-		if (IS_BSS_BOW(prBssInfo))
-			continue;
-
 		if (IS_BSS_ACTIVE(prBssInfo)) {
 			if (prBssInfo->eCurrentOPMode == OP_MODE_INFRASTRUCTURE &&
 			    prBssInfo->eConnectionState == PARAM_MEDIA_STATE_CONNECTED) {

@@ -1107,7 +1107,6 @@ scanSearchExistingBssDescWithSsid(IN P_ADAPTER_T prAdapter,
 	case BSS_TYPE_P2P_DEVICE:
 		fgCheckSsid = FALSE;
 	case BSS_TYPE_INFRASTRUCTURE:
-	case BSS_TYPE_BOW_DEVICE:
 		{
 			prBssDesc = scanSearchBssDescByBssidAndSsid(prAdapter, aucBSSID, fgCheckSsid, prSsid);
 
@@ -1430,11 +1429,6 @@ VOID scanRemoveBssDescByBandAndNetwork(IN P_ADAPTER_T prAdapter, IN ENUM_BAND_T 
 
 			case NETWORK_TYPE_P2P:
 				if (prBssDesc->eBSSType == BSS_TYPE_P2P_DEVICE)
-					fgToRemove = TRUE;
-				break;
-
-			case NETWORK_TYPE_BOW:
-				if (prBssDesc->eBSSType == BSS_TYPE_BOW_DEVICE)
 					fgToRemove = TRUE;
 				break;
 
@@ -2153,7 +2147,6 @@ WLAN_STATUS scanAddScanResult(IN P_ADAPTER_T prAdapter, IN P_BSS_DESC_T prBssDes
 
 	case BSS_TYPE_INFRASTRUCTURE:
 	case BSS_TYPE_P2P_DEVICE:
-	case BSS_TYPE_BOW_DEVICE:
 	default:
 		eOpMode = NET_TYPE_INFRA;
 		break;

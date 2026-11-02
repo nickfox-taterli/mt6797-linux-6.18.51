@@ -560,7 +560,7 @@ Add per station flow control when STA is in PS
 const PUINT_8 apucNetworkType[NETWORK_TYPE_NUM] = {
 	(PUINT_8) "AIS",
 	(PUINT_8) "P2P",
-	(PUINT_8) "BOW",
+	(PUINT_8) "BOW",	/* reserved slot, see wlan_def.h */
 	(PUINT_8) "MBSS"
 };
 
@@ -568,8 +568,7 @@ const PUINT_8 apucNetworkOpMode[] = {
 	(PUINT_8) "INFRASTRUCTURE",
 	(PUINT_8) "IBSS",
 	(PUINT_8) "ACCESS_POINT",
-	(PUINT_8) "P2P_DEVICE",
-	(PUINT_8) "BOW"
+	(PUINT_8) "P2P_DEVICE"
 };
 
 #if (CFG_SUPPORT_ADHOC) || (CFG_SUPPORT_AAA)
@@ -1766,10 +1765,6 @@ WLAN_STATUS bssProcessProbeRequest(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwR
 						    (UINT_8) prBssInfo->u4PrivateData);
 		}
 #endif
-#if CFG_ENABLE_BT_OVER_WIFI
-		else if (NETWORK_TYPE_BOW == prBssInfo->eNetworkType)
-			fgReplyProbeResp = bowValidateProbeReq(prAdapter, prSwRfb, &u4CtrlFlagsForProbeResp);
-#endif
 
 		if (fgReplyProbeResp) {
 			if (nicTxGetFreeCmdCount(prAdapter) > (CFG_TX_MAX_CMD_PKT_NUM / 2)) {
@@ -2625,7 +2620,7 @@ VOID bssInitForAP(IN P_ADAPTER_T prAdapter, IN P_BSS_INFO_T prBssInfo, IN BOOLEA
 
 	ASSERT(prBssInfo);
 	ASSERT((prBssInfo->eCurrentOPMode == OP_MODE_ACCESS_POINT)
-	       || (prBssInfo->eCurrentOPMode == OP_MODE_BOW));
+	       );
 
 #if 0
 	prAdapter->rWifiVar.rConnSettings.fgRxShortGIDisabled = TRUE;

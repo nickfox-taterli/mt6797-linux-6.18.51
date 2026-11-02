@@ -1753,7 +1753,6 @@ VOID qmDetermineStaRecIndex(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInf
 
 		/* Infra Client/GC */
 	case OP_MODE_INFRASTRUCTURE:
-	case OP_MODE_BOW:
 		if (prBssInfo->prStaRecOfAP) {
 #if CFG_SUPPORT_TDLS
 

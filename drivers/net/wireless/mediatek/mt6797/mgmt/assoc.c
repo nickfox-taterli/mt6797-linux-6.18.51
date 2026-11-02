@@ -674,22 +674,6 @@ __KAL_INLINE__ VOID assocBuildReAssocReqFrameCommonIEs(IN P_ADAPTER_T prAdapter,
 		pucBuffer = p2pBuildReAssocReqFrameCommonIEs(prAdapter, prMsduInfo, pucBuffer);
 
 #endif
-#if CFG_ENABLE_BT_OVER_WIFI
-	else if (IS_STA_BOW_TYPE(prStaRec)) {
-
-		SSID_IE(pucBuffer)->ucId = ELEM_ID_SSID;
-
-		/* NOTE(Kevin): We copy the SSID from CONNECTION_SETTINGS for the case of
-		 * Passive Scan and the target BSS didn't broadcast SSID on its Beacon Frame.
-		 */
-
-		COPY_SSID(SSID_IE(pucBuffer)->aucSSID,
-			  SSID_IE(pucBuffer)->ucLength, prConnSettings->aucSSID, prConnSettings->ucSSIDLen);
-
-		prMsduInfo->u2FrameLength += IE_SIZE(pucBuffer);
-		pucBuffer += IE_SIZE(pucBuffer);
-	}
-#endif
 
 	/* NOTE(Kevin 2008/12/19): 16.3.6.3 MLME-ASSOCIATE.indication -
 	 * SupportedRates - The set of data rates that are supported by the STA

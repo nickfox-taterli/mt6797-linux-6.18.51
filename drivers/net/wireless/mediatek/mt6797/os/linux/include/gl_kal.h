@@ -618,10 +618,6 @@
 #include "wlan_lib.h"
 #include "wlan_oid.h"
 
-#if CFG_ENABLE_BT_OVER_WIFI
-#include "nic/bow.h"
-#endif
-
 #include "linux/kallsyms.h"
 #include <linux/trace_events.h>
 #include <linux/pm_wakeup.h>
@@ -748,8 +744,6 @@ typedef enum _ENUM_SPIN_LOCK_CATEGORY_E {
 	SPIN_LOCK_MAILBOX,
 	SPIN_LOCK_TIMER,
 
-	SPIN_LOCK_BOW_TABLE,
-
 	SPIN_LOCK_EHPI_BUS,	/* only for EHPI */
 	SPIN_LOCK_NET_DEV,
 	SPIN_LOCK_NUM
@@ -772,9 +766,6 @@ typedef enum _ENUM_KAL_NETWORK_TYPE_INDEX_T {
 	KAL_NETWORK_TYPE_AIS_INDEX = 0,
 #if CFG_ENABLE_WIFI_DIRECT
 	KAL_NETWORK_TYPE_P2P_INDEX,
-#endif
-#if CFG_ENABLE_BT_OVER_WIFI
-	KAL_NETWORK_TYPE_BOW_INDEX,
 #endif
 	KAL_NETWORK_TYPE_INDEX_NUM
 } ENUM_KAL_NETWORK_TYPE_INDEX_T;
@@ -1394,36 +1385,6 @@ VOID kalOidCmdClearance(IN P_GLUE_INFO_T prGlueInfo);
 VOID kalOidClearance(IN P_GLUE_INFO_T prGlueInfo);
 
 VOID kalEnqueueCommand(IN P_GLUE_INFO_T prGlueInfo, IN P_QUE_ENTRY_T prQueueEntry);
-
-#if CFG_ENABLE_BT_OVER_WIFI
-/*----------------------------------------------------------------------------*/
-/* Bluetooth over Wi-Fi handling                                              */
-/*----------------------------------------------------------------------------*/
-VOID kalIndicateBOWEvent(IN P_GLUE_INFO_T prGlueInfo, IN P_AMPC_EVENT prEvent);
-
-ENUM_BOW_DEVICE_STATE kalGetBowState(IN P_GLUE_INFO_T prGlueInfo, IN PARAM_MAC_ADDRESS rPeerAddr);
-
-BOOLEAN kalSetBowState(IN P_GLUE_INFO_T prGlueInfo, IN ENUM_BOW_DEVICE_STATE eBowState, PARAM_MAC_ADDRESS rPeerAddr);
-
-ENUM_BOW_DEVICE_STATE kalGetBowGlobalState(IN P_GLUE_INFO_T prGlueInfo);
-
-UINT_32 kalGetBowFreqInKHz(IN P_GLUE_INFO_T prGlueInfo);
-
-UINT_8 kalGetBowRole(IN P_GLUE_INFO_T prGlueInfo, IN PARAM_MAC_ADDRESS rPeerAddr);
-
-VOID kalSetBowRole(IN P_GLUE_INFO_T prGlueInfo, IN UINT_8 ucRole, IN PARAM_MAC_ADDRESS rPeerAddr);
-
-UINT_8 kalGetBowAvailablePhysicalLinkCount(IN P_GLUE_INFO_T prGlueInfo);
-
-#if CFG_BOW_SEPARATE_DATA_PATH
-/*----------------------------------------------------------------------------*/
-/* Bluetooth over Wi-Fi Net Device Init/Uninit                                */
-/*----------------------------------------------------------------------------*/
-BOOLEAN kalInitBowDevice(IN P_GLUE_INFO_T prGlueInfo, IN const char *prDevName);
-
-BOOLEAN kalUninitBowDevice(IN P_GLUE_INFO_T prGlueInfo);
-#endif /* CFG_BOW_SEPARATE_DATA_PATH */
-#endif /* CFG_ENABLE_BT_OVER_WIFI */
 
 /*----------------------------------------------------------------------------*/
 /* Firmware Download Handling                                                 */

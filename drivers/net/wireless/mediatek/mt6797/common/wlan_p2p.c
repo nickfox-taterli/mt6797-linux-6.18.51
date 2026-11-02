@@ -16,7 +16,7 @@
 ** Id: //Department/DaVinci/TRUNK/WiFi_P2P_Driver/common/wlan_p2p.c#8
 */
 
-/*! \file wlan_bow.c
+/*! \file wlan_p2p.c
     \brief This file contains the Wi-Fi Direct commands processing routines for
 	   MediaTek Inc. 802.11 Wireless LAN Adapters.
 */

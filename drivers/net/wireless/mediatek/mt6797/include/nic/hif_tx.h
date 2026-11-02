@@ -153,8 +153,8 @@ typedef struct _HIF_TX_HEADER_T {
 	UINT_8 ucResource_PktType_CSflags;
 	UINT_8 ucWlanHeaderLength;
 	UINT_8 ucPktFormtId_Flags;
-	UINT_16 u2LLH;		/* for BOW */
-	UINT_16 u2SeqNo;	/* for BOW */
+	UINT_16 u2LLH;		/* reserved (former BOW PAL logical-link header); wire format must not shift */
+	UINT_16 u2SeqNo;	/* reserved (former BOW sequence number) */
 	UINT_8 ucStaRecIdx;
 	UINT_8 ucForwardingType_SessionID_Reserved;
 	UINT_8 ucPacketSeqNo;

@@ -1174,10 +1174,6 @@ struct _AIS_SPECIFIC_BSS_INFO_T {
 #endif
 };
 
-struct _BOW_SPECIFIC_BSS_INFO_T {
-	UINT_16 u2Reserved;	/* Reserved for Data Type Check */
-};
-
 #if CFG_SLT_SUPPORT
 typedef struct _SLT_INFO_T {
 
@@ -1257,11 +1253,6 @@ typedef struct _WIFI_VAR_T {
 	P_P2P_ROLE_FSM_INFO_T aprP2pRoleFsmInfo[BSS_P2P_NUM];
 
 #endif				/* CFG_ENABLE_WIFI_DIRECT */
-
-#if CFG_ENABLE_BT_OVER_WIFI
-	BOW_SPECIFIC_BSS_INFO_T rBowSpecificBssInfo;
-	BOW_FSM_INFO_T rBowFsmInfo;
-#endif				/* CFG_ENABLE_BT_OVER_WIFI */
 
 	WLAN_TABLE_T arWtbl[WTBL_SIZE];
 #if DBG
@@ -1747,9 +1738,6 @@ struct _ADAPTER_T {
 
 #define IS_BSS_P2P(_prBssInfo) \
 	((_prBssInfo)->eNetworkType == NETWORK_TYPE_P2P)
-
-#define IS_BSS_BOW(_prBssInfo) \
-	((_prBssInfo)->eNetworkType == NETWORK_TYPE_BOW)
 
 #define SET_NET_ACTIVE(_prAdapter, _BssIndex) \
 	{(_prAdapter)->aprBssInfo[(_BssIndex)]->fgIsNetActive = TRUE; }
