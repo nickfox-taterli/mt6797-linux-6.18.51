@@ -3655,8 +3655,6 @@ typedef enum _ENUM_DBG_MODULE_T {
 #define ASSERT_NOMEM() \
 { \
 	LOG_FUNC("alloate memory failed at %s:%d\n", __FILE__, __LINE__); \
-	kalSendAeeWarning("Wlan_Gen3 No Mem", "Memory Alloate Failed %s:%d",\
-		__FILE__, __LINE__); \
 }
 
 #define ASSERT(_exp) \

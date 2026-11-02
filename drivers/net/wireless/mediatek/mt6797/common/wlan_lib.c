@@ -1224,14 +1224,12 @@ PFN_OID_HANDLER_FUNC apfnOidSetHandlerAllowedInRFTest[] = {
 	wlanoidRftestSetTestMode,
 	wlanoidRftestSetAbortTestMode,
 	wlanoidRftestSetAutoTest,
-	wlanoidSetMcrWrite,
 	wlanoidSetEepromWrite
 };
 
 /* OID query handlers allowed in RF test mode */
 PFN_OID_HANDLER_FUNC apfnOidQueryHandlerAllowedInRFTest[] = {
 	wlanoidRftestQueryAutoTest,
-	wlanoidQueryMcrRead,
 	wlanoidQueryEepromRead
 }
 
@@ -6613,65 +6611,6 @@ VOID wlanInitFeatureOption(IN P_ADAPTER_T prAdapter)
 	prWifiVar->ucDhcpTxDone = (UINT_8) wlanCfgGetUint32(prAdapter, "DhcpTxDone", 1);
 	prWifiVar->ucArpTxDone = (UINT_8) wlanCfgGetUint32(prAdapter, "ArpTxDone", 1);
 	prWifiVar->ucIcmpTxDone = (UINT_8) wlanCfgGetUint32(prAdapter, "IcmpTxDone", 1);
-}
-
-VOID wlanCfgSetSwCtrl(IN P_ADAPTER_T prAdapter)
-{
-	UINT_32 i = 0;
-	CHAR aucKey[WLAN_CFG_VALUE_LEN_MAX];
-	CHAR aucValue[WLAN_CFG_VALUE_LEN_MAX];
-	CHAR *pcPtr = NULL;
-	CHAR *pcDupValue = NULL;
-	UINT_32 au4Values[2];
-	UINT_32 u4TokenCount = 0;
-	UINT_32 u4BufLen = 0;
-	WLAN_STATUS rStatus = WLAN_STATUS_SUCCESS;
-	P_GLUE_INFO_T prGlueInfo = prAdapter->prGlueInfo;
-	PARAM_CUSTOM_SW_CTRL_STRUCT_T rSwCtrlInfo;
-	INT_32 u4Ret = 0;
-	const CHAR acDelim[] = " ";
-
-	for (i = 0; i < WLAN_CFG_SET_SW_CTRL_LEN_MAX; i++) {
-		kalMemZero(aucValue, WLAN_CFG_VALUE_LEN_MAX);
-		kalMemZero(aucKey, WLAN_CFG_VALUE_LEN_MAX);
-		kalSprintf(aucKey, "SwCtrl%d", i);
-
-		/* get nothing */
-		if (wlanCfgGet(prAdapter, aucKey, aucValue, "", 0) != WLAN_STATUS_SUCCESS)
-			continue;
-		if (!kalStrCmp(aucValue, ""))
-			continue;
-
-		pcDupValue = aucValue;
-		u4TokenCount = 0;
-
-		while ((pcPtr = kalStrSep((char **)(&pcDupValue), acDelim)) != NULL) {
-
-			if (!kalStrCmp(pcPtr, ""))
-				continue;
-
-			/* au4Values[u4TokenCount] = kalStrtoul(pcPtr, NULL, 0); */
-			u4Ret = kalkStrtou32(pcPtr, 0, &(au4Values[u4TokenCount]));
-			if (u4Ret)
-				DBGLOG(INIT, LOUD, "parse au4Values error u4Ret=%d\n", u4Ret);
-			u4TokenCount++;
-
-			/* Only need 2 tokens */
-			if (u4TokenCount >= 2)
-				break;
-		}
-
-		if (u4TokenCount != 2)
-			continue;
-
-		rSwCtrlInfo.u4Id = au4Values[0];
-		rSwCtrlInfo.u4Data = au4Values[1];
-
-		rStatus = kalIoctl(prGlueInfo,
-				   wlanoidSetSwCtrlWrite,
-				   &rSwCtrlInfo, sizeof(rSwCtrlInfo), FALSE, FALSE, TRUE, &u4BufLen);
-
-	}
 }
 
 VOID wlanCfgSetChip(IN P_ADAPTER_T prAdapter)

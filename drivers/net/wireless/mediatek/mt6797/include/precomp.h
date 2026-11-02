@@ -116,7 +116,6 @@
 #include "rlm_obss.h"
 #include "rate.h"
 #if CFG_SUPPORT_802_11V
-#include "wnm.h"
 #endif
 
 #include "aa_fsm.h"
@@ -175,7 +174,6 @@
 #include "rftest.h"
 
 #include "rsn.h"
-#include "sec_fsm.h"
 
 #if CFG_SUPPORT_WAPI
 #include "wapi.h"

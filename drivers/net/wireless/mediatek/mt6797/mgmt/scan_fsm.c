@@ -511,19 +511,19 @@ VOID scnSendScanReq(IN P_ADAPTER_T prAdapter)
 			    OFFSET_OF(CMD_SCAN_REQ, aucIE) + rCmdScanReq.u2IELen, (PUINT_8)&rCmdScanReq, NULL, 0);
 	/* sanity check for some scan parameters */
 	if (rCmdScanReq.ucScanType >= SCAN_TYPE_NUM)
-		kalSendAeeWarning("wlan", "wrong scan type %d", rCmdScanReq.ucScanType);
+		DBGLOG(SCN, ERROR, "wrong scan type %d", rCmdScanReq.ucScanType);
 	else if (rCmdScanReq.ucChannelType >= SCAN_CHANNEL_NUM)
-		kalSendAeeWarning("wlan", "wrong channel type %d", rCmdScanReq.ucChannelType);
+		DBGLOG(SCN, ERROR, "wrong channel type %d", rCmdScanReq.ucChannelType);
 	else if (rCmdScanReq.ucChannelType != SCAN_CHANNEL_SPECIFIED &&
 		rCmdScanReq.ucChannelListNum != 0)
-		kalSendAeeWarning("wlan",
-			"channel list is not NULL but channel type is not specified");
+		DBGLOG(SCN, ERROR,
+			       "channel list is not NULL but channel type is not specified");
 	else if (rCmdScanReq.ucBssIndex >= MAX_BSS_INDEX)
-		kalSendAeeWarning("wlan", "wrong bss index %d", rCmdScanReq.ucBssIndex);
+		DBGLOG(SCN, ERROR, "wrong bss index %d", rCmdScanReq.ucBssIndex);
 	else if (rCmdScanReq.ucSSIDType >= BIT(4)) /* ssid type is wrong */
-		kalSendAeeWarning("wlan", "wrong ssid type %d", rCmdScanReq.ucSSIDType);
+		DBGLOG(SCN, ERROR, "wrong ssid type %d", rCmdScanReq.ucSSIDType);
 	else if (rCmdScanReq.ucSSIDLength > 32)
-		kalSendAeeWarning("wlan", "wrong ssid length %d", rCmdScanReq.ucSSIDLength);
+		DBGLOG(SCN, ERROR, "wrong ssid length %d", rCmdScanReq.ucSSIDLength);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -600,17 +600,17 @@ VOID scnSendScanReqV2(IN P_ADAPTER_T prAdapter)
 			    OFFSET_OF(CMD_SCAN_REQ_V2, aucIE) + rCmdScanReq.u2IELen, (PUINT_8)&rCmdScanReq, NULL, 0);
 	/* sanity check for some scan parameters */
 	if (rCmdScanReq.ucScanType >= SCAN_TYPE_NUM)
-		kalSendAeeWarning("wlan", "wrong scan type %d", rCmdScanReq.ucScanType);
+		DBGLOG(SCN, ERROR, "wrong scan type %d", rCmdScanReq.ucScanType);
 	else if (rCmdScanReq.ucChannelType >= SCAN_CHANNEL_NUM)
-		kalSendAeeWarning("wlan", "wrong channel type %d", rCmdScanReq.ucChannelType);
+		DBGLOG(SCN, ERROR, "wrong channel type %d", rCmdScanReq.ucChannelType);
 	else if (rCmdScanReq.ucChannelType != SCAN_CHANNEL_SPECIFIED &&
 		rCmdScanReq.ucChannelListNum != 0)
-		kalSendAeeWarning("wlan",
-			"channel list is not NULL but channel type is not specified");
+		DBGLOG(SCN, ERROR,
+			       "channel list is not NULL but channel type is not specified");
 	else if (rCmdScanReq.ucBssIndex > MAX_BSS_INDEX)
-		kalSendAeeWarning("wlan", "wrong bss index %d", rCmdScanReq.ucBssIndex);
+		DBGLOG(SCN, ERROR, "wrong bss index %d", rCmdScanReq.ucBssIndex);
 	else if (rCmdScanReq.ucSSIDType >= BIT(4)) /* ssid type is wrong */
-		kalSendAeeWarning("wlan", "wrong ssid type %d", rCmdScanReq.ucSSIDType);
+		DBGLOG(SCN, ERROR, "wrong ssid type %d", rCmdScanReq.ucSSIDType);
 
 }
 

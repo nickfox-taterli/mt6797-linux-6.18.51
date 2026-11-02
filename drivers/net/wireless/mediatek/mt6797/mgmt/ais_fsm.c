@@ -2686,10 +2686,6 @@ VOID aisFsmRunEventScanDone(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr)
 
 			kalScanDone(prAdapter->prGlueInfo, KAL_NETWORK_TYPE_AIS_INDEX, WLAN_STATUS_SUCCESS);
 			eNextState = AIS_STATE_IDLE;
-#if CFG_SUPPORT_AGPS_ASSIST
-			scanReportScanResultToAgps(prAdapter);
-#endif
-
 			break;
 
 		case AIS_STATE_ONLINE_SCAN:
@@ -2704,9 +2700,6 @@ VOID aisFsmRunEventScanDone(IN P_ADAPTER_T prAdapter, IN P_MSG_HDR_T prMsgHdr)
 #else
 			eNextState = AIS_STATE_NORMAL_TR;
 #endif /* CFG_SUPPORT_ROAMING */
-#if CFG_SUPPORT_AGPS_ASSIST
-			scanReportScanResultToAgps(prAdapter);
-#endif
 
 			break;
 

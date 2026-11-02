@@ -55,15 +55,6 @@
 #define MTK_WCN_HIF_SDIO            0
 #endif
 
-#if (CFG_SUPPORT_AEE == 1)
-#define CFG_ENABLE_AEE_MSG          1
-#else
-#define CFG_ENABLE_AEE_MSG          0
-#endif
-
-#define CFG_SUPPORT_MTK_ANDROID_KK      1
-
-#define CFG_ENABLE_EARLY_SUSPEND        0
 
 /* 2 Flags for Driver Features */
 #define CFG_TX_FRAGMENT                 1	/*!< 1: Enable TX fragmentation
@@ -76,10 +67,6 @@
 #define CFG_FW_FILENAME                 L"WIFI_RAM_CODE"
 #else
 #define CFG_FW_FILENAME                 "WIFI_RAM_CODE"
-#endif
-
-#ifndef CFG_MET_PACKET_TRACE_SUPPORT
-#define CFG_MET_PACKET_TRACE_SUPPORT    0	/*move to wlan/MAKEFILE */
 #endif
 
 /*------------------------------------------------------------------------------
@@ -380,7 +367,6 @@
  */
 #define CFG_ENABLE_FULL_PM                      1
 #define CFG_ENABLE_WAKEUP_ON_LAN                0
-#define CFG_SUPPORT_WAKEUP_REASON_DEBUG		0	/* debug which packet wake up host */
 
 
 #define CFG_INIT_POWER_SAVE_PROF                    ENUM_PSP_FAST_SWITCH
@@ -514,8 +500,6 @@
 #define CFG_SUPPORT_PERSISTENT_GROUP            0
 
 #define CFG_TEST_WIFI_DIRECT_GO                 0
-
-#define CFG_TEST_ANDROID_DIRECT_GO              0
 
 #define CFG_UNITEST_P2P                         0
 

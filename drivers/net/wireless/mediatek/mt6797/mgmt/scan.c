@@ -3033,35 +3033,3 @@ P_BSS_DESC_T scanSearchBssDescByBssidAndLatestUpdateTime(IN P_ADAPTER_T prAdapte
 
 #endif /* CFG_SUPPORT_PASSPOINT */
 
-#if CFG_SUPPORT_AGPS_ASSIST
-VOID scanReportScanResultToAgps(P_ADAPTER_T prAdapter)
-{
-	P_LINK_T prBSSDescList = &prAdapter->rWifiVar.rScanInfo.rBSSDescList;
-	P_BSS_DESC_T prBssDesc = NULL;
-	P_SCAN_INFO_T prScanInfo = &prAdapter->rWifiVar.rScanInfo;
-	UINT_8 ucIndex = 0;
-	P_AGPS_AP_LIST_T prAgpsApList = kalMemAlloc(sizeof(AGPS_AP_LIST_T), VIR_MEM_TYPE);
-	P_AGPS_AP_INFO_T prAgpsInfo = &prAgpsApList->arApInfo[0];
-
-	if (prAgpsApList == NULL)
-		return;
-
-	LINK_FOR_EACH_ENTRY(prBssDesc, prBSSDescList, rLinkEntry, BSS_DESC_T) {
-		if (prBssDesc->rUpdateTime < prScanInfo->rLastScanCompletedTime)
-			continue;
-		COPY_MAC_ADDR(prAgpsInfo->aucBSSID, prBssDesc->aucBSSID);
-		prAgpsInfo->ePhyType = AGPS_PHY_G;
-		prAgpsInfo->u2Channel = prBssDesc->ucChannelNum;
-		prAgpsInfo->i2ApRssi = RCPI_TO_dBm(prBssDesc->ucRCPI);
-		prAgpsInfo++;
-		ucIndex++;
-		if (ucIndex == SCN_AGPS_AP_LIST_MAX_NUM)
-			break;
-	}
-	prAgpsApList->ucNum = ucIndex;
-	GET_CURRENT_SYSTIME(&prScanInfo->rLastScanCompletedTime);
-	/* DBGLOG(SCN, INFO, ("num of scan list:%d\n", ucIndex)); */
-	kalIndicateAgpsNotify(prAdapter, AGPS_EVENT_WLAN_AP_LIST, (PUINT_8) prAgpsApList, sizeof(AGPS_AP_LIST_T));
-	kalMemFree(prAgpsApList, VIR_MEM_TYPE, sizeof(AGPS_AP_LIST_T));
-}
-#endif /* CFG_SUPPORT_AGPS_ASSIST */

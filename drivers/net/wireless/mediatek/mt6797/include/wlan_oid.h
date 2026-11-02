@@ -1354,24 +1354,12 @@ wlanoidQueryLinkSpeed(IN P_ADAPTER_T prAdapter,
 		      IN PVOID pvQueryBuffer, IN UINT_32 u4QueryBufferLen, OUT PUINT_32 pu4QueryInfoLen);
 
 WLAN_STATUS
-wlanoidQueryMcrRead(IN P_ADAPTER_T prAdapter,
-		    IN PVOID pvQueryBuffer, IN UINT_32 u4QueryBufferLen, OUT PUINT_32 pu4QueryInfoLen);
-
-WLAN_STATUS
 wlanoidQueryMemDump(IN P_ADAPTER_T prAdapter,
 		    IN PVOID pvQueryBuffer, IN UINT_32 u4QueryBufferLen, OUT PUINT_32 pu4QueryInfoLen);
 
 WLAN_STATUS
-wlanoidSetMcrWrite(IN P_ADAPTER_T prAdapter,
-		   IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen);
-
-WLAN_STATUS
 wlanoidQuerySwCtrlRead(IN P_ADAPTER_T prAdapter,
 		       IN PVOID pvQueryBuffer, IN UINT_32 u4QueryBufferLen, OUT PUINT_32 pu4QueryInfoLen);
-
-WLAN_STATUS
-wlanoidSetSwCtrlWrite(IN P_ADAPTER_T prAdapter,
-		      IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen);
 
 WLAN_STATUS
 wlanoidSetChipConfig(IN P_ADAPTER_T prAdapter,

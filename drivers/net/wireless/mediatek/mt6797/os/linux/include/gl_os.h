@@ -533,13 +533,6 @@
 
 #define DRV_NAME "["CHIP_NAME"]: "
 
-/* Define if target platform is Android.
- * It should already be defined in Android kernel source
- */
-#ifndef CONFIG_ANDROID
-#define CONFIG_ANDROID      0
-#endif
-
 /* for CFG80211 IE buffering mechanism */
 #define CFG_CFG80211_IE_BUF_LEN     (512)
 
@@ -554,10 +547,6 @@
 #include <linux/timer.h>	/* struct timer_list */
 #include <linux/jiffies.h>	/* jiffies */
 #include <linux/delay.h>	/* udelay and mdelay macro */
-
-#if CONFIG_ANDROID
-#include <linux/wakelock.h>
-#endif
 
 #include <linux/irq.h>		/* IRQT_FALLING */
 
@@ -638,10 +627,6 @@
 
 #include "wlan_lib.h"
 #include "wlan_oid.h"
-
-#if CFG_ENABLE_AEE_MSG
-#include <mt-plat/aee.h>
-#endif
 
 extern BOOLEAN fgIsBusAccessFailed;
 
@@ -959,11 +944,6 @@ struct _GLUE_INFO_T {
 	KAL_WAKE_LOCK_T rIntrWakeLock;
 	KAL_WAKE_LOCK_T rTimeoutWakeLock;
 
-#if CFG_MET_PACKET_TRACE_SUPPORT
-	BOOLEAN fgMetProfilingEn;
-	UINT_16 u2MetUdpPort;
-#endif
-
 #if CFG_SUPPORT_SNIFFER
 	BOOLEAN fgIsEnableMon;
 	struct net_device *prMonDevHandler;
@@ -1199,12 +1179,6 @@ typedef struct _PACKET_PRIVATE_DATA {
 #define GLUE_GET_PKT_SEQ_NO(_p) \
 	    (GLUE_GET_PKT_PRIVATE_DATA(_p)->ucSeqNo)
 
-#define GLUE_SET_PKT_FLAG_PROF_MET(_p) \
-	    (GLUE_GET_PKT_PRIVATE_DATA(_p)->ucProfilingFlag |= BIT(0))
-
-#define GLUE_GET_PKT_IS_PROF_MET(_p) \
-	    (GLUE_GET_PKT_PRIVATE_DATA(_p)->ucProfilingFlag & BIT(0))
-
 #define GLUE_GET_PKT_ETHER_DEST_ADDR(_p)    \
 	    ((PUINT_8)&(((struct sk_buff *)(_p))->data))
 
@@ -1250,7 +1224,6 @@ static __KAL_INLINE__ VOID glPacketDataTypeCheck(VOID)
 #ifdef WLAN_INCLUDE_PROC
 INT_32 procRemoveProcfs(VOID);
 
-INT_32 procCreateFsEntry(P_GLUE_INFO_T prGlueInfo);
 INT_32 procInitFs(VOID);
 INT_32 procUninitProcFs(VOID);
 #endif /* WLAN_INCLUDE_PROC */
@@ -1287,13 +1260,6 @@ typedef int (*set_p2p_mode) (struct net_device *netdev, PARAM_CUSTOM_P2P_SET_STR
 typedef void (*set_dbg_level) (unsigned char modules[DBG_MODULE_NUM]);
 extern void register_set_p2p_mode_handler(set_p2p_mode handler);
 extern void register_set_dbg_level_handler(set_dbg_level handler);
-
-#if CFG_ENABLE_EARLY_SUSPEND
-extern int glRegisterEarlySuspend(struct early_suspend *prDesc,
-				  early_suspend_callback wlanSuspend, late_resume_callback wlanResume);
-
-extern int glUnregisterEarlySuspend(struct early_suspend *prDesc);
-#endif
 
 #if CFG_MET_PACKET_TRACE_SUPPORT
 VOID kalMetTagPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACKET prPacket, IN ENUM_TX_PROFILING_TAG_T eTag);

@@ -95,7 +95,6 @@
 #include "wlan_oid.h"
 #include "wlan_p2p.h"
 #include "gl_kal.h"
-#include "gl_wext_priv.h"
 #include "nic/p2p.h"
 
 #if DBG

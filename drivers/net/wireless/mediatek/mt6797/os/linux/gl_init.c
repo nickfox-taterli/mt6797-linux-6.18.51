@@ -780,9 +780,6 @@
 #include "precomp.h"
 #include <linux/sched/debug.h>
 #include <uapi/linux/sched/types.h>
-#if CFG_SUPPORT_AGPS_ASSIST
-#include "gl_kal.h"
-#endif
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -1027,7 +1024,6 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	/* .mgmt_tx_cancel_wait        = mtk_cfg80211_mgmt_tx_cancel_wait, */
 	.update_mgmt_frame_registrations = mtk_cfg80211_update_mgmt_frame_registrations,
 #ifdef CONFIG_NL80211_TESTMODE
-	.testmode_cmd = mtk_cfg80211_testmode_cmd,
 #endif
 #if 0	/* Remove schedule_scan because we need more verification for NLO */
 	.sched_scan_start = mtk_cfg80211_sched_scan_start,
@@ -2295,76 +2291,6 @@ VOID wlanSetSuspendMode(P_GLUE_INFO_T prGlueInfo, BOOLEAN fgEnable)
 	kalSetNetAddressFromInterface(prGlueInfo, prDev, fgEnable);
 }
 
-#if CFG_ENABLE_EARLY_SUSPEND
-static struct early_suspend wlan_early_suspend_desc = {
-	.level = EARLY_SUSPEND_LEVEL_BLANK_SCREEN,
-};
-
-static void wlan_early_suspend(struct early_suspend *h)
-{
-	struct net_device *prDev = NULL;
-	P_GLUE_INFO_T prGlueInfo = NULL;
-
-	/* 4 <1> Sanity Check */
-	if ((u4WlanDevNum == 0) && (u4WlanDevNum > CFG_MAX_WLAN_DEVICES)) {
-		DBGLOG(INIT, ERROR, "wlanLateResume u4WlanDevNum==0 invalid!!\n");
-		return;
-	}
-
-	prDev = arWlanDevInfo[u4WlanDevNum - 1].prDev;
-	if (!prDev)
-		return;
-
-	prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
-	if (!prGlueInfo)
-		return;
-
-	DBGLOG(INIT, INFO, "********<%s>********\n", __func__);
-
-	if (prGlueInfo->fgIsInSuspendMode == TRUE) {
-		DBGLOG(INIT, INFO, "%s: Already in suspend mode, SKIP!\n", __func__);
-		return;
-	}
-
-	prGlueInfo->fgIsInSuspendMode = TRUE;
-
-	wlanSetSuspendMode(prGlueInfo, TRUE);
-	p2pSetSuspendMode(prGlueInfo, TRUE);
-}
-
-static void wlan_late_resume(struct early_suspend *h)
-{
-	struct net_device *prDev = NULL;
-	P_GLUE_INFO_T prGlueInfo = NULL;
-
-	/* 4 <1> Sanity Check */
-	if ((u4WlanDevNum == 0) && (u4WlanDevNum > CFG_MAX_WLAN_DEVICES)) {
-		DBGLOG(INIT, ERROR, "wlanLateResume u4WlanDevNum==0 invalid!!\n");
-		return;
-	}
-
-	prDev = arWlanDevInfo[u4WlanDevNum - 1].prDev;
-	if (!prDev)
-		return;
-
-	prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
-	if (!prGlueInfo)
-		return;
-
-	DBGLOG(INIT, INFO, "********<%s>********\n", __func__);
-
-	if (prGlueInfo->fgIsInSuspendMode == FALSE) {
-		DBGLOG(INIT, INFO, "%s: Not in suspend mode, SKIP!\n", __func__);
-		return;
-	}
-
-	prGlueInfo->fgIsInSuspendMode = FALSE;
-
-	/* 4 <2> Set suspend mode for each network */
-	wlanSetSuspendMode(prGlueInfo, FALSE);
-	p2pSetSuspendMode(prGlueInfo, FALSE);
-}
-#endif
 
 
 
@@ -2491,8 +2417,7 @@ static INT_32 wlanProbe(PVOID pvData)
 		BUS_SET_IRQ_FAIL,
 		ADAPTER_START_FAIL,
 		NET_REGISTER_FAIL,
-		PROC_INIT_FAIL,
-		FAIL_MET_INIT_PROCFS,
+		P2P_INIT_FAIL,
 		FAIL_REASON_NUM
 	} eFailReason;
 	P_WLANDEV_INFO_T prWlandevInfo = NULL;
@@ -2730,27 +2655,8 @@ bailout:
 			eFailReason = NET_REGISTER_FAIL;
 			break;
 		}
-		/* 4 <4> Register early suspend callback */
-#if CFG_ENABLE_EARLY_SUSPEND
-		glRegisterEarlySuspend(&wlan_early_suspend_desc, wlan_early_suspend, wlan_late_resume);
-#endif
-
 		/* 4 <5> Register Notifier callback */
 		wlanRegisterNotifier();
-
-		/* 4 <6> Initialize /proc filesystem */
-#ifdef WLAN_INCLUDE_PROC
-		i4Status = procCreateFsEntry(prGlueInfo);
-		if (i4Status < 0) {
-			DBGLOG(INIT, ERROR, "wlanProbe: init procfs failed\n");
-			eFailReason = PROC_INIT_FAIL;
-			break;
-		}
-#endif /* WLAN_INCLUDE_PROC */
-
-#if CFG_MET_PACKET_TRACE_SUPPORT
-		kalMetInit(prGlueInfo);
-#endif
 
 #if (CFG_ENABLE_WIFI_DIRECT)
 		{
@@ -2759,45 +2665,33 @@ bailout:
 			if (set_p2p_mode_handler(prGlueInfo->prDevHandler, mode)) {
 				if (prAdapter->fgIsP2PRegistered)
 					p2pRemove(prGlueInfo);
-				eFailReason = PROC_INIT_FAIL;
+				eFailReason = P2P_INIT_FAIL;
 				break;
 			}
 		}
 #endif
 
-#if (CFG_MET_PACKET_TRACE_SUPPORT == 1)
-		DBGLOG(INIT, TRACE, "init MET procfs...\n");
-		i4Status = kalMetInitProcfs(prGlueInfo);
-		if (i4Status < 0) {
-			DBGLOG(INIT, ERROR, "wlanProbe: init MET procfs failed\n");
-			eFailReason = FAIL_MET_INIT_PROCFS;
-			break;
-		}
-#endif
 	} while (FALSE);
 
 	if (i4Status == WLAN_STATUS_SUCCESS) {
-		wlanCfgSetSwCtrl(prGlueInfo->prAdapter);
 		wlanCfgSetChip(prGlueInfo->prAdapter);
 		wlanCfgSetCountryCode(prGlueInfo->prAdapter);
 		/* Init performance monitor structure */
 		kalPerMonInit(prGlueInfo);
-#if CFG_SUPPORT_AGPS_ASSIST
-		kalIndicateAgpsNotify(prAdapter, AGPS_EVENT_WLAN_ON, NULL, 0);
-#endif
 		DBGLOG(INIT, LOUD, "wlanProbe: probe success\n");
 	} else {
 		DBGLOG(INIT, ERROR, "wlanProbe: probe failed\n");
 		switch (eFailReason) {
-		case FAIL_MET_INIT_PROCFS:
-			kalMetRemoveProcfs();
-		case PROC_INIT_FAIL:
+		case P2P_INIT_FAIL:
 			wlanNetUnregister(prWdev);
+			/* fall through: the netdev was registered */
 		case NET_REGISTER_FAIL:
 			wlanStopWorkers(prGlueInfo);
 			wlanAdapterStop(prAdapter);
+			/* fall through: adapter and workers were started */
 		case ADAPTER_START_FAIL:
 			glBusFreeIrq(prWdev->netdev, *((P_GLUE_INFO_T *) netdev_priv(prWdev->netdev)));
+			/* fall through: the IRQ was requested */
 		case BUS_SET_IRQ_FAIL:
 			wlanWakeLockUninit(prGlueInfo);
 			wlanNetDestroy(prWdev);
@@ -2900,15 +2794,8 @@ static VOID wlanRemove(VOID)
 	}
 #endif
 
-#if (CFG_MET_PACKET_TRACE_SUPPORT == 1)
-	kalMetRemoveProcfs();
-#endif
 	/* 4 <4> wlanAdapterStop */
 	prAdapter = prGlueInfo->prAdapter;
-#if CFG_SUPPORT_AGPS_ASSIST
-	kalIndicateAgpsNotify(prAdapter, AGPS_EVENT_WLAN_OFF, NULL, 0);
-#endif
-
 	wlanAdapterStop(prAdapter);
 	DBGLOG(INIT, TRACE, "Number of Stalled Packets = %d\n", GLUE_GET_REF_CNT(prGlueInfo->i4TxPendingFrameNum));
 
@@ -2929,10 +2816,6 @@ static VOID wlanRemove(VOID)
 	wlanNetDestroy(prDev->ieee80211_ptr);
 	prDev = NULL;
 
-	/* 4 <8> Unregister early suspend callback */
-#if CFG_ENABLE_EARLY_SUSPEND
-	glUnregisterEarlySuspend(&wlan_early_suspend_desc);
-#endif
 	gprWdev->netdev = NULL;
 
 	/* 4 <9> Unregister notifier callback */

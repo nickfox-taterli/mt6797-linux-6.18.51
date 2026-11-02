@@ -63,10 +63,6 @@
 
 #include "config.h"
 
-#if CFG_ENABLE_EARLY_SUSPEND
-#include <linux/earlysuspend.h>
-#endif
-
 /*******************************************************************************
 *                         C O M P I L E R   F L A G S
 ********************************************************************************
@@ -96,11 +92,6 @@
 #else
 #define NULL            ((void *) 0)
 #endif
-#endif
-
-#if CFG_ENABLE_EARLY_SUSPEND
-typedef void (*early_suspend_callback) (struct early_suspend *h);
-typedef void (*late_resume_callback) (struct early_suspend *h);
 #endif
 
 /*******************************************************************************

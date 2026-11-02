@@ -610,19 +610,6 @@ mtk_p2p_cfg80211_set_bitrate_mask(IN struct wiphy *wiphy,
 				  IN struct net_device *dev,
 				  IN unsigned int link_id, const u8 *peer, IN const struct cfg80211_bitrate_mask *mask);
 
-#if CONFIG_NL80211_TESTMODE
-int mtk_p2p_cfg80211_testmode_cmd(IN struct wiphy *wiphy, IN struct wireless_dev *wdev, IN void *data, IN int len);
-int mtk_p2p_cfg80211_testmode_p2p_sigma_pre_cmd(IN struct wiphy *wiphy, IN void *data, IN int len);
-int mtk_p2p_cfg80211_testmode_p2p_sigma_cmd(IN struct wiphy *wiphy, IN void *data, IN int len);
-
-#if CFG_SUPPORT_WFD
-int mtk_p2p_cfg80211_testmode_wfd_update_cmd(IN struct wiphy *wiphy, IN void *data, IN int len);
-#endif
-
-int mtk_p2p_cfg80211_testmode_hotspot_block_list_cmd(IN struct wiphy *wiphy, IN void *data, IN int len);
-#else
-#error "Please ENABLE kernel config (CONFIG_NL80211_TESTMODE) to support Wi-Fi Direct"
-#endif
 
 #endif
 

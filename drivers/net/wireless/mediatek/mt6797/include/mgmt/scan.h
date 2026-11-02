@@ -378,10 +378,6 @@
 #define SCN_SSID_MAX_NUM                    CFG_SCAN_SSID_MAX_NUM
 #define SCN_SSID_MATCH_MAX_NUM              CFG_SCAN_SSID_MATCH_MAX_NUM
 
-#if CFG_SUPPORT_AGPS_ASSIST
-#define SCN_AGPS_AP_LIST_MAX_NUM					32
-#endif
-
 #define SCN_BSS_JOIN_FAIL_THRESOLD				4
 #define SCN_BSS_JOIN_FAIL_CNT_RESET_SEC				15
 #define SCN_BSS_JOIN_FAIL_RESET_STEP				2
@@ -778,26 +774,6 @@ typedef struct _MSG_SCN_SCAN_DONE_T {
 	ENUM_SCAN_STATUS eScanStatus;
 } MSG_SCN_SCAN_DONE, *P_MSG_SCN_SCAN_DONE;
 
-#if CFG_SUPPORT_AGPS_ASSIST
-typedef enum {
-	AGPS_PHY_A,
-	AGPS_PHY_B,
-	AGPS_PHY_G,
-} AP_PHY_TYPE;
-
-typedef struct _AGPS_AP_INFO_T {
-	UINT_8 aucBSSID[MAC_ADDR_LEN];
-	INT_16 i2ApRssi;	/* -127..128 */
-	UINT_16 u2Channel;	/* 0..256 */
-	AP_PHY_TYPE ePhyType;
-} AGPS_AP_INFO_T, *P_AGPS_AP_INFO_T;
-
-typedef struct _AGPS_AP_LIST_T {
-	UINT_8 ucNum;
-	AGPS_AP_INFO_T arApInfo[SCN_AGPS_AP_LIST_MAX_NUM];
-} AGPS_AP_LIST_T, *P_AGPS_AP_LIST_T;
-#endif
-
 typedef enum _ENUM_NLO_STATUS_T {
 	NLO_STATUS_FOUND = 0,
 	NLO_STATUS_CANCELLED,
@@ -957,10 +933,6 @@ BOOLEAN scnFsmSchedScanStopRequest(IN P_ADAPTER_T prAdapter);
 #if CFG_SUPPORT_PASSPOINT
 P_BSS_DESC_T scanSearchBssDescByBssidAndLatestUpdateTime(IN P_ADAPTER_T prAdapter, IN UINT_8 aucBSSID[]);
 #endif /* CFG_SUPPORT_PASSPOINT */
-
-#if CFG_SUPPORT_AGPS_ASSIST
-VOID scanReportScanResultToAgps(P_ADAPTER_T prAdapter);
-#endif
 
 BOOLEAN scnFsmPSCNAction(IN P_ADAPTER_T prAdapter, IN UINT_8 ucPscanAct);
 

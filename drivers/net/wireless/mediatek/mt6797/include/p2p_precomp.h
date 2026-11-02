@@ -120,9 +120,7 @@
 #include "p2p_bss.h"
 #include "p2p.h"
 /* Dependency:  cnm_timer.h (TIMER_T) */
-#include "p2p_fsm.h"
 #include "p2p_scan.h"
-#include "p2p_state.h"
 #include "p2p_func.h"
 #include "p2p_rlm.h"
 #include "p2p_assoc.h"
@@ -143,7 +141,6 @@
 #include "rftest.h"
 
 #include "rsn.h"
-#include "sec_fsm.h"
 
 #if CFG_SUPPORT_WAPI
 #include "wapi.h"

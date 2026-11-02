@@ -1327,7 +1327,6 @@ UINT_8 wlanGetAisBssIndex(IN P_ADAPTER_T prAdapter);
 
 VOID wlanInitFeatureOption(IN P_ADAPTER_T prAdapter);
 
-VOID wlanCfgSetSwCtrl(IN P_ADAPTER_T prAdapter);
 
 VOID wlanCfgSetChip(IN P_ADAPTER_T prAdapter);
 

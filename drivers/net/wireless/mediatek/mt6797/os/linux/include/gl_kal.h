@@ -611,7 +611,6 @@
 #include "config.h"
 #include "gl_typedef.h"
 #include "gl_os.h"
-#include "gl_wext_priv.h"
 #include "link.h"
 #include "nic/mac.h"
 #include "nic/wlan_def.h"
@@ -778,24 +777,6 @@ typedef enum _ENUM_KAL_MEM_ALLOCATION_TYPE_E {
 
 typedef struct wakeup_source *KAL_WAKE_LOCK_T, **P_KAL_WAKE_LOCK_T;
 #define KAL_WAKELOCK_DECLARE(_lock) struct wakeup_source *_lock
-
-#if CFG_SUPPORT_AGPS_ASSIST
-typedef enum _ENUM_MTK_AGPS_ATTR {
-	MTK_ATTR_AGPS_INVALID,
-	MTK_ATTR_AGPS_CMD,
-	MTK_ATTR_AGPS_DATA,
-	MTK_ATTR_AGPS_IFINDEX,
-	MTK_ATTR_AGPS_IFNAME,
-	MTK_ATTR_AGPS_MAX
-} ENUM_MTK_CCX_ATTR;
-
-typedef enum _ENUM_AGPS_EVENT {
-	AGPS_EVENT_WLAN_ON,
-	AGPS_EVENT_WLAN_OFF,
-	AGPS_EVENT_WLAN_AP_LIST,
-} ENUM_CCX_EVENT;
-BOOLEAN kalIndicateAgpsNotify(P_ADAPTER_T prAdapter, UINT_8 cmd, PUINT_8 data, UINT_16 dataLen);
-#endif /* CFG_SUPPORT_AGPS_ASSIST */
 
 #if CFG_SUPPORT_SNIFFER
 /* Vendor Namespace
@@ -1216,16 +1197,6 @@ do { \
 	panic("Oops"); \
 } while (0)
 
-#if CFG_ENABLE_AEE_MSG
-#define kalSendAeeException                         aee_kernel_exception
-#define kalSendAeeWarning                           aee_kernel_warning
-#define kalSendAeeReminding                         aee_kernel_reminding
-#else
-#define kalSendAeeException(_module, _desc, ...)
-#define kalSendAeeWarning(_module, _desc, ...)
-#define kalSendAeeReminding(_module, _desc, ...)
-#endif
-
 #define PRINTF_ARG(...)                             __VA_ARGS__
 #define SPRINTF(buf, arg)                           {buf += sprintf((char *)(buf), PRINTF_ARG arg); }
 
@@ -1586,9 +1557,6 @@ UINT_64 kalGetBootTime(VOID);
 
 int kalMetInitProcfs(IN P_GLUE_INFO_T prGlueInfo);
 int kalMetRemoveProcfs(void);
-#if CFG_SUPPORT_WAKEUP_REASON_DEBUG
-BOOLEAN kalIsWakeupByWlan(P_ADAPTER_T  prAdapter);
-#endif
 INT_32 kalHaltLock(UINT_32 waitMs);
 INT_32 kalHaltTryLock(VOID);
 VOID kalHaltUnlock(VOID);

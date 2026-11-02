@@ -718,9 +718,6 @@ static struct cfg80211_ops mtk_p2p_ops = {
 	.set_tx_power = mtk_p2p_cfg80211_set_txpower,
 	.get_tx_power = mtk_p2p_cfg80211_get_txpower,
 	.set_power_mgmt = mtk_p2p_cfg80211_set_power_mgmt,
-#ifdef CONFIG_NL80211_TESTMODE
-	.testmode_cmd = mtk_p2p_cfg80211_testmode_cmd,
-#endif
 };
 
 

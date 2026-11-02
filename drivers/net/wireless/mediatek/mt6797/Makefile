@@ -1,11 +1,11 @@
 # MT6797 AHB gen3 build; fixed to the verified X20 production options.
 ccflags-y += -UMT6620 -UMT6628 -UMT5931 -UMT6630
-ccflags-y += -DCFG_SUPPORT_DEBUG_FS=0 -DWLAN_INCLUDE_PROC
-ccflags-y += -DCFG_SUPPORT_AGPS_ASSIST=1 -DCFG_SUPPORT_TSF_USING_BOOTTIME=1
+ccflags-y += -DWLAN_INCLUDE_PROC
+ccflags-y += -DCFG_SUPPORT_TSF_USING_BOOTTIME=1
 ccflags-y += -DARP_MONITER_ENABLE=1 -DLINUX -DMT6797
-ccflags-y += -DCFG_SUPPORT_CHNL_CONFLICT_REVISE=1 -DCFG_SUPPORT_AEE=0
+ccflags-y += -DCFG_SUPPORT_CHNL_CONFLICT_REVISE=1
 ccflags-y += -DBUILD_QA_DBG=1 -DCFG_SUPPORT_PASSPOINT=0 -DCFG_HS20_DEBUG=0
-ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0 -DCFG_MET_PACKET_TRACE_SUPPORT=0
+ccflags-y += -DCFG_ENABLE_GTK_FRAME_FILTER=0
 ccflags-y += -DDBG=0
 ccflags-y += -I$(src)/os -I$(src)/os/linux/include -I$(src)/os/linux/hif/ahb_sdioLike/include
 ccflags-y += -I$(src)/include -I$(src)/include/nic -I$(src)/include/mgmt

@@ -123,10 +123,6 @@
 
 #include "gl_os.h"
 
-#if CFG_ENABLE_EARLY_SUSPEND
-#include <linux/earlysuspend.h>
-#endif
-
 /*******************************************************************************
 *                              C O N S T A N T S
 ********************************************************************************
@@ -266,61 +262,6 @@ void wlanUnregisterNotifier(void)
 #endif /* CFG_SUPPORT_PASSPOINT */
 }
 
-#if CFG_ENABLE_EARLY_SUSPEND
-/*----------------------------------------------------------------------------*/
-/*!
-* \brief This function will register platform driver to os
-*
-* \param[in] wlanSuspend    Function pointer to platform suspend function
-* \param[in] wlanResume   Function pointer to platform resume   function
-*
-* \return The result of registering earlysuspend
-*/
-/*----------------------------------------------------------------------------*/
-
-int glRegisterEarlySuspend(struct early_suspend *prDesc,
-			   early_suspend_callback wlanSuspend, late_resume_callback wlanResume)
-{
-	int ret = 0;
-
-	if (NULL != wlanSuspend)
-		prDesc->suspend = wlanSuspend;
-	else {
-		DBGLOG(REQ, INFO, "glRegisterEarlySuspend wlanSuspend ERROR.\n");
-		ret = -1;
-	}
-
-	if (NULL != wlanResume)
-		prDesc->resume = wlanResume;
-	else {
-		DBGLOG(REQ, INFO, "glRegisterEarlySuspend wlanResume ERROR.\n");
-		ret = -1;
-	}
-
-	register_early_suspend(prDesc);
-	return ret;
-}
-
-/*----------------------------------------------------------------------------*/
-/*!
-* \brief This function will un-register platform driver to os
-*
-* \return The result of un-registering earlysuspend
-*/
-/*----------------------------------------------------------------------------*/
-
-int glUnregisterEarlySuspend(struct early_suspend *prDesc)
-{
-	int ret = 0;
-
-	unregister_early_suspend(prDesc);
-
-	prDesc->suspend = NULL;
-	prDesc->resume = NULL;
-
-	return ret;
-}
-#endif
 
 /*----------------------------------------------------------------------------*/
 /*!
