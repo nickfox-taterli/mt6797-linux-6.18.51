@@ -124,11 +124,6 @@
 
 #include "que_mgt.h"
 
-#if CFG_ENABLE_BT_OVER_WIFI
-#include "bow.h"
-#include "bow_fsm.h"
-#endif
-
 #include "pwr_mgt.h"
 
 #if (CFG_SUPPORT_STATISTICS == 1)

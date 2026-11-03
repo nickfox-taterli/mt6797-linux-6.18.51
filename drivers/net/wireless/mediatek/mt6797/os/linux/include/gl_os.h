@@ -1228,12 +1228,6 @@ INT_32 procInitFs(VOID);
 INT_32 procUninitProcFs(VOID);
 #endif /* WLAN_INCLUDE_PROC */
 
-#if CFG_ENABLE_BT_OVER_WIFI
-BOOLEAN glRegisterAmpc(P_GLUE_INFO_T prGlueInfo);
-
-BOOLEAN glUnregisterAmpc(P_GLUE_INFO_T prGlueInfo);
-#endif
-
 P_GLUE_INFO_T wlanGetGlueInfo(VOID);
 
 UINT_16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb,
@@ -1260,12 +1254,6 @@ typedef int (*set_p2p_mode) (struct net_device *netdev, PARAM_CUSTOM_P2P_SET_STR
 typedef void (*set_dbg_level) (unsigned char modules[DBG_MODULE_NUM]);
 extern void register_set_p2p_mode_handler(set_p2p_mode handler);
 extern void register_set_dbg_level_handler(set_dbg_level handler);
-
-#if CFG_MET_PACKET_TRACE_SUPPORT
-VOID kalMetTagPacket(IN P_GLUE_INFO_T prGlueInfo, IN P_NATIVE_PACKET prPacket, IN ENUM_TX_PROFILING_TAG_T eTag);
-
-VOID kalMetInit(IN P_GLUE_INFO_T prGlueInfo);
-#endif
 
 VOID wlanUpdateChannelTable(P_GLUE_INFO_T prGlueInfo);
 

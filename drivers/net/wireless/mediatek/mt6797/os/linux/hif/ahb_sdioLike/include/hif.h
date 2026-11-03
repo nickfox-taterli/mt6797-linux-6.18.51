@@ -353,10 +353,6 @@ VOID glClearHifInfo(P_GLUE_INFO_T prGlueInfo);
 
 VOID glGetChipInfo(GLUE_INFO_T *GlueInfo, UINT_8 *pucChipBuf);
 
-#if CFG_SPM_WORKAROUND_FOR_HOTSPOT
-BOOLEAN glIsChipNeedWakelock(GLUE_INFO_T *GlueInfo);
-#endif
-
 BOOLEAN glBusInit(PVOID pvData);
 
 VOID glBusRelease(PVOID pData);

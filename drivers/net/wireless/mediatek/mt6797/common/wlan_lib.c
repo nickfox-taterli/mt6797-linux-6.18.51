@@ -7703,9 +7703,6 @@ VOID wlanTxLifetimeTagPacketQue(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsd
 
 VOID wlanTxProfilingTagPacket(IN P_ADAPTER_T prAdapter, IN P_NATIVE_PACKET prPacket, IN ENUM_TX_PROFILING_TAG_T eTag)
 {
-#if CFG_MET_PACKET_TRACE_SUPPORT
-	kalMetTagPacket(prAdapter->prGlueInfo, prPacket, eTag);
-#endif
 }
 
 VOID wlanTxProfilingTagMsdu(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN ENUM_TX_PROFILING_TAG_T eTag)

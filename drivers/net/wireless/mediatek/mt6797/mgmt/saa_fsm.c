@@ -657,28 +657,6 @@ saaFsmSendEventJoinComplete(IN P_ADAPTER_T prAdapter,
 		return WLAN_STATUS_SUCCESS;
 	}
 #endif
-#if CFG_ENABLE_BT_OVER_WIFI
-	else if (IS_STA_BOW_TYPE(prStaRec)) {
-		/* @TODO: BOW handler */
-
-		P_MSG_SAA_FSM_COMP_T prSaaFsmCompMsg;
-
-		prSaaFsmCompMsg = cnmMemAlloc(prAdapter, RAM_TYPE_MSG, sizeof(MSG_SAA_FSM_COMP_T));
-		if (!prSaaFsmCompMsg)
-			return WLAN_STATUS_RESOURCES;
-
-		prSaaFsmCompMsg->rMsgHdr.eMsgId = MID_SAA_BOW_JOIN_COMPLETE;
-		prSaaFsmCompMsg->ucSeqNum = prStaRec->ucAuthAssocReqSeqNum;
-		prSaaFsmCompMsg->rJoinStatus = rJoinStatus;
-		prSaaFsmCompMsg->prStaRec = prStaRec;
-		prSaaFsmCompMsg->prSwRfb = prSwRfb;
-
-		/* NOTE(Kevin): Set to UNBUF for immediately JOIN complete */
-		mboxSendMsg(prAdapter, MBOX_ID_0, (P_MSG_HDR_T) prSaaFsmCompMsg, MSG_SEND_METHOD_UNBUF);
-
-		return WLAN_STATUS_SUCCESS;
-	}
-#endif
 	else {
 		ASSERT(0);
 		return WLAN_STATUS_FAILURE;
@@ -1281,10 +1259,6 @@ WLAN_STATUS saaFsmRunEventRxDeauth(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwR
 			p2pRoleFsmRunEventRxDeauthentication(prAdapter, prStaRec, prSwRfb);
 		}
 #endif
-#if CFG_ENABLE_BT_OVER_WIFI
-		else if (IS_STA_BOW_TYPE(prStaRec))
-			bowRunEventRxDeAuth(prAdapter, prStaRec, prSwRfb);
-#endif
 		else
 			ASSERT(0);
 
@@ -1467,12 +1441,6 @@ WLAN_STATUS saaFsmRunEventRxDisassoc(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prS
 		else if (prAdapter->fgIsP2PRegistered && (IS_STA_IN_P2P(prStaRec))) {
 			/* TODO(Kevin) */
 			p2pRoleFsmRunEventRxDisassociation(prAdapter, prStaRec, prSwRfb);
-		}
-#endif
-#if CFG_ENABLE_BT_OVER_WIFI
-		else if (IS_STA_BOW_TYPE(prStaRec)) {
-			/* ToDo:: nothing */
-			/* TODO(Kevin) */
 		}
 #endif
 		else
